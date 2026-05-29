@@ -24,7 +24,8 @@ def parse_args():
     parser.add_argument('--image_dir', type=str, default='data/images')
     parser.add_argument('--backbone_type', type=str, default='timm', choices=['timm', 'clip'])
     parser.add_argument('--backbone_name', type=str, default='resnet50')
-    parser.add_argument('--num_concepts', type=int, default=7)
+    parser.add_argument('--num_concepts', type=int, default=None, help="Deprecated/optional. Number of concepts is auto-inferred from concept_cols.")
+    parser.add_argument('--concept_cols', type=str, default=None, help="Comma-separated list of concept columns in the CSV. If omitted, auto-detects MONET_ columns.")
     parser.add_argument('--num_classes', type=int, default=1)
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--batch_size', type=int, default=16)
@@ -39,15 +40,35 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 1. Dataset & DataLoader
+    # 1. Dataset & DataLoader Factory Setup
     if args.dataset == 'milk10k':
-        dataset = MILK10KDataset(
-            csv_path=args.csv_path,
-            image_dir=args.image_dir,
-            target_col='Malignancy'
-        )
+        dataset_class = MILK10KDataset
     else:
         raise ValueError(f"Unknown dataset {args.dataset}")
+
+    # Generate default dataset config
+    dataset_config = dataset_class.get_default_config()
+
+    # Apply CLI overrides if present
+    if args.concept_cols:
+        dataset_config["concepts"] = [c.strip() for c in args.concept_cols.split(',')]
+        dataset_config["num_concepts"] = len(dataset_config["concepts"])
+        
+    if args.num_classes != 1:  # Only override if explicitly customized via CLI
+        dataset_config["num_classes"] = args.num_classes
+
+    dataset = dataset_class(
+        csv_path=args.csv_path,
+        image_dir=args.image_dir,
+        config=dataset_config
+    )
+
+    # Use final resolved configuration from dataset instance
+    resolved_config = dataset.config
+    num_concepts = resolved_config["num_concepts"]
+    num_classes = resolved_config["num_classes"]
+
+    print(f"Loaded dataset '{args.dataset}' with resolved config: {resolved_config}")
 
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
 
@@ -56,8 +77,8 @@ def main():
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
-        num_concepts=args.num_concepts,
-        num_classes=args.num_classes
+        num_concepts=num_concepts,
+        num_classes=num_classes
     )
     
     if args.freeze_backbone:

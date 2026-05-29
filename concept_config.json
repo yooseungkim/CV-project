@@ -1,0 +1,71 @@
+{
+  "age_approx": {
+    "type": "numerical",
+    "min": 5,
+    "max": 85
+  },
+  "sex": {
+    "type": "categorical",
+    "classes": [
+      "female",
+      "male"
+    ]
+  },
+  "skin_tone_class": {
+    "type": "categorical",
+    "classes": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "site": {
+    "type": "categorical",
+    "classes": [
+      "foot",
+      "genital",
+      "hand",
+      "head_neck_face",
+      "lower_extremity",
+      "trunk",
+      "upper_extremity"
+    ]
+  },
+  "MONET_ulceration_crust": {
+    "type": "numerical",
+    "min": 0.0136221795652225,
+    "max": 0.972396574690847
+  },
+  "MONET_hair": {
+    "type": "numerical",
+    "min": 0.0122428601632014,
+    "max": 0.865575161874573
+  },
+  "MONET_vasculature_vessels": {
+    "type": "numerical",
+    "min": 7.98409324801922e-05,
+    "max": 0.91035508295904
+  },
+  "MONET_erythema": {
+    "type": "numerical",
+    "min": 0.0113724942511918,
+    "max": 0.9295820909092
+  },
+  "MONET_pigmented": {
+    "type": "numerical",
+    "min": 0.0061589104922739,
+    "max": 0.97158323767318
+  },
+  "MONET_gel_water_drop_fluid_dermoscopy_liquid": {
+    "type": "numerical",
+    "min": 0.0073805212658208,
+    "max": 0.96362126259426
+  },
+  "MONET_skin_markings_pen_ink_purple_pen": {
+    "type": "numerical",
+    "min": 0.0005128385489688,
+    "max": 0.985961844795736
+  }
+}

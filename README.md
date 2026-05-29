@@ -4,7 +4,8 @@ This project provides a highly modular, dataset-agnostic Concept Bottleneck Mode
 
 ## Features
 - **Universal Flexible Backbone:** Easily swap between `timm` and `open_clip` backbones. The model dynamically infers feature dimensions, requiring no hardcoded values.
-- **Unified Data Pipeline:** Abstract `BaseDataset` ensures all loaders produce a standardized tuple `(image_tensor, concept_labels_tensor, target_label_tensor)`.
+- **Unified Data Pipeline:** Abstract `BaseDataset` ensures all loaders produce a standardized tuple `(image_tensor, concept_labels_tensor, target_label_tensor)` and support unified `dataset_config` parameterization.
+- **Dynamic Config Inference:** Standalone utility script to auto-generate CBM concept configs by analyzing dataset metadata CSV profiles with intelligent type-inference heuristics.
 - **Object-Oriented Design:** Clear separation of concerns between data loading, model architecture, training loop, and metrics.
 - **Sequential Training Support:** Built-in arguments to independently freeze the vision backbone or the classifier head.
 
@@ -23,6 +24,7 @@ project_root/
 │   └── utils/
 │       ├── __init__.py
 │       └── metrics.py      # Utilities for evaluating concept and target accuracy
+├── generate_concept_config.py # Standalone script to auto-generate CBM concept configs
 ├── main.py                 # Entry point for training and evaluation
 ├── requirements.txt        # Dependencies exported from uv
 └── README.md
@@ -91,6 +93,26 @@ uv run python main.py \
     --backbone_name resnet50 \
     --num_concepts 7 \
     --use_wandb False
+```
+
+## Auto-Generating Concept Configuration Files
+
+This project includes a standalone script `generate_concept_config.py` that fully automates the creation of a structured Concept Configuration file by parsing your dataset's metadata CSV.
+
+### Heuristics & Rules
+- **Type Inference:** Auto-classifies each metadata column (excluding ignored ones) into `categorical` (if `object`, `bool`, `string`, or numeric with `< 15` unique values) or `numerical` (if numeric with `>= 15` unique values).
+- **Metadata Extraction:**
+  - For **Categorical** concepts: Compiles all unique values as a sorted `classes` list (ignoring NaNs).
+  - For **Numerical** concepts: Auto-calculates `min` and `max` scaling bounds (ignoring NaNs).
+- **Type Safety:** Auto-converts numpy datatypes into native Python formats to guarantee serializable outputs.
+
+### CLI Usage Example
+Generate a `concept_config.json` profile for your dataset by ignoring non-concept identifiers:
+```bash
+uv run python generate_concept_config.py \
+    --csv_path data/MILK10K/MILK10k_Test_Metadata.csv \
+    --ignore_cols lesion_id,image_type,isic_id,attribution,copyright_license,image_manipulation \
+    --output_path concept_config.json
 ```
 
 ## Adding a New Dataset
