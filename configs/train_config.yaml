@@ -1,0 +1,98 @@
+# ==============================================================================
+# Model Training Configuration for Attention-CBM Pipeline
+# ==============================================================================
+
+# 1. Backbone Network Settings
+backbone:
+  # Backbone source. Choices: ["timm", "clip"]
+  backbone_type: "timm"
+  
+  # Specific model name from timm. Examples: "resnet18", "resnet50", "convnext_base", "efficientnet_b0"
+  backbone_name: "resnet50"
+  
+  # Freeze pre-trained vision backbone weights to train only the attention bottleneck (true/false)
+  freeze_backbone: false
+  
+  # Freeze final classification head weights (true/false)
+  freeze_head: false
+
+# 2. Dataset Setup
+dataset:
+  # Dataset identifier. Choices: ["milk10k", "derm7pt"]
+  dataset: "milk10k"
+  
+  # Path to metadata CSV. If null, uses the dataset's default training metadata.
+  csv_path: null
+  
+  # Directory containing images. If null, uses the dataset's default image folder.
+  image_dir: null
+  
+  # Path to concept configuration JSON for bottleneck mapping. If null, auto-detects concepts.
+  concept_config_path: "data/MILK10K/concept_config.json"
+
+# 3. Core Training Hyperparameters
+training:
+  # Total number of epochs to train
+  epochs: 20
+  
+  # Batch size for dataloaders
+  batch_size: 16
+  
+  # Loss balancing weight for concepts vs targets (Total Loss = Target Loss + lambda_c * Concept Loss)
+  lambda_c: 1.0
+  
+  # Number of classification target classes. Use 1 for binary classification.
+  num_classes: 1
+  
+  # Directory to save trained model weights
+  save_dir: "checkpoints"
+  
+  # Whether to log runs and visualize attention heatmaps to Weights & Biases (true/false)
+  use_wandb: true
+
+# 4. Optimizer Configurations
+optimizer:
+  # Optimizer type. Choices: ["adam", "adamw", "sgd"]
+  type: "adamw"
+  
+  # Base learning rate
+  lr: 0.001
+  
+  # L2 regularization weight decay
+  weight_decay: 0.0001
+  
+  # Momentum (only applicable when optimizer type is "sgd")
+  momentum: 0.9
+
+# 5. Learning Rate Scheduler Options
+scheduler:
+  # Scheduler type. Choices: ["none", "cosine", "step", "plateau"]
+  type: "cosine"
+  
+  # parameters for "cosine" (CosineAnnealingLR)
+  T_max: 20
+  eta_min: 0.000001
+  
+  # parameters for "step" (StepLR)
+  step_size: 10
+  gamma: 0.1
+  
+  # parameters for "plateau" (ReduceLROnPlateau)
+  patience: 3
+  factor: 0.1
+
+# 6. Early Stopping Criteria
+early_stopping:
+  # Enable early stopping to prevent overfitting (true/false)
+  enabled: true
+  
+  # Target validation metric to monitor.
+  # Choices: ["val_loss", "val_target_loss", "val_concept_loss", "val_acc", "val_concept_acc"]
+  # (Loss metrics are minimized, accuracy/acc metrics are maximized automatically)
+  monitor: "val_loss"
+  
+  # Number of epochs to wait for improvement before stopping
+  patience: 5
+  
+  # Minimum delta change to qualify as an improvement
+  min_delta: 0.001

@@ -1,6 +1,7 @@
 import argparse
 import os
 import datetime
+import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -21,6 +22,41 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+class EarlyStopping:
+    def __init__(self, patience: int = 5, min_delta: float = 0.0, monitor: str = "val_loss"):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.monitor = monitor
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.best_weights = None
+        
+        # Decide direction based on monitor name
+        if "loss" in monitor.lower():
+            self.mode = "min"
+        else:
+            self.mode = "max"
+            
+    def __call__(self, val_score: float, model: nn.Module):
+        score = -val_score if self.mode == "min" else val_score
+        
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(model)
+        elif score < self.best_score + self.min_delta:
+            self.counter += 1
+            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(model)
+            self.counter = 0
+            
+    def save_checkpoint(self, model: nn.Module):
+        self.best_weights = copy.deepcopy(model.state_dict())
+
 def get_dataset_choices():
     data_dir = 'data'
     default_choices = ['milk10k', 'derm7pt']
@@ -33,29 +69,82 @@ def get_dataset_choices():
     return sorted(list(set(choices + default_choices)))
 
 def parse_args():
+    # Stage 1: Parse only the --config_path argument
+    temp_parser = argparse.ArgumentParser(add_help=False)
+    temp_parser.add_argument('--config_path', type=str, default=None)
+    temp_args, _ = temp_parser.parse_known_args()
+    
+    # Load defaults from config file if provided
+    config_data = {}
+    if temp_args.config_path and os.path.exists(temp_args.config_path):
+        ext = os.path.splitext(temp_args.config_path)[1].lower()
+        if ext in ['.yaml', '.yml']:
+            import yaml
+            with open(temp_args.config_path, 'r', encoding='utf-8') as f:
+                config_data = yaml.safe_load(f)
+        else:
+            import json
+            with open(temp_args.config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+        print(f"Loaded training configurations from: {temp_args.config_path}")
+        
+    flat_defaults = {}
+    
+    # backbone
+    bb_cfg = config_data.get("backbone", {})
+    if "backbone_type" in bb_cfg: flat_defaults["backbone_type"] = bb_cfg["backbone_type"]
+    if "backbone_name" in bb_cfg: flat_defaults["backbone_name"] = bb_cfg["backbone_name"]
+    if "freeze_backbone" in bb_cfg: flat_defaults["freeze_backbone"] = bb_cfg["freeze_backbone"]
+    if "freeze_head" in bb_cfg: flat_defaults["freeze_head"] = bb_cfg["freeze_head"]
+    
+    # dataset
+    ds_cfg = config_data.get("dataset", {})
+    if "dataset" in ds_cfg: flat_defaults["dataset"] = ds_cfg["dataset"]
+    if "csv_path" in ds_cfg: flat_defaults["csv_path"] = ds_cfg["csv_path"]
+    if "image_dir" in ds_cfg: flat_defaults["image_dir"] = ds_cfg["image_dir"]
+    if "concept_config_path" in ds_cfg: flat_defaults["concept_config_path"] = ds_cfg["concept_config_path"]
+    
+    # training
+    tr_cfg = config_data.get("training", {})
+    if "epochs" in tr_cfg: flat_defaults["epochs"] = tr_cfg["epochs"]
+    if "batch_size" in tr_cfg: flat_defaults["batch_size"] = tr_cfg["batch_size"]
+    if "lambda_c" in tr_cfg: flat_defaults["lambda_c"] = tr_cfg["lambda_c"]
+    if "num_classes" in tr_cfg: flat_defaults["num_classes"] = tr_cfg["num_classes"]
+    if "save_dir" in tr_cfg: flat_defaults["save_dir"] = tr_cfg["save_dir"]
+    if "use_wandb" in tr_cfg: flat_defaults["use_wandb"] = tr_cfg["use_wandb"]
+    
+    # optimizer basic parameter
+    opt_cfg = config_data.get("optimizer", {})
+    if "lr" in opt_cfg: flat_defaults["lr"] = opt_cfg["lr"]
+    
+    # Stage 2: Create full parser with dynamic defaults
     parser = argparse.ArgumentParser(description="Train a Modular CBM")
     choices = get_dataset_choices()
-    parser.add_argument('--dataset', type=str, default='milk10k', choices=choices)
-    parser.add_argument('--csv_path', type=str, default=None, help="Path to metadata CSV. If omitted, uses dataset default.")
-    parser.add_argument('--image_dir', type=str, default=None, help="Directory containing images. If omitted, uses dataset default.")
-    parser.add_argument('--backbone_type', type=str, default='timm', choices=['timm', 'clip'])
-    parser.add_argument('--backbone_name', type=str, default='resnet50')
-    parser.add_argument('--num_concepts', type=int, default=None, help="Deprecated/optional. Number of concepts is auto-inferred from concept_cols.")
-    parser.add_argument('--concept_cols', type=str, default=None, help="Comma-separated list of concept columns in the CSV. If omitted, auto-detects MONET_ columns.")
-    parser.add_argument('--concept_config_path', type=str, default=None, help="Path to the JSON/YAML concept config file for dynamic CBM bottleneck extraction.")
-    parser.add_argument('--num_classes', type=int, default=1)
-    parser.add_argument('--epochs', type=int, default=1)
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--lambda_c', type=float, default=1.0, help="Weight for the concept loss.")
-    parser.add_argument('--freeze_backbone', action='store_true', help="Freeze vision backbone parameters.")
-    parser.add_argument('--freeze_head', action='store_true', help="Freeze classifier head parameters.")
-    parser.add_argument('--use_wandb', type=str2bool, default=True, help="Whether to use Weights & Biases logging.")
-    parser.add_argument('--save_dir', type=str, default='checkpoints', help="Directory to save model weights.")
-    return parser.parse_args()
+    
+    parser.add_argument('--config_path', type=str, default=None, help="Path to config JSON file")
+    parser.add_argument('--dataset', type=str, default=flat_defaults.get('dataset', 'milk10k'), choices=choices)
+    parser.add_argument('--csv_path', type=str, default=flat_defaults.get('csv_path', None))
+    parser.add_argument('--image_dir', type=str, default=flat_defaults.get('image_dir', None))
+    parser.add_argument('--backbone_type', type=str, default=flat_defaults.get('backbone_type', 'timm'), choices=['timm', 'clip'])
+    parser.add_argument('--backbone_name', type=str, default=flat_defaults.get('backbone_name', 'resnet50'))
+    parser.add_argument('--num_concepts', type=int, default=None)
+    parser.add_argument('--concept_cols', type=str, default=None)
+    parser.add_argument('--concept_config_path', type=str, default=flat_defaults.get('concept_config_path', None))
+    parser.add_argument('--num_classes', type=int, default=flat_defaults.get('num_classes', 1))
+    parser.add_argument('--epochs', type=int, default=flat_defaults.get('epochs', 1))
+    parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
+    parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
+    parser.add_argument('--lambda_c', type=float, default=flat_defaults.get('lambda_c', 1.0))
+    parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
+    parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
+    parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
+    parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
+    
+    args = parser.parse_args()
+    return args, config_data
 
 def main():
-    args = parse_args()
+    args, config_data = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
@@ -124,7 +213,7 @@ def main():
         
     model.to(device)
 
-    # 3. Loss & Optimizer
+    # 3. Loss & Optimizer Setup
     concept_criterion = nn.BCELoss()
     
     if num_classes == 1:
@@ -132,7 +221,53 @@ def main():
     else:
         target_criterion = nn.CrossEntropyLoss()
         
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+    # Configure custom optimizer based on config
+    opt_cfg = config_data.get("optimizer", {})
+    opt_type = opt_cfg.get("type", "adam").lower()
+    weight_decay = opt_cfg.get("weight_decay", 0.0)
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    
+    if opt_type == "adamw":
+        optimizer = optim.AdamW(trainable_params, lr=args.lr, weight_decay=weight_decay)
+        print(f"Initialized AdamW optimizer (lr={args.lr}, weight_decay={weight_decay})")
+    elif opt_type == "sgd":
+        momentum = opt_cfg.get("momentum", 0.9)
+        optimizer = optim.SGD(trainable_params, lr=args.lr, weight_decay=weight_decay, momentum=momentum)
+        print(f"Initialized SGD optimizer (lr={args.lr}, momentum={momentum}, weight_decay={weight_decay})")
+    else:  # default 'adam'
+        optimizer = optim.Adam(trainable_params, lr=args.lr, weight_decay=weight_decay)
+        print(f"Initialized Adam optimizer (lr={args.lr}, weight_decay={weight_decay})")
+        
+    # Configure custom scheduler based on config
+    sched_cfg = config_data.get("scheduler", {})
+    sched_type = sched_cfg.get("type", "none").lower()
+    scheduler = None
+    
+    if sched_type == "cosine":
+        T_max = sched_cfg.get("T_max", args.epochs)
+        eta_min = sched_cfg.get("eta_min", 1e-6)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
+        print(f"Using CosineAnnealingLR scheduler (T_max={T_max}, eta_min={eta_min})")
+    elif sched_type == "step":
+        step_size = sched_cfg.get("step_size", 10)
+        gamma = sched_cfg.get("gamma", 0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
+        print(f"Using StepLR scheduler (step_size={step_size}, gamma={gamma})")
+    elif sched_type == "plateau":
+        patience = sched_cfg.get("patience", 3)
+        factor = sched_cfg.get("factor", 0.1)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=patience, factor=factor)
+        print(f"Using ReduceLROnPlateau scheduler (patience={patience}, factor={factor})")
+        
+    # Configure Early Stopping based on config
+    es_cfg = config_data.get("early_stopping", {})
+    es_handler = None
+    if es_cfg.get("enabled", False):
+        patience = es_cfg.get("patience", 5)
+        min_delta = es_cfg.get("min_delta", 0.0)
+        monitor = es_cfg.get("monitor", "val_loss")
+        es_handler = EarlyStopping(patience=patience, min_delta=min_delta, monitor=monitor)
+        print(f"Early stopping enabled (patience={patience}, min_delta={min_delta}, monitor={monitor})")
 
     # Create timestamp for run names and filenames
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -258,10 +393,43 @@ def main():
         avg_val_concept_acc = val_concept_acc / len(val_loader)
         avg_val_target_acc = val_target_acc / len(val_loader)
         
+        avg_val_loss = avg_val_concept_loss + avg_val_target_loss
+        
         print(f"Epoch {epoch+1}/{args.epochs} | "
               f"Train C-Loss: {avg_concept_loss:.4f} | Train T-Loss: {avg_target_loss:.4f} | "
               f"Val C-Loss: {avg_val_concept_loss:.4f} | Val T-Loss: {avg_val_target_loss:.4f} | "
               f"Val C-Acc: {avg_val_concept_acc:.4f} | Val T-Acc: {avg_val_target_acc:.4f}")
+              
+        # 1. Step Learning Rate Scheduler
+        if scheduler is not None:
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(avg_val_loss)
+            else:
+                scheduler.step()
+                
+        # 2. Evaluate Early Stopping
+        if es_handler is not None:
+            # Map monitor target to metric value
+            monitor_target = es_handler.monitor.lower()
+            if monitor_target == "val_loss":
+                monitor_score = avg_val_loss
+            elif monitor_target == "val_target_loss":
+                monitor_score = avg_val_target_loss
+            elif monitor_target == "val_concept_loss":
+                monitor_score = avg_val_concept_loss
+            elif monitor_target == "val_acc" or monitor_target == "val_t_acc":
+                monitor_score = avg_val_target_acc
+            elif monitor_target == "val_concept_acc" or monitor_target == "val_c_acc":
+                monitor_score = avg_val_concept_acc
+            else:
+                monitor_score = avg_val_loss
+                
+            es_handler(monitor_score, model)
+            
+            if es_handler.early_stop:
+                print(f"\nEarly stopping triggered at Epoch {epoch + 1}! Restoring best weights from {es_handler.monitor}.")
+                model.load_state_dict(es_handler.best_weights)
+                break
               
         if args.use_wandb:
             wandb.log({
@@ -269,7 +437,7 @@ def main():
                 "train/total_loss": avg_concept_loss + avg_target_loss,
                 "train/concept_loss": avg_concept_loss,
                 "train/target_loss": avg_target_loss,
-                "val/total_loss": avg_val_concept_loss + avg_val_target_loss,
+                "val/total_loss": avg_val_loss,
                 "val/concept_loss": avg_val_concept_loss,
                 "val/target_loss": avg_val_target_loss,
                 "val/accuracy": avg_val_target_acc,
