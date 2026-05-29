@@ -12,3 +12,9 @@ wheels/
 # Data and Outputs
 data/
 output/
+
+# Checkpoints & Weights
+checkpoints/
+
+# Weights & Biases
+wandb/

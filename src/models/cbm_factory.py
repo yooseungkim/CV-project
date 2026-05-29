@@ -3,6 +3,53 @@ import torch.nn as nn
 import timm
 import open_clip
 
+class ConceptAttentionLayer(nn.Module):
+    def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
+        super().__init__()
+        self.num_concepts = num_concepts
+        self.feature_dim = feature_dim
+        
+        # Learnable concept queries: [1, num_concepts, feature_dim]
+        self.concept_queries = nn.Parameter(torch.randn(1, num_concepts, feature_dim))
+        
+        # Multihead Attention
+        self.attention = nn.MultiheadAttention(
+            embed_dim=feature_dim,
+            num_heads=num_heads,
+            batch_first=True
+        )
+        
+        # Projection from attended features to a single scalar per concept
+        self.concept_proj = nn.Linear(feature_dim, 1)
+
+    def forward(self, features: torch.Tensor):
+        # features: [B, C, H, W]
+        B, C, H, W = features.shape
+        
+        # Reshape to [B, H*W, C]
+        features_flat = features.flatten(2).transpose(1, 2)
+        
+        # Expand concept queries for the batch: [B, num_concepts, C]
+        queries = self.concept_queries.expand(B, -1, -1)
+        
+        # Cross-attention: queries=[B, num_concepts, C], keys/values=[B, H*W, C]
+        # attn_output: [B, num_concepts, C]
+        # attn_weights: [B, num_concepts, H*W]
+        attn_output, attn_weights = self.attention(
+            query=queries,
+            key=features_flat,
+            value=features_flat
+        )
+        
+        # Project to concept logits: [B, num_concepts, 1] -> [B, num_concepts]
+        concept_logits = self.concept_proj(attn_output).squeeze(-1)
+        
+        # Reshape attention weights to spatial dimensions: [B, num_concepts, H, W]
+        attn_weights = attn_weights.view(B, self.num_concepts, H, W)
+        
+        return concept_logits, attn_weights
+
+
 class UniversalFlexibleCBM(nn.Module):
     def __init__(
         self,
@@ -19,25 +66,34 @@ class UniversalFlexibleCBM(nn.Module):
 
         # 1. Initialize Backbone
         if self.backbone_type == 'timm':
-            self.backbone = timm.create_model(backbone_name, pretrained=pretrained, num_classes=0)
+            # Use global_pool='' to get raw 2D feature maps
+            self.backbone = timm.create_model(
+                backbone_name, 
+                pretrained=pretrained, 
+                num_classes=0, 
+                global_pool=''
+            )
         elif self.backbone_type == 'clip':
-            # For open_clip, backbone_name can be a model name or a huggingface hub id
-            # e.g., "hf-hub:imageomics/bioclip" or "ViT-B-32"
-            model, _, _ = open_clip.create_model_and_transforms(backbone_name)
-            self.backbone = model.visual
+            raise NotImplementedError(
+                "Attention-CBM with raw spatial feature maps is currently only supported "
+                "for 'timm' backbones. Support for 'open_clip' requires custom spatial extraction."
+            )
         else:
             raise ValueError(f"Unsupported backbone_type: {backbone_type}. Use 'timm' or 'clip'.")
 
         # 2. Dynamic Feature Dimension Inference
-        feature_dim = self._infer_feature_dim()
+        feature_dim, spatial_h, spatial_w = self._infer_feature_dim()
 
         # 3. Layer Construction
-        self.projection_layer = nn.Linear(feature_dim, num_concepts)
+        self.concept_attention = ConceptAttentionLayer(
+            feature_dim=feature_dim, 
+            num_concepts=num_concepts
+        )
         self.concept_activation = nn.Sigmoid()
         self.classifier_head = nn.Linear(num_concepts, num_classes)
 
-    def _infer_feature_dim(self) -> int:
-        """Pass a dummy tensor through the backbone to dynamically infer feature dimensions."""
+    def _infer_feature_dim(self) -> tuple[int, int, int]:
+        """Pass a dummy tensor through the backbone to dynamically infer feature and spatial dimensions."""
         dummy_tensor = torch.randn(1, 3, 224, 224)
         
         was_training = self.backbone.training
@@ -45,26 +101,41 @@ class UniversalFlexibleCBM(nn.Module):
         
         with torch.no_grad():
             features = self.backbone(dummy_tensor)
-            # Handle potential tuple outputs from different backbones
             if isinstance(features, tuple):
                 features = features[0]
-            feature_dim = features.shape[-1]
+            
+            # Expected shape for spatial features: [1, C, H, W] (e.g. [1, 2048, 7, 7])
+            if len(features.shape) != 4:
+                raise ValueError(
+                    f"Expected 4D output from backbone [B, C, H, W], but got shape {features.shape}. "
+                    "Ensure the backbone does not apply global average pooling."
+                )
+                
+            _, C, H, W = features.shape
             
         if was_training:
             self.backbone.train()
             
-        return feature_dim
+        return C, H, W
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.backbone(x)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Input tensor shape x: [B, 3, H, W]
+        features = self.backbone(x)  # [B, C, H_attn, W_attn]
         if isinstance(features, tuple):
             features = features[0]
             
-        concept_logits = self.projection_layer(features)
-        concept_probs = self.concept_activation(concept_logits)
-        class_logits = self.classifier_head(concept_probs)
+        # Attention-based concept projection
+        # concept_logits: [B, num_concepts]
+        # attn_weights: [B, num_concepts, H_attn, W_attn]
+        concept_logits, attn_weights = self.concept_attention(features)
         
-        return concept_probs, class_logits
+        # Concept activation (Phase 1 baseline)
+        concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
+        
+        # Final classification target output logits
+        class_logits = self.classifier_head(concept_probs)  # [B, num_classes]
+        
+        return class_logits, concept_logits, attn_weights
 
     def freeze_backbone(self):
         """Freezes the vision backbone parameters."""

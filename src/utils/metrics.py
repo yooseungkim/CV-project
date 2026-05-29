@@ -17,9 +17,11 @@ def calculate_accuracy(outputs: torch.Tensor, targets: torch.Tensor) -> float:
 def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: torch.Tensor) -> float:
     """Calculates average binary accuracy across all concepts.
     Assumes concept_probs are already in [0, 1] (e.g., after Sigmoid).
+    Supports both binary targets and continuous probability/score targets by thresholding.
     """
     preds = (concept_probs > 0.5).float()
-    correct = (preds == concept_targets).float().sum()
+    targets_bin = (concept_targets > 0.5).float()
+    correct = (preds == targets_bin).float().sum()
     total = concept_targets.numel()
     if total == 0:
         return 0.0
