@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data and Outputs
+data/
+output/

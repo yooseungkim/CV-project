@@ -1,0 +1,96 @@
+_wandb:
+    value:
+        cli_version: 0.27.0
+        e:
+            cub3zg3zdhwh2362y8kwduht13z2hcbr:
+                args:
+                    - --backbone_type
+                    - timm
+                    - --backbone_name
+                    - resnet18
+                    - --epochs
+                    - "10"
+                    - --batch_size
+                    - "512"
+                    - --use_wandb
+                    - "True"
+                codePath: main.py
+                codePathLocal: main.py
+                cpu_count: 24
+                cpu_count_logical: 32
+                cudaVersion: "13.2"
+                disk:
+                    /:
+                        total: "1438872838144"
+                        used: "1282348507136"
+                email: yooseungkim@gm.gist.ac.kr
+                executable: /home/yooseung/workspace/CV-project/.venv/bin/python3
+                git:
+                    commit: 87c82bc68d13ca6242f8b04b6563471b38c89d58
+                    remote: https://github.com/yooseungkim/CV-project.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-ff9291c2-7c45-9740-eb5a-90581dc90e42
+                host: yooseung
+                memory:
+                    total: "67186380800"
+                os: Linux-6.8.0-111-generic-x86_64-with-glibc2.35
+                program: /home/yooseung/workspace/CV-project/main.py
+                python: CPython 3.12.13
+                root: /home/yooseung/workspace/CV-project
+                startedAt: "2026-05-29T15:02:12.004039Z"
+                writerId: cub3zg3zdhwh2362y8kwduht13z2hcbr
+        m: []
+        python_version: 3.12.13
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 63
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 63
+            "3":
+                - 2
+                - 16
+            "4": 3.12.13
+            "5": 0.27.0
+            "6": 5.9.0
+            "12": 0.27.0
+            "13": linux-x86_64
+backbone_name:
+    value: resnet18
+backbone_type:
+    value: timm
+batch_size:
+    value: 512
+csv_path:
+    value: data/metadata.csv
+dataset:
+    value: milk10k
+epochs:
+    value: 10
+freeze_backbone:
+    value: false
+freeze_head:
+    value: false
+image_dir:
+    value: data/images
+lr:
+    value: 0.001
+num_classes:
+    value: 1
+num_concepts:
+    value: 7
+use_wandb:
+    value: true

@@ -1,0 +1,12 @@
+Starting training for 10 epoch(s)...
+Epoch 1/10 | C-Loss: 0.6966 | T-Loss: 0.7114 | C-Acc: 0.0000 | T-Acc: 0.4800
+Epoch 2/10 | C-Loss: 0.6964 | T-Loss: 0.6912 | C-Acc: 0.0000 | T-Acc: 0.5400
+Epoch 3/10 | C-Loss: 0.6981 | T-Loss: 0.7110 | C-Acc: 0.0000 | T-Acc: 0.4700
+Epoch 4/10 | C-Loss: 0.6993 | T-Loss: 0.7104 | C-Acc: 0.0000 | T-Acc: 0.4700
+Epoch 5/10 | C-Loss: 0.6960 | T-Loss: 0.7287 | C-Acc: 0.0000 | T-Acc: 0.4000
+Epoch 6/10 | C-Loss: 0.6949 | T-Loss: 0.6871 | C-Acc: 0.0000 | T-Acc: 0.5500
+Epoch 7/10 | C-Loss: 0.6985 | T-Loss: 0.6981 | C-Acc: 0.0000 | T-Acc: 0.5100
+Epoch 8/10 | C-Loss: 0.6927 | T-Loss: 0.6928 | C-Acc: 0.0000 | T-Acc: 0.5300
+Epoch 9/10 | C-Loss: 0.6948 | T-Loss: 0.6899 | C-Acc: 0.0000 | T-Acc: 0.5400
+Epoch 10/10 | C-Loss: 0.6930 | T-Loss: 0.6989 | C-Acc: 0.0000 | T-Acc: 0.5100
+Training complete.
