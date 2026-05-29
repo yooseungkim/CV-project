@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from src.data.milk10k import MILK10KDataset
 from src.data.derm7pt import Derm7PtDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
@@ -113,6 +114,8 @@ def parse_args():
     if "save_dir" in tr_cfg: flat_defaults["save_dir"] = tr_cfg["save_dir"]
     if "use_wandb" in tr_cfg: flat_defaults["use_wandb"] = tr_cfg["use_wandb"]
     if "target_pos_weight" in tr_cfg: flat_defaults["target_pos_weight"] = tr_cfg["target_pos_weight"]
+    if "num_workers" in tr_cfg: flat_defaults["num_workers"] = tr_cfg["num_workers"]
+    if "pin_memory" in tr_cfg: flat_defaults["pin_memory"] = tr_cfg["pin_memory"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -137,6 +140,8 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
     parser.add_argument('--lambda_c', type=float, default=flat_defaults.get('lambda_c', 1.0))
     parser.add_argument('--target_pos_weight', type=float, default=flat_defaults.get('target_pos_weight', 1.0))
+    parser.add_argument('--num_workers', type=int, default=flat_defaults.get('num_workers', 4))
+    parser.add_argument('--pin_memory', type=str2bool, default=flat_defaults.get('pin_memory', True))
     parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
@@ -193,8 +198,20 @@ def main():
 
     print(f"Loaded train dataset '{args.dataset}' with resolved config: {resolved_config}")
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory
+    )
 
     # 2. Model Initialization
     print(f"Initializing UniversalFlexibleCBM with {args.backbone_type} ({args.backbone_name})...")
@@ -322,7 +339,15 @@ def main():
         total_concept_acc = 0.0
         total_target_acc = 0.0
         
-        for batch_idx, (images, concepts, targets) in enumerate(train_loader):
+        # Wrap train loader in tqdm progress bar
+        train_pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch+1}/{args.epochs} [Train]",
+            bar_format="{l_bar}{bar:20}{r_bar}",
+            leave=False
+        )
+        
+        for batch_idx, (images, concepts, targets) in enumerate(train_pbar):
             images = images.to(device)
             concepts = concepts.to(device)
             targets = targets.to(device)
@@ -353,6 +378,12 @@ def main():
             total_concept_acc += calculate_concept_accuracy(concept_probs.detach(), concepts)
             total_target_acc += calculate_accuracy(class_logits.detach(), targets)
             
+            # Update tqdm progress bar description dynamically
+            train_pbar.set_postfix({
+                "C-Loss": f"{loss_c.item():.4f}",
+                "T-Loss": f"{loss_t.item():.4f}"
+            })
+            
         # Train stats
         avg_concept_loss = total_concept_loss / len(train_loader)
         avg_target_loss = total_target_loss / len(train_loader)
@@ -367,8 +398,15 @@ def main():
         val_target_acc = 0.0
         val_visualized = False
         
+        val_pbar = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch+1}/{args.epochs} [Val]",
+            bar_format="{l_bar}{bar:20}{r_bar}",
+            leave=False
+        )
+        
         with torch.no_grad():
-            for val_images, val_concepts, val_targets in val_loader:
+            for val_images, val_concepts, val_targets in val_pbar:
                 val_images = val_images.to(device)
                 val_concepts = val_concepts.to(device)
                 val_targets = val_targets.to(device)
@@ -386,6 +424,12 @@ def main():
                 val_target_loss += v_loss_t.item()
                 val_concept_acc += calculate_concept_accuracy(v_concept_probs, val_concepts)
                 val_target_acc += calculate_accuracy(v_class_logits, val_targets)
+                
+                # Update tqdm progress bar description dynamically
+                val_pbar.set_postfix({
+                    "C-Loss": f"{v_loss_c.item():.4f}",
+                    "T-Loss": f"{v_loss_t.item():.4f}"
+                })
                 
                 # Visual overlay heatmap logging on the first validation batch of each epoch
                 if not val_visualized:

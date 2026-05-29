@@ -36,7 +36,7 @@ training:
   epochs: 30
   
   # Batch size for dataloaders
-  batch_size: 16
+  batch_size: 128
   
   # Loss balancing weight for concepts (Optimized: raised to strongly enforce concept bottleneck learning)
   lambda_c: 5.0
@@ -52,6 +52,12 @@ training:
   
   # Whether to log runs and visualize attention heatmaps to Weights & Biases (true/false)
   use_wandb: true
+  
+  # Number of worker threads for loading data. Set to 4 or 8 depending on CPU cores.
+  num_workers: 16
+  
+  # Pin memory in DataLoader for faster GPU transfer (true/false)
+  pin_memory: true
 
 # 4. Optimizer Configurations
 optimizer:
