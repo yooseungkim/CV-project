@@ -36,7 +36,7 @@ training:
   epochs: 30
   
   # Batch size for dataloaders
-  batch_size: 128
+  batch_size: 64
   
   # Loss balancing weight for concepts (Optimized: raised to strongly enforce concept bottleneck learning)
   lambda_c: 5.0
@@ -58,6 +58,13 @@ training:
   
   # Pin memory in DataLoader for faster GPU transfer (true/false)
   pin_memory: true
+  
+  # Cache all samples in RAM before training. Eliminates disk I/O during epoch iteration.
+  # Only activates if dataset is smaller than max_cache_size_gb. (true/false)
+  cache_in_memory: true
+  
+  # Maximum dataset size (on-disk images) allowed for in-memory caching (in GB).
+  max_cache_size_gb: 10.0
 
 # 4. Optimizer Configurations
 optimizer:

@@ -47,7 +47,7 @@ class EarlyStopping:
             self.save_checkpoint(model)
         elif score < self.best_score + self.min_delta:
             self.counter += 1
-            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            tqdm.write(f"  ⏳ EarlyStopping counter: {self.counter}/{self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -87,7 +87,7 @@ def parse_args():
             import json
             with open(temp_args.config_path, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
-        print(f"Loaded training configurations from: {temp_args.config_path}")
+        tqdm.write(f"  📄 Config loaded: {temp_args.config_path}")
         
     flat_defaults = {}
     
@@ -116,6 +116,8 @@ def parse_args():
     if "target_pos_weight" in tr_cfg: flat_defaults["target_pos_weight"] = tr_cfg["target_pos_weight"]
     if "num_workers" in tr_cfg: flat_defaults["num_workers"] = tr_cfg["num_workers"]
     if "pin_memory" in tr_cfg: flat_defaults["pin_memory"] = tr_cfg["pin_memory"]
+    if "cache_in_memory" in tr_cfg: flat_defaults["cache_in_memory"] = tr_cfg["cache_in_memory"]
+    if "max_cache_size_gb" in tr_cfg: flat_defaults["max_cache_size_gb"] = tr_cfg["max_cache_size_gb"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -146,6 +148,8 @@ def parse_args():
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
+    parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
+    parser.add_argument('--max_cache_size_gb', type=float, default=flat_defaults.get('max_cache_size_gb', 10.0))
     
     args = parser.parse_args()
     return args, config_data
@@ -153,7 +157,15 @@ def parse_args():
 def main():
     args, config_data = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+
+    # Create timestamp and run_name early for consistent naming
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"{args.backbone_name}-cbm-{timestamp}"
+
+    tqdm.write(f"\n{'='*60}")
+    tqdm.write(f"  🚀 Training Run: {run_name}")
+    tqdm.write(f"  📦 Device: {device}")
+    tqdm.write(f"{'='*60}")
 
     # 1. Dataset & DataLoader Factory Setup
     if args.dataset == 'milk10k':
@@ -182,13 +194,17 @@ def main():
         csv_path=args.csv_path,
         image_dir=args.image_dir,
         split='train',
-        config=dataset_config
+        config=dataset_config,
+        cache_in_memory=args.cache_in_memory,
+        max_cache_size_gb=args.max_cache_size_gb
     )
     val_dataset = dataset_class(
         csv_path=args.csv_path,
         image_dir=args.image_dir,
         split='val',
-        config=dataset_config
+        config=dataset_config,
+        cache_in_memory=args.cache_in_memory,
+        max_cache_size_gb=args.max_cache_size_gb
     )
 
     # Use final resolved configuration from dataset instance
@@ -196,7 +212,8 @@ def main():
     num_concepts = resolved_config["num_concepts"]
     num_classes = resolved_config["num_classes"]
 
-    print(f"Loaded train dataset '{args.dataset}' with resolved config: {resolved_config}")
+    tqdm.write(f"  📂 Dataset: {args.dataset} | Concepts: {num_concepts} | Classes: {num_classes}")
+    tqdm.write(f"  📊 Train: {len(train_dataset)} samples | Val: {len(val_dataset)} samples")
 
     train_loader = DataLoader(
         train_dataset, 
@@ -214,7 +231,7 @@ def main():
     )
 
     # 2. Model Initialization
-    print(f"Initializing UniversalFlexibleCBM with {args.backbone_type} ({args.backbone_name})...")
+    tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
@@ -223,12 +240,12 @@ def main():
     )
     
     if args.freeze_backbone:
-        print("Freezing backbone parameters.")
         model.freeze_backbone()
+        tqdm.write("  🔒 Backbone frozen")
         
     if args.freeze_head:
-        print("Freezing classifier head parameters.")
         model.freeze_classifier()
+        tqdm.write("  🔒 Classifier head frozen")
         
     model.to(device)
 
@@ -239,13 +256,10 @@ def main():
         if args.target_pos_weight != 1.0:
             pos_weight = torch.tensor([args.target_pos_weight], dtype=torch.float32, device=device)
             target_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-            print(f"Initialized BCEWithLogitsLoss with target_pos_weight={args.target_pos_weight}")
         else:
             target_criterion = nn.BCEWithLogitsLoss()
-            print("Initialized BCEWithLogitsLoss without target_pos_weight")
     else:
         target_criterion = nn.CrossEntropyLoss()
-        print("Initialized CrossEntropyLoss")
         
     # Configure custom optimizer based on config
     opt_cfg = config_data.get("optimizer", {})
@@ -270,21 +284,18 @@ def main():
             {"params": backbone_trainable, "lr": backbone_lr},
             {"params": head_trainable, "lr": head_lr}
         ]
-        print(f"Applying differential learning rates: backbone_lr={backbone_lr}, head_lr={head_lr}")
     else:
         param_groups = [{"params": filter(lambda p: p.requires_grad, model.parameters()), "lr": args.lr}]
-        print(f"Applying uniform learning rate: lr={args.lr}")
     
     if opt_type == "adamw":
         optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
-        print(f"Initialized AdamW optimizer (weight_decay={weight_decay})")
     elif opt_type == "sgd":
         momentum = opt_cfg.get("momentum", 0.9)
         optimizer = optim.SGD(param_groups, weight_decay=weight_decay, momentum=momentum)
-        print(f"Initialized SGD optimizer (momentum={momentum}, weight_decay={weight_decay})")
     else:  # default 'adam'
         optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
-        print(f"Initialized Adam optimizer (weight_decay={weight_decay})")
+    
+    tqdm.write(f"  ⚙️  Optimizer: {opt_type} | Scheduler: {sched_type}")
         
     # Configure custom scheduler based on config
     sched_cfg = config_data.get("scheduler", {})
@@ -295,17 +306,14 @@ def main():
         T_max = sched_cfg.get("T_max", args.epochs)
         eta_min = sched_cfg.get("eta_min", 1e-6)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
-        print(f"Using CosineAnnealingLR scheduler (T_max={T_max}, eta_min={eta_min})")
     elif sched_type == "step":
         step_size = sched_cfg.get("step_size", 10)
         gamma = sched_cfg.get("gamma", 0.1)
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
-        print(f"Using StepLR scheduler (step_size={step_size}, gamma={gamma})")
     elif sched_type == "plateau":
         patience = sched_cfg.get("patience", 3)
         factor = sched_cfg.get("factor", 0.1)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=patience, factor=factor)
-        print(f"Using ReduceLROnPlateau scheduler (patience={patience}, factor={factor})")
         
     # Configure Early Stopping based on config
     es_cfg = config_data.get("early_stopping", {})
@@ -315,98 +323,80 @@ def main():
         min_delta = es_cfg.get("min_delta", 0.0)
         monitor = es_cfg.get("monitor", "val_loss")
         es_handler = EarlyStopping(patience=patience, min_delta=min_delta, monitor=monitor)
-        print(f"Early stopping enabled (patience={patience}, min_delta={min_delta}, monitor={monitor})")
-
-    # Create timestamp for run names and filenames
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        tqdm.write(f"  🛑 Early stopping: monitor={monitor}, patience={patience}")
 
     # 3b. Weights & Biases Initialization
     if args.use_wandb:
         import wandb
-        print("Initializing Weights & Biases run...")
         wandb.init(
             project="cbm-pipeline",
-            name=f"{args.backbone_name}-cbm-{timestamp}",
+            name=run_name,
             config=vars(args)
         )
+        tqdm.write(f"  📡 W&B run initialized")
 
+    tqdm.write(f"{'='*60}\n")
     # 4. Training Loop
-    print(f"Starting training for {args.epochs} epoch(s)...")
-    for epoch in range(args.epochs):
+    epoch_pbar = tqdm(range(args.epochs), desc="Training", unit="epoch")
+    
+    for epoch in epoch_pbar:
+        # ---- Training Phase ----
         model.train()
         total_concept_loss = 0.0
         total_target_loss = 0.0
         total_concept_acc = 0.0
         total_target_acc = 0.0
         
-        # Wrap train loader in tqdm progress bar
         train_pbar = tqdm(
             train_loader,
-            desc=f"Epoch {epoch+1}/{args.epochs} [Train]",
-            bar_format="{l_bar}{bar:20}{r_bar}",
+            desc=f"  Epoch {epoch+1}/{args.epochs}",
+            bar_format="{l_bar}{bar:25}{r_bar}",
             leave=False
         )
         
-        for batch_idx, (images, concepts, targets) in enumerate(train_pbar):
+        for images, concepts, targets in train_pbar:
             images = images.to(device)
             concepts = concepts.to(device)
             targets = targets.to(device)
             
             optimizer.zero_grad()
             
-            # Forward pass
             class_logits, concept_logits, attn_weights = model(images)
             concept_probs = torch.sigmoid(concept_logits)
             
-            # Loss calculation
             loss_c = concept_criterion(concept_probs, concepts)
-            
             if num_classes == 1:
                 loss_t = target_criterion(class_logits, targets)
             else:
                 loss_t = target_criterion(class_logits, targets.view(-1).long())
-                
             loss = loss_t + args.lambda_c * loss_c
             
-            # Backward and optimize
             loss.backward()
             optimizer.step()
             
-            # Metrics
             total_concept_loss += loss_c.item()
             total_target_loss += loss_t.item()
             total_concept_acc += calculate_concept_accuracy(concept_probs.detach(), concepts)
             total_target_acc += calculate_accuracy(class_logits.detach(), targets)
             
-            # Update tqdm progress bar description dynamically
-            train_pbar.set_postfix({
-                "C-Loss": f"{loss_c.item():.4f}",
-                "T-Loss": f"{loss_t.item():.4f}"
-            })
-            
-        # Train stats
-        avg_concept_loss = total_concept_loss / len(train_loader)
-        avg_target_loss = total_target_loss / len(train_loader)
-        avg_concept_acc = total_concept_acc / len(train_loader)
-        avg_target_acc = total_target_acc / len(train_loader)
+            train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", TL=f"{loss_t.item():.4f}")
         
-        # Validation Evaluation
+        n_train = len(train_loader)
+        avg_concept_loss = total_concept_loss / n_train
+        avg_target_loss = total_target_loss / n_train
+        avg_concept_acc = total_concept_acc / n_train
+        avg_target_acc = total_target_acc / n_train
+        
+        # ---- Validation Phase (no separate progress bar) ----
         model.eval()
         val_concept_loss = 0.0
         val_target_loss = 0.0
         val_concept_acc = 0.0
         val_target_acc = 0.0
-        val_visualized = False
-        
-        val_pbar = tqdm(
-            val_loader,
-            desc=f"Epoch {epoch+1}/{args.epochs} [Val]",
-            bar_format="{l_bar}{bar:20}{r_bar}",
-            leave=False
-        )
+        val_vis_data = None  # store first batch data for visualization
         
         with torch.no_grad():
-            for val_images, val_concepts, val_targets in val_pbar:
+            for val_images, val_concepts, val_targets in val_loader:
                 val_images = val_images.to(device)
                 val_concepts = val_concepts.to(device)
                 val_targets = val_targets.to(device)
@@ -425,55 +415,52 @@ def main():
                 val_concept_acc += calculate_concept_accuracy(v_concept_probs, val_concepts)
                 val_target_acc += calculate_accuracy(v_class_logits, val_targets)
                 
-                # Update tqdm progress bar description dynamically
-                val_pbar.set_postfix({
-                    "C-Loss": f"{v_loss_c.item():.4f}",
-                    "T-Loss": f"{v_loss_t.item():.4f}"
-                })
-                
-                # Visual overlay heatmap logging on the first validation batch of each epoch
-                if not val_visualized:
-                    num_samples = min(4, val_images.size(0))
-                    vis_images = val_images[:num_samples]
-                    vis_attn = v_attn_weights[:num_samples]
-                    
-                    heatmap_images = generate_concept_heatmaps(
-                        image_tensor=vis_images,
-                        attn_weights=vis_attn,
-                        concept_names=resolved_config.get("concepts_flat", resolved_config["concepts"])
-                    )
-                    
-                    # 1. Always save heatmaps locally to 'visualizations/' folder
-                    vis_dir = "visualizations"
-                    os.makedirs(vis_dir, exist_ok=True)
-                    for idx, img in enumerate(heatmap_images):
-                        save_path = os.path.join(vis_dir, f"epoch_{epoch + 1}_sample_{idx + 1}.png")
-                        img.save(save_path)
-                    print(f"Saved {num_samples} validation concept heatmaps locally to '{vis_dir}/' folder.")
-                    
-                    # 2. Log to Weights & Biases if enabled
-                    if args.use_wandb:
-                        import wandb
-                        wandb.log({
-                            "val/concept_heatmaps": [
-                                wandb.Image(img, caption=f"Validation Sample {idx + 1}")
-                                for idx, img in enumerate(heatmap_images)
-                            ]
-                        }, commit=False)
-                    
-                    val_visualized = True
-                
-        avg_val_concept_loss = val_concept_loss / len(val_loader)
-        avg_val_target_loss = val_target_loss / len(val_loader)
-        avg_val_concept_acc = val_concept_acc / len(val_loader)
-        avg_val_target_acc = val_target_acc / len(val_loader)
+                # Capture first batch for visualization
+                if val_vis_data is None:
+                    val_vis_data = (val_images, v_attn_weights)
         
+        n_val = len(val_loader)
+        avg_val_concept_loss = val_concept_loss / n_val
+        avg_val_target_loss = val_target_loss / n_val
+        avg_val_concept_acc = val_concept_acc / n_val
+        avg_val_target_acc = val_target_acc / n_val
         avg_val_loss = avg_val_concept_loss + avg_val_target_loss
         
-        print(f"Epoch {epoch+1}/{args.epochs} | "
-              f"Train C-Loss: {avg_concept_loss:.4f} | Train T-Loss: {avg_target_loss:.4f} | "
-              f"Val C-Loss: {avg_val_concept_loss:.4f} | Val T-Loss: {avg_val_target_loss:.4f} | "
-              f"Val C-Acc: {avg_val_concept_acc:.4f} | Val T-Acc: {avg_val_target_acc:.4f}")
+        # ---- Visualization: save heatmaps to visualizations/{run_name}/{epoch}/ ----
+        if val_vis_data is not None:
+            vis_images, vis_attn = val_vis_data
+            num_samples = min(4, vis_images.size(0))
+            
+            heatmap_images = generate_concept_heatmaps(
+                image_tensor=vis_images[:num_samples],
+                attn_weights=vis_attn[:num_samples],
+                concept_names=resolved_config.get("concepts_flat", resolved_config["concepts"])
+            )
+            
+            # Save locally: visualizations/{run_name}/epoch_{N}/sample_{i}.png
+            epoch_vis_dir = os.path.join("visualizations", run_name, f"epoch_{epoch + 1}")
+            os.makedirs(epoch_vis_dir, exist_ok=True)
+            for idx, img in enumerate(heatmap_images):
+                img.save(os.path.join(epoch_vis_dir, f"sample_{idx + 1}.png"))
+            
+            # Log to W&B if enabled
+            if args.use_wandb:
+                import wandb
+                wandb.log({
+                    "val/concept_heatmaps": [
+                        wandb.Image(img, caption=f"Sample {idx + 1}")
+                        for idx, img in enumerate(heatmap_images)
+                    ]
+                }, commit=False)
+        
+        # ---- Update epoch progress bar with summary ----
+        epoch_pbar.set_postfix(
+            TrCL=f"{avg_concept_loss:.4f}",
+            TrTL=f"{avg_target_loss:.4f}",
+            VaCL=f"{avg_val_concept_loss:.4f}",
+            VaTL=f"{avg_val_target_loss:.4f}",
+            VAcc=f"{avg_val_target_acc:.4f}"
+        )
               
         # 1. Step Learning Rate Scheduler
         if scheduler is not None:
@@ -502,7 +489,7 @@ def main():
             es_handler(monitor_score, model)
             
             if es_handler.early_stop:
-                print(f"\nEarly stopping triggered at Epoch {epoch + 1}! Restoring best weights from {es_handler.monitor}.")
+                tqdm.write(f"\n  🛑 Early stopping at Epoch {epoch + 1}. Restoring best weights.")
                 model.load_state_dict(es_handler.best_weights)
                 break
               
@@ -519,8 +506,6 @@ def main():
                 "val/concept_accuracy": avg_val_concept_acc
             })
               
-    print("Training complete.")
-    
     # Save Model Weights
     mode = "frozen_backbone" if args.freeze_backbone else "full"
     save_subdir = os.path.join(args.save_dir, args.backbone_name)
@@ -528,10 +513,13 @@ def main():
     
     save_filename = f"{timestamp}_cbm_{mode}.pth"
     save_path = os.path.join(save_subdir, save_filename)
-    
-    print(f"Saving model weights to {save_path}...")
     torch.save(model.state_dict(), save_path)
-    print("Weights saved successfully.")
+    
+    tqdm.write(f"\n{'='*60}")
+    tqdm.write(f"  ✅ Training complete!")
+    tqdm.write(f"  💾 Weights saved: {save_path}")
+    tqdm.write(f"  🖼️  Heatmaps saved: visualizations/{run_name}/")
+    tqdm.write(f"{'='*60}")
 
     if args.use_wandb:
         wandb.finish()

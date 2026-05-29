@@ -28,7 +28,9 @@ class MILK10KDataset(BaseDataset):
         image_dir: Optional[str] = None,
         split: str = 'train',
         config: Optional[dict] = None,
-        transform: Optional[transforms.Compose] = None
+        transform: Optional[transforms.Compose] = None,
+        cache_in_memory: bool = False,
+        max_cache_size_gb: float = 10.0
     ):
         """
         Args:
@@ -153,6 +155,12 @@ class MILK10KDataset(BaseDataset):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
+        # In-memory caching
+        self.cache_in_memory = cache_in_memory
+        self._cache = None
+        self._cache_populated = False
+        self._try_populate_cache(max_cache_size_gb=max_cache_size_gb)
+
     def __len__(self) -> int:
         if self.dummy_mode:
             if self.split == 'train':
@@ -163,7 +171,7 @@ class MILK10KDataset(BaseDataset):
                 return 15
         return len(self.df)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _load_sample(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.dummy_mode:
             img_tensor = torch.rand(3, 224, 224)
             img_tensor = self.transform(transforms.ToPILImage()(img_tensor)) if self.transform else img_tensor
