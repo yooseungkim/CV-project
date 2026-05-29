@@ -18,3 +18,6 @@ checkpoints/
 
 # Weights & Biases
 wandb/
+
+# Local Visualizations
+visualizations/

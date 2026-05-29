@@ -221,8 +221,8 @@ def main():
                 val_concept_acc += calculate_concept_accuracy(v_concept_probs, val_concepts)
                 val_target_acc += calculate_accuracy(v_class_logits, val_targets)
                 
-                # Visual overlay heatmap logging on the first batch
-                if args.use_wandb and not val_visualized:
+                # Visual overlay heatmap logging on the first validation batch of each epoch
+                if not val_visualized:
                     num_samples = min(4, val_images.size(0))
                     vis_images = val_images[:num_samples]
                     vis_attn = v_attn_weights[:num_samples]
@@ -233,13 +233,23 @@ def main():
                         concept_names=resolved_config["concepts"]
                     )
                     
-                    import wandb
-                    wandb.log({
-                        "val/concept_heatmaps": [
-                            wandb.Image(img, caption=f"Validation Sample {idx + 1}")
-                            for idx, img in enumerate(heatmap_images)
-                        ]
-                    }, commit=False)
+                    # 1. Always save heatmaps locally to 'visualizations/' folder
+                    vis_dir = "visualizations"
+                    os.makedirs(vis_dir, exist_ok=True)
+                    for idx, img in enumerate(heatmap_images):
+                        save_path = os.path.join(vis_dir, f"epoch_{epoch + 1}_sample_{idx + 1}.png")
+                        img.save(save_path)
+                    print(f"Saved {num_samples} validation concept heatmaps locally to '{vis_dir}/' folder.")
+                    
+                    # 2. Log to Weights & Biases if enabled
+                    if args.use_wandb:
+                        import wandb
+                        wandb.log({
+                            "val/concept_heatmaps": [
+                                wandb.Image(img, caption=f"Validation Sample {idx + 1}")
+                                for idx, img in enumerate(heatmap_images)
+                            ]
+                        }, commit=False)
                     
                     val_visualized = True
                 
