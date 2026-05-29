@@ -112,6 +112,7 @@ def parse_args():
     if "num_classes" in tr_cfg: flat_defaults["num_classes"] = tr_cfg["num_classes"]
     if "save_dir" in tr_cfg: flat_defaults["save_dir"] = tr_cfg["save_dir"]
     if "use_wandb" in tr_cfg: flat_defaults["use_wandb"] = tr_cfg["use_wandb"]
+    if "target_pos_weight" in tr_cfg: flat_defaults["target_pos_weight"] = tr_cfg["target_pos_weight"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -135,6 +136,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
     parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
     parser.add_argument('--lambda_c', type=float, default=flat_defaults.get('lambda_c', 1.0))
+    parser.add_argument('--target_pos_weight', type=float, default=flat_defaults.get('target_pos_weight', 1.0))
     parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
@@ -217,26 +219,55 @@ def main():
     concept_criterion = nn.BCELoss()
     
     if num_classes == 1:
-        target_criterion = nn.BCEWithLogitsLoss()
+        if args.target_pos_weight != 1.0:
+            pos_weight = torch.tensor([args.target_pos_weight], dtype=torch.float32, device=device)
+            target_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            print(f"Initialized BCEWithLogitsLoss with target_pos_weight={args.target_pos_weight}")
+        else:
+            target_criterion = nn.BCEWithLogitsLoss()
+            print("Initialized BCEWithLogitsLoss without target_pos_weight")
     else:
         target_criterion = nn.CrossEntropyLoss()
+        print("Initialized CrossEntropyLoss")
         
     # Configure custom optimizer based on config
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
     weight_decay = opt_cfg.get("weight_decay", 0.0)
-    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    
+    # Differential LR separation
+    backbone_lr = opt_cfg.get("backbone_lr")
+    head_lr = opt_cfg.get("head_lr")
+    
+    if backbone_lr is not None and head_lr is not None:
+        # Separate parameters
+        backbone_params = list(model.backbone.parameters())
+        backbone_param_ids = set(id(p) for p in backbone_params)
+        head_params = [p for p in model.parameters() if id(p) not in backbone_param_ids]
+        
+        # Filter trainable parameters
+        backbone_trainable = [p for p in backbone_params if p.requires_grad]
+        head_trainable = [p for p in head_params if p.requires_grad]
+        
+        param_groups = [
+            {"params": backbone_trainable, "lr": backbone_lr},
+            {"params": head_trainable, "lr": head_lr}
+        ]
+        print(f"Applying differential learning rates: backbone_lr={backbone_lr}, head_lr={head_lr}")
+    else:
+        param_groups = [{"params": filter(lambda p: p.requires_grad, model.parameters()), "lr": args.lr}]
+        print(f"Applying uniform learning rate: lr={args.lr}")
     
     if opt_type == "adamw":
-        optimizer = optim.AdamW(trainable_params, lr=args.lr, weight_decay=weight_decay)
-        print(f"Initialized AdamW optimizer (lr={args.lr}, weight_decay={weight_decay})")
+        optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
+        print(f"Initialized AdamW optimizer (weight_decay={weight_decay})")
     elif opt_type == "sgd":
         momentum = opt_cfg.get("momentum", 0.9)
-        optimizer = optim.SGD(trainable_params, lr=args.lr, weight_decay=weight_decay, momentum=momentum)
-        print(f"Initialized SGD optimizer (lr={args.lr}, momentum={momentum}, weight_decay={weight_decay})")
+        optimizer = optim.SGD(param_groups, weight_decay=weight_decay, momentum=momentum)
+        print(f"Initialized SGD optimizer (momentum={momentum}, weight_decay={weight_decay})")
     else:  # default 'adam'
-        optimizer = optim.Adam(trainable_params, lr=args.lr, weight_decay=weight_decay)
-        print(f"Initialized Adam optimizer (lr={args.lr}, weight_decay={weight_decay})")
+        optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
+        print(f"Initialized Adam optimizer (weight_decay={weight_decay})")
         
     # Configure custom scheduler based on config
     sched_cfg = config_data.get("scheduler", {})
@@ -365,7 +396,7 @@ def main():
                     heatmap_images = generate_concept_heatmaps(
                         image_tensor=vis_images,
                         attn_weights=vis_attn,
-                        concept_names=resolved_config["concepts"]
+                        concept_names=resolved_config.get("concepts_flat", resolved_config["concepts"])
                     )
                     
                     # 1. Always save heatmaps locally to 'visualizations/' folder

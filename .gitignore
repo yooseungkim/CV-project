@@ -10,8 +10,8 @@ wheels/
 .venv
 
 # Data and Outputs
-data/
-output/
+/data/
+/output/
 
 # Checkpoints & Weights
 checkpoints/

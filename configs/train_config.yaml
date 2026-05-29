@@ -1,5 +1,5 @@
 # ==============================================================================
-# Model Training Configuration for Attention-CBM Pipeline
+# Model Training Configuration for Attention-CBM Pipeline (Optimized)
 # ==============================================================================
 
 # 1. Backbone Network Settings
@@ -32,14 +32,17 @@ dataset:
 
 # 3. Core Training Hyperparameters
 training:
-  # Total number of epochs to train
-  epochs: 20
+  # Total number of epochs to train (Optimized: slightly increased since backbone LR is low)
+  epochs: 30
   
   # Batch size for dataloaders
   batch_size: 16
   
-  # Loss balancing weight for concepts vs targets (Total Loss = Target Loss + lambda_c * Concept Loss)
-  lambda_c: 1.0
+  # Loss balancing weight for concepts (Optimized: raised to strongly enforce concept bottleneck learning)
+  lambda_c: 5.0
+  
+  # Penalty multiplier on false positives / minority class imbalance (BCEWithLogitsLoss pos_weight)
+  target_pos_weight: 5.0
   
   # Number of classification target classes. Use 1 for binary classification.
   num_classes: 1
@@ -55,8 +58,11 @@ optimizer:
   # Optimizer type. Choices: ["adam", "adamw", "sgd"]
   type: "adamw"
   
-  # Base learning rate
-  lr: 0.001
+  # Backbone fine-tuning learning rate (Differential LR)
+  backbone_lr: 0.00001
+  
+  # Main attention & classifier heads learning rate
+  head_lr: 0.001
   
   # L2 regularization weight decay
   weight_decay: 0.0001
@@ -69,8 +75,8 @@ scheduler:
   # Scheduler type. Choices: ["none", "cosine", "step", "plateau"]
   type: "cosine"
   
-  # parameters for "cosine" (CosineAnnealingLR)
-  T_max: 20
+  # parameters for "cosine" (CosineAnnealingLR) - matched with T_max epochs
+  T_max: 30
   eta_min: 0.000001
   
   # parameters for "step" (StepLR)
@@ -87,12 +93,11 @@ early_stopping:
   enabled: true
   
   # Target validation metric to monitor.
-  # Choices: ["val_loss", "val_target_loss", "val_concept_loss", "val_acc", "val_concept_acc"]
-  # (Loss metrics are minimized, accuracy/acc metrics are maximized automatically)
-  monitor: "val_loss"
+  # Optimized: "val_target_loss" is highly effective to detect overfitting early during backbone fine-tuning.
+  monitor: "val_target_loss"
   
-  # Number of epochs to wait for improvement before stopping
-  patience: 5
+  # Number of epochs to wait for improvement before stopping (Optimized: increased patience for slow initial convergence)
+  patience: 7
   
   # Minimum delta change to qualify as an improvement
   min_delta: 0.001
