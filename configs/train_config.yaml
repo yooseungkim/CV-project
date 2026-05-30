@@ -39,7 +39,7 @@ training:
   batch_size: 64
   
   # Loss balancing weight for concepts (Optimized: raised to strongly enforce concept bottleneck learning)
-  lambda_c: 1.0
+  lambda_c: 3.0
   
   # Penalty multiplier for binary classification (BCEWithLogitsLoss pos_weight).
   # Only used when num_classes: 1. Ignored for multi-class.

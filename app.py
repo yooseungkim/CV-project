@@ -157,7 +157,7 @@ def run_inference(image: Image.Image):
             val = concept_vals[c_idx]
             # scale value to original physical range for visualization title
             orig_val = group["min"] + (group["max"] - group["min"]) * val
-            if group["min"].is_integer() and group["max"].is_integer():
+            if group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0:
                 orig_val = int(round(orig_val))
             else:
                 orig_val = round(orig_val, 2)
@@ -369,7 +369,7 @@ def build_app() -> gr.Blocks:
                     with gr.Column():
                         for group in col1_groups:
                             if group["type"] == "numerical":
-                                is_int = (group["min"].is_integer() and group["max"].is_integer())
+                                is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
                                 step = 1.0 if is_int else 0.01
                                 comp = gr.Slider(
                                     minimum=group["min"],
@@ -393,7 +393,7 @@ def build_app() -> gr.Blocks:
                     with gr.Column():
                         for group in col2_groups:
                             if group["type"] == "numerical":
-                                is_int = (group["min"].is_integer() and group["max"].is_integer())
+                                is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
                                 step = 1.0 if is_int else 0.01
                                 comp = gr.Slider(
                                     minimum=group["min"],
@@ -447,7 +447,7 @@ def build_app() -> gr.Blocks:
                     # Scale val [0, 1] to [min, max]
                     scaled_val = group["min"] + (group["max"] - group["min"]) * val
                     # Round value for clean display
-                    if group["min"].is_integer() and group["max"].is_integer():
+                    if group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0:
                         scaled_val = int(round(scaled_val))
                     else:
                         scaled_val = round(scaled_val, 4)

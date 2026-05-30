@@ -9,6 +9,7 @@
 - **공간적 컨셉 그라운딩 (Spatial Concept Grounding):** 전역 평균 풀링(GAP) 방식을 버리고, 이미지의 2D 공간 특징 맵 위에 학습 가능한 컨셉 쿼리를 교차 어텐션(Cross-Attention, `nn.MultiheadAttention`)하여 적용함으로써 픽셀 수준의 어텐션 설명 가능성(히트맵)을 완벽히 제공합니다.
 - **다중 질환 분류 파이프라인 (Multi-Class Disease Classification):** 단순 이진 분류(Benign/Malignant)를 넘어 MILK10K의 GroundTruth CSV를 연동하여 11개 핵심 피부 질환 카테고리(`AKIEC`, `BCC`, `BEN_OTH`, `BKL`, `DF`, `INF`, `MAL_OTH`, `MEL`, `NV`, `SCCKA`, `VASC`) 다중 분류 체계로 전면 전환 및 고도화했습니다.
 - **Inverse-Frequency 클래스 불균형 완화:** 극심한 클래스 불균형(예: BCC 2522개 vs. MAL_OTH 9개) 문제를 해결하기 위해, 학습 데이터셋의 분포를 추적해 역빈도 클래스 가중치(Inverse-Frequency Weights)를 계산하고 이를 `nn.CrossEntropyLoss`에 연동했습니다.
+- **모델 정규화 (Dropout):** 컨셉 보틀넥의 예측 활성화 벡터에 `nn.Dropout(p=0.2)` 레이어를 결합하여 가중치 로드의 완벽한 하위 호환성을 유지하면서 노이즈 데이터를 배제하고 타겟 분류 강건성을 대폭 향상했습니다.
 - **Gradio 웹 애플리케이션 및 Human-in-the-Loop 혁신:**
   - **필터링된 컨셉 어텐션 맵 시각화:** 동일 범주에 속하는 컨셉(예: `site_foot`, `site_trunk` 등은 `site` 컨셉 그룹에 대응) 중에서 **가장 높은 예측 확률(argmax)을 획득한 1개의 클래스만 시각화**하여 UI의 복잡함을 없앴습니다 (22개 열 대신 딱 11개 주요 컨셉만 표시).
   - **범주형 드롭다운 컴포넌트:** 여러 개의 무의미한 $[0.0, 1.0]$ 개별 슬라이더를 **통합 드롭다운(Dropdown)**으로 묶어 pre-select하고, 사용자가 값을 바꿀 때 백엔드에서 원-핫 인코딩으로 자동 변환해 줍니다.
@@ -72,21 +73,49 @@ uv sync
 
 ## 주요 사용법 및 명령어 예시
 
-### 1) 2단계 연쇄 연속 학습 (컨셉 고정 ➡️ 분류기 정확도 튜닝)
+`main.py` 진입점을 활용하여 학습 파이프라인을 실행합니다. 학습 시 `--config_path`에 정의된 YAML 설정값을 기반으로 레이아웃과 파라미터가 최적화되어 자동 설정됩니다.
 
-`--save_filename` 및 `--resume_checkpoint` 옵션을 사용하여 두 단계의 학습을 하나의 파이프라인으로 연결하여 터미널에 입력할 수 있습니다:
-- **1단계:** 10에포크 동안 높은 규제치(`lambda_c = 5.0`)로 강하게 컨셉 병목 구조를 형성하여 `phase1_cbm.pth`에 저장합니다.
-- **2단계:** 1단계 모델을 바로 이어서 로드한 후, 규제를 낮추어(`lambda_c = 0.5`) 10에포크 동안 추가 학습해 최종 질환 분류 성능을 끌어올려 `phase2_cbm.pth`로 마무리합니다.
+### 1) 기본 CBM 학습 (설정 파일 값 그대로 사용)
+비전 백본, 컨셉 어텐션 쿼리, 최종 분류기 헤드를 `configs/train_config.yaml`에 정의된 기본 최적 파라미터 규격으로 일괄 학습합니다:
+```bash
+uv run python main.py --config_path configs/train_config.yaml
+```
+
+### 2) 기본 CBM 학습과 CLI 파라미터 덮어쓰기 (Overrides)
+기본 설정을 기반으로 하되, 특정 파라미터(에포크, 배치 사이즈, 컨셉 가중치, 메인 헤드 학습률 등)만 명령행에서 동적으로 조절하여 기동합니다:
+```bash
+uv run python main.py \
+    --config_path configs/train_config.yaml \
+    --epochs 15 \
+    --batch_size 32 \
+    --lambda_c 3.0 \
+    --lr 0.0005
+```
+
+### 3) 순차 학습: 비전 백본 동결 (Backbone Freeze)
+이미 검증된 비전 백본 특징 추출기 가중치를 완전 동결하고, **오직** 교차 공간 어텐션 레이어와 분류 헤드만을 학습시킵니다 (백본 손상 방지 및 학습 속도 대폭 개선):
+```bash
+uv run python main.py --config_path configs/train_config.yaml --freeze_backbone
+```
+
+### 4) 순차 학습: 분류기 헤드 동결 (Classifier Head Freeze)
+최종 분류기 헤드를 고정시키고 **오직** 비전 백본 미세조정(Fine-tuning) 및 어텐션 컨셉 그라운딩 레이어만 업데이트합니다:
+```bash
+uv run python main.py --config_path configs/train_config.yaml --freeze_head
+```
+
+### 5) 2단계 연쇄 연속 학습 (Sequential Schedule Training)
+`--save_filename` 및 `--resume_checkpoint` 옵션을 사용하여 여러 단계의 학습을 연쇄적으로 결합하여 기동합니다.
+- **1단계:** 10에포크 동안 높은 컨셉 규제치(`lambda_c = 5.0`)로 강하게 컨셉 보틀넥 특징을 강제 주입하여 `phase1_cbm.pth`에 저장합니다.
+- **2단계:** 1단계 모델을 이어서 로드한 후, 규제를 대폭 완화하여(`lambda_c = 0.5`) 추가 10에포크 동안 최종 예측 정확도를 끌어올리고 `phase2_cbm.pth`로 완성합니다.
 
 ```bash
 uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 5.0 --save_filename phase1_cbm.pth && \
 uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 0.5 --resume_checkpoint checkpoints/resnet50/phase1_cbm.pth --save_filename phase2_cbm.pth
 ```
 
-### 2) Gradio 인터랙티브 앱 기동 (Human-in-the-Loop 검증)
-
-학습이 끝난 최고 성능 모델 파일을 지정하고 클래스 규격을 맞춰 Gradio 탐색기 앱을 즉시 엽니다:
-
+### 6) Gradio 인터랙티브 앱 기동 (Human-in-the-Loop 검증)
+학습이 끝난 최종 체크포인트 파일을 지정하고 클래스 규격을 맞춰 Gradio 탐색기 웹 인터페이스를 기동합니다:
 ```bash
 uv run python app.py --checkpoint checkpoints/resnet50/phase2_cbm.pth --num_classes 11 --port 7860
 ```
