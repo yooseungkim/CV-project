@@ -19,13 +19,14 @@ dataset:
 # 3. Core Training Hyperparameters
 training:
   epochs: 20
-  batch_size: 16  # Optimized for derm7pt split sizes
-  lambda_c: 3.0   # Scale factor for concept loss
+  batch_size: 64  # Optimized for derm7pt split sizes
+  lambda_c: 0.1  # Scale factor for concept loss
+  latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 20  # 20 unique diagnoses
   save_dir: "checkpoints"
   resume_checkpoint: null
-  use_wandb: false  # Disable by default for local execution
-  num_workers: 4
+  use_wandb: true  # Disable by default for local execution
+  num_workers: 16
   pin_memory: true
   cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
   max_cache_size_gb: 10.0

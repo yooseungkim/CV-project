@@ -119,6 +119,7 @@ def parse_args():
     if "cache_in_memory" in tr_cfg: flat_defaults["cache_in_memory"] = tr_cfg["cache_in_memory"]
     if "max_cache_size_gb" in tr_cfg: flat_defaults["max_cache_size_gb"] = tr_cfg["max_cache_size_gb"]
     if "resume_checkpoint" in tr_cfg: flat_defaults["resume_checkpoint"] = tr_cfg["resume_checkpoint"]
+    if "latent_concepts" in tr_cfg: flat_defaults["latent_concepts"] = tr_cfg["latent_concepts"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -137,6 +138,7 @@ def parse_args():
     parser.add_argument('--num_concepts', type=int, default=None)
     parser.add_argument('--concept_cols', type=str, default=None)
     parser.add_argument('--concept_config_path', type=str, default=flat_defaults.get('concept_config_path', None))
+    parser.add_argument('--latent_concepts', '--latent-concepts', type=int, default=flat_defaults.get('latent_concepts', 0), help="Number of unsupervised latent concepts to append to the bottleneck")
     parser.add_argument('--num_classes', type=int, default=flat_defaults.get('num_classes', 1))
     parser.add_argument('--epochs', type=int, default=flat_defaults.get('epochs', 1))
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
@@ -212,10 +214,11 @@ def main():
 
     # Use final resolved configuration from dataset instance
     resolved_config = train_dataset.config
-    num_concepts = resolved_config["num_concepts"]
+    num_concepts_supervised = resolved_config["num_concepts"]
+    num_concepts_total = num_concepts_supervised + args.latent_concepts
     num_classes = resolved_config["num_classes"]
 
-    tqdm.write(f"  📂 Dataset: {args.dataset} | Concepts: {num_concepts} | Classes: {num_classes}")
+    tqdm.write(f"  📂 Dataset: {args.dataset} | Supervised Concepts: {num_concepts_supervised} | Latent Concepts: {args.latent_concepts} | Classes: {num_classes}")
     tqdm.write(f"  📊 Train: {len(train_dataset)} samples | Val: {len(val_dataset)} samples")
     
     # Log target class names if available
@@ -240,10 +243,11 @@ def main():
 
     # 2. Model Initialization
     tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")
+    tqdm.write(f"  🧬 Concepts - Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
-        num_concepts=num_concepts,
+        num_concepts=num_concepts_total,
         num_classes=num_classes
     )
     
@@ -415,7 +419,7 @@ def main():
             class_logits, concept_logits, attn_weights = model(images)
             concept_probs = torch.sigmoid(concept_logits)
             
-            loss_c = concept_criterion(concept_probs, concepts)
+            loss_c = concept_criterion(concept_probs[:, :num_concepts_supervised], concepts)
             if num_classes == 1:
                 loss_t = target_criterion(class_logits, targets)
             else:
@@ -427,7 +431,7 @@ def main():
             
             total_concept_loss += loss_c.item()
             total_target_loss += loss_t.item()
-            total_concept_acc += calculate_concept_accuracy(concept_probs.detach(), concepts)
+            total_concept_acc += calculate_concept_accuracy(concept_probs[:, :num_concepts_supervised].detach(), concepts)
             total_target_acc += calculate_accuracy(class_logits.detach(), targets)
             
             train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", TL=f"{loss_t.item():.4f}")
@@ -457,7 +461,7 @@ def main():
                 v_class_logits, v_concept_logits, v_attn_weights = model(val_images)
                 v_concept_probs = torch.sigmoid(v_concept_logits)
                 
-                v_loss_c = concept_criterion(v_concept_probs, val_concepts)
+                v_loss_c = concept_criterion(v_concept_probs[:, :num_concepts_supervised], val_concepts)
                 if num_classes == 1:
                     v_loss_t = target_criterion(v_class_logits, val_targets)
                 else:
@@ -465,10 +469,10 @@ def main():
                 
                 val_concept_loss += v_loss_c.item()
                 val_target_loss += v_loss_t.item()
-                val_concept_acc += calculate_concept_accuracy(v_concept_probs, val_concepts)
+                val_concept_acc += calculate_concept_accuracy(v_concept_probs[:, :num_concepts_supervised], val_concepts)
                 val_target_acc += calculate_accuracy(v_class_logits, val_targets)
                 
-                all_val_concept_probs.append(v_concept_probs.cpu())
+                all_val_concept_probs.append(v_concept_probs[:, :num_concepts_supervised].cpu())
                 all_val_concept_targets.append(val_concepts.cpu())
                 
                 # Capture first batch for visualization
@@ -488,7 +492,7 @@ def main():
             val_concept_probs_all = torch.cat(all_val_concept_probs, dim=0)
             val_concept_targets_all = torch.cat(all_val_concept_targets, dim=0)
             concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
-            for c in range(num_concepts):
+            for c in range(num_concepts_supervised):
                 name = concepts_list[c] if c < len(concepts_list) else f"Concept_{c}"
                 preds_c = (val_concept_probs_all[:, c] > 0.5).float()
                 targets_c = (val_concept_targets_all[:, c] > 0.5).float()
@@ -498,7 +502,7 @@ def main():
             # Log struggling concepts to console
             sorted_concept_accs = sorted(
                 [(concepts_list[c] if c < len(concepts_list) else f"Concept_{c}", val_individual_concept_accs[f"val_concept_acc/{concepts_list[c] if c < len(concepts_list) else f'Concept_{c}'}"])
-                 for c in range(num_concepts)],
+                 for c in range(num_concepts_supervised)],
                 key=lambda x: x[1]
             )
             lowest_3_str = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
@@ -511,7 +515,7 @@ def main():
             
             heatmap_images = generate_concept_heatmaps(
                 image_tensor=vis_images[:num_samples],
-                attn_weights=vis_attn[:num_samples],
+                attn_weights=vis_attn[:num_samples, :num_concepts_supervised],
                 concept_names=resolved_config.get("concepts_flat", resolved_config["concepts"])
             )
             
@@ -594,7 +598,8 @@ def main():
     if args.save_filename:
         save_filename = args.save_filename
     else:
-        save_filename = f"{timestamp}_cbm_{mode}.pth"
+        simple_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        save_filename = f"{args.dataset}_{args.backbone_name}_latent{args.latent_concepts}_{simple_timestamp}.pt"
     save_path = os.path.join(save_subdir, save_filename)
     torch.save(model.state_dict(), save_path)
     
