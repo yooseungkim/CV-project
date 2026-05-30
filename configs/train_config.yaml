@@ -39,16 +39,20 @@ training:
   batch_size: 64
   
   # Loss balancing weight for concepts (Optimized: raised to strongly enforce concept bottleneck learning)
-  lambda_c: 5.0
+  lambda_c: 1.0
   
-  # Penalty multiplier on false positives / minority class imbalance (BCEWithLogitsLoss pos_weight)
-  target_pos_weight: 5.0
+  # Penalty multiplier for binary classification (BCEWithLogitsLoss pos_weight).
+  # Only used when num_classes: 1. Ignored for multi-class.
+  # target_pos_weight: 5.0
   
-  # Number of classification target classes. Use 1 for binary classification.
-  num_classes: 1
+  # Number of classification target classes. Use 1 for binary, 11 for MILK10K multi-class.
+  num_classes: 11
   
   # Directory to save trained model weights
   save_dir: "checkpoints"
+  
+  # Path to pre-trained model weights (.pth) to resume or fine-tune from. Set null to train from scratch.
+  resume_checkpoint: null
   
   # Whether to log runs and visualize attention heatmaps to Weights & Biases (true/false)
   use_wandb: true

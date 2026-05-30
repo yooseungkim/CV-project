@@ -4,87 +4,103 @@
 
 ---
 
-## 1. 주요 특징 및 모델 구조
+## 🚀 주요 프리미엄 핵심 기능
 
-기존의 전역 평균 풀링(Global Average Pooling, GAP) 방식을 버리고, 이미지의 특정 공간 영역을 각 컨셉이 학습하여 바라볼 수 있도록 **교차 어텐션(Cross-Attention) 메커니즘**을 도입하였습니다. 이를 통해 픽셀 수준의 설명 가능성(Heatmap 시각화)을 보장합니다.
-
-### 💡 공간적 컨셉 그라운딩 (Spatial Concept Grounding)
-- **ConceptAttentionLayer:** `nn.MultiheadAttention`을 기반으로 설계되었습니다.
-- **Concept Queries:** 학습 가능한 파라미터 `[1, num_concepts, feature_dim]`가 어텐션의 쿼리(Query)로 작동합니다.
-- **Spatial Keys & Values:** GAP를 거치지 않은 백본의 2D 공간 특징 맵 `[B, C, H, W]`을 `[B, H*W, C]` 형상으로 변환하여 키(Key) 및 값(Value)으로 입력합니다.
-- **Explainability:** 컨셉별 어텐션 가중치 `[B, num_concepts, H, W]`가 함께 반환되므로, 특정 컨셉을 예측할 때 모델이 이미지의 어떤 영역(Patch)을 집중했는지 히트맵으로 시각화할 수 있습니다.
-
-### ⚙️ 유연한 백본 지원 (timm)
-- `timm` 라이브러리를 통해 다양한 최신 백본 네트워크를 지원합니다.
-- 어텐션 적용을 위해 `global_pool=''` 옵션을 통해 전역 풀링을 바이패스하고 원본 2D 피처 맵을 그대로 추출합니다.
-- 입력 이미지 해상도에 맞춰 특징 차원 `C`와 공간 차원 `(H, W)`을 동적으로 추론하므로 별도의 하드코딩이 필요 없습니다.
-- *(참고: open_clip은 2D 공간 특징 맵 추출 방식의 일관성 문제로 현재 Attention-CBM에서는 지원되지 않으며, timm 백본 사용을 권장합니다.)*
-
-### 📉 하이브리드 손실 함수 (Hybrid Loss Training)
-- 분류 대상 타겟 손실 함수(Target Classification Loss)와 보틀넥 컨셉 손실 함수(Concept Loss)를 결합한 하이브리드 손실을 학습합니다.
-- `--lambda_c` 가중치 인자를 통해 컨셉 학습의 강도를 손쉽게 조절할 수 있습니다.
+- **공간적 컨셉 그라운딩 (Spatial Concept Grounding):** 전역 평균 풀링(GAP) 방식을 버리고, 이미지의 2D 공간 특징 맵 위에 학습 가능한 컨셉 쿼리를 교차 어텐션(Cross-Attention, `nn.MultiheadAttention`)하여 적용함으로써 픽셀 수준의 어텐션 설명 가능성(히트맵)을 완벽히 제공합니다.
+- **다중 질환 분류 파이프라인 (Multi-Class Disease Classification):** 단순 이진 분류(Benign/Malignant)를 넘어 MILK10K의 GroundTruth CSV를 연동하여 11개 핵심 피부 질환 카테고리(`AKIEC`, `BCC`, `BEN_OTH`, `BKL`, `DF`, `INF`, `MAL_OTH`, `MEL`, `NV`, `SCCKA`, `VASC`) 다중 분류 체계로 전면 전환 및 고도화했습니다.
+- **Inverse-Frequency 클래스 불균형 완화:** 극심한 클래스 불균형(예: BCC 2522개 vs. MAL_OTH 9개) 문제를 해결하기 위해, 학습 데이터셋의 분포를 추적해 역빈도 클래스 가중치(Inverse-Frequency Weights)를 계산하고 이를 `nn.CrossEntropyLoss`에 연동했습니다.
+- **Gradio 웹 애플리케이션 및 Human-in-the-Loop 혁신:**
+  - **필터링된 컨셉 어텐션 맵 시각화:** 동일 범주에 속하는 컨셉(예: `site_foot`, `site_trunk` 등은 `site` 컨셉 그룹에 대응) 중에서 **가장 높은 예측 확률(argmax)을 획득한 1개의 클래스만 시각화**하여 UI의 복잡함을 없앴습니다 (22개 열 대신 딱 11개 주요 컨셉만 표시).
+  - **범주형 드롭다운 컴포넌트:** 여러 개의 무의미한 $[0.0, 1.0]$ 개별 슬라이더를 **통합 드롭다운(Dropdown)**으로 묶어 pre-select하고, 사용자가 값을 바꿀 때 백엔드에서 원-핫 인코딩으로 자동 변환해 줍니다.
+  - **실제 물리 스케일 슬라이더:** 수치형 컨셉(예: 나이)은 `concept_config.json` 내의 실제 연령 범위($5$ ~ $85$세) 및 MONET 컨셉 실수 스케일을 추적해 구현되었습니다.
+    * *순방향 예측:* 모델의 $[0, 1]$ 시그모이드 출력을 실제 연령/스케일 값으로 복원하여 입력창에 표시합니다.
+    * *역방향 개입:* 사용자가 조정한 실제 값을 다시 $[0, 1]$ 범위로 정규화(Min-Max)해 모델 헤드에 인코딩 주입합니다.
+  - **초압축 2열(2-column) 레이아웃:** 콤팩트하게 다듬은 CSS와 좌우 2열 배치 그리드를 설계하여, 스크롤 없이 전체 조절 박스가 한눈에 들어오도록 고급스럽게 디자인했습니다.
+- **강력한 전이 학습 및 모델 재개 (Resume Checkpoint):**
+  - CLI 및 YAML 설정 파일에 `--resume_checkpoint` 옵션을 추가했습니다.
+  - **하이브리드 가중치 로드 전략**을 적용하여 일치 시 `strict=True`로 로드하고, 분류 헤드 변경 등 형상이 달라지면 `strict=False`로 전환해 백본과 컨셉 어텐션 레이어만 전이(Fine-tuning)될 수 있도록 처리했습니다.
+- **유연한 가중치 파일명 지정:** `--save_filename` 인자를 지원하여 다단계 연쇄 학습 파이프라인 스크립팅을 자동화했습니다.
+- **상세 컨셉 학습 모니터링:**
+  - 검증 에포크가 끝날 때마다 **22개 개별 컨셉의 고유 검증 정확도**를 W&B에 개별로 전송합니다 (`val_concept_acc/{concept_name}`).
+  - 터미널 창에 현재 모델이 가장 학습을 어려워하는 **Struggling Concepts Top-3**를 실시간 분석해 실시간 출력합니다.
+- **초고속 RAM 메모리 캐싱:** `cache_in_memory: true` 지원으로 대용량 학습 시 디스크 I/O 병목을 완벽하게 제거했습니다.
 
 ---
 
-## 2. 실행 방법 (Usage Examples)
-
-`main.py` 진입점을 활용하여 학습 파이프라인을 실행합니다. 제공된 컨셉 설정 파일(`--concept_config_path`)의 데이터 규격에 맞추어 보틀넥 레이어가 자동으로 설정됩니다.
-
-### 1) timm 백본을 활용한 기본 학습 (ResNet50)
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name resnet50 \
-    --lambda_c 1.0 \
-    --num_classes 1 \
-    --epochs 5 \
-    --batch_size 16
+## 디렉토리 구조
 ```
-
-### 2) 순차 학습 (비전 백본 가중치 동결)
-비전 백본을 동결(Freeze)하고 어텐션 쿼리, 프로젝션 레이어 및 최종 분류 헤드만 학습시키는 모드입니다.
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name convnext_base \
-    --freeze_backbone
-```
-
-### 3) Weights & Biases (wandb) 로깅 및 백본 구분
-기본적으로 wandb 로깅이 활성화되어 있으며, 각 실험(run)의 이름은 다음과 같이 백본명과 실행 타임스탬프를 조합하여 자동으로 가독성 있게 생성됩니다.
-- 예: `resnet50-cbm-20260530_010616`
-
-또한, `main.py`에 넘겨진 모든 CLI 인자(`backbone_name`, `backbone_type`, `lambda_c` 등)가 wandb의 `config`에 자동으로 로깅되므로, W&B 대시보드 내에서 각 실험이 어떤 백본을 사용했는지 필터링, 그룹화 및 확인이 가능합니다.
-
-wandb 로깅을 비활성화하려면 `--use_wandb False` 옵션을 전달합니다.
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name resnet50 \
-    --use_wandb False
+project_root/
+├── checkpoints/            # 학습된 백본 모델별 가중치 저장소
+├── configs/
+│   └── train_config.yaml   # 에포크, LR, 옵티마이저, 스케줄러, 얼리스톱 통합 설정 YAML
+├── data/                   # (git 제외) MILK10K 로우 데이터 저장소
+├── src/
+│   ├── data/
+│   │   ├── __init__.py
+│   │   ├── base_dataset.py # 추상 데이터셋 기본 클래스
+│   │   └── milk10k.py      # MILK10K 다중 클래스 데이터셋 로더
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── cbm_factory.py  # UniversalFlexibleCBM 레이아웃 빌더
+│   └── utils/
+│       ├── __init__.py
+│       └── metrics.py      # 정확도 및 평가지표 연산 유틸
+├── app.py                  # Gradio 인터랙티브 웹 익스플로러 어플리케이션
+├── generate_concept_config.py # 메타데이터 기반 컨셉 설정 추출기
+├── main.py                 # 학습 및 평가 통합 진입점 스크립트
+├── requirements.txt        # 종속성 파일
+└── README_KR.md
 ```
 
 ---
 
-## 3. 모델 가중치 저장 (Model Weight Saving)
+## 환경 설정
 
-학습이 완료되면, 모델의 가중치(`state_dict`)가 지정한 `--save_dir` 디렉토리 아래에 **백본 이름별 서브디렉토리**로 구분되어 자동으로 저장됩니다. 파일명에는 실행 시점의 타임스탬프와 백본 가중치 동결 여부(mode)가 포함되어 구분됩니다.
+본 프로젝트는 종속성 관리 및 빌드 도구로 `uv`를 사용합니다.
 
-- **기본 저장 디렉토리:** `checkpoints/{backbone_name}/`
-- **저장 파일명 규칙:** `{YYYYMMDD_HHMMSS}_cbm_{mode}.pth` (예: `20260530_010616_cbm_full.pth` 또는 `20260530_011045_cbm_frozen_backbone.pth`)
-- **CLI 옵션으로 저장 경로 변경:** `--save_dir [경로]` (기본값: `checkpoints`)
+```bash
+# uv 초기화 (필요한 경우)
+uv init --python 3.12
+
+# 종속성 패키지 동기화 및 가상환경 설치
+uv sync
+```
+
+*(만약 `uv`를 사용하지 않으신다면 `pip install -r requirements.txt` 명령어를 실행하십시오)*
 
 ---
 
-## 3. 컨셉 설정 파일 자동 생성 (Auto-Generating Concept Config)
+## 주요 사용법 및 명령어 예시
 
-제공된 `generate_concept_config.py` 스크립트를 사용하여 데이터셋의 메타데이터 CSV 파일 분석 결과를 기반으로 어텐션 보틀넥에 전달할 JSON 형식의 설정 파일을 자동으로 생성할 수 있습니다.
+### 1) 2단계 연쇄 연속 학습 (컨셉 고정 ➡️ 분류기 정확도 튜닝)
+
+`--save_filename` 및 `--resume_checkpoint` 옵션을 사용하여 두 단계의 학습을 하나의 파이프라인으로 연결하여 터미널에 입력할 수 있습니다:
+- **1단계:** 10에포크 동안 높은 규제치(`lambda_c = 5.0`)로 강하게 컨셉 병목 구조를 형성하여 `phase1_cbm.pth`에 저장합니다.
+- **2단계:** 1단계 모델을 바로 이어서 로드한 후, 규제를 낮추어(`lambda_c = 0.5`) 10에포크 동안 추가 학습해 최종 질환 분류 성능을 끌어올려 `phase2_cbm.pth`로 마무리합니다.
+
+```bash
+uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 5.0 --save_filename phase1_cbm.pth && \
+uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 0.5 --resume_checkpoint checkpoints/resnet50/phase1_cbm.pth --save_filename phase2_cbm.pth
+```
+
+### 2) Gradio 인터랙티브 앱 기동 (Human-in-the-Loop 검증)
+
+학습이 끝난 최고 성능 모델 파일을 지정하고 클래스 규격을 맞춰 Gradio 탐색기 앱을 즉시 엽니다:
+
+```bash
+uv run python app.py --checkpoint checkpoints/resnet50/phase2_cbm.pth --num_classes 11 --port 7860
+```
+
+웹 브라우저로 [http://127.0.0.1:7860](http://127.0.0.1:7860)에 접속하여 다음 기능을 누릴 수 있습니다:
+1. 피부 질환 사진을 드래그하여 업로드하면 **예측 확률이 높은 Top-3 질환**을 즉시 표시합니다.
+2. 불필요한 노이즈가 제거되고 **예측된 최적 범주에 대한 컨셉 어텐션 시각화 히트맵**만 직관적으로 확인합니다.
+3. 성별/부위 등의 임상 인자는 **드롭다운**으로, 나이 등은 **실물 단위 슬라이더**로 손쉽게 값을 수동 개입하여 예측이 어떻게 달라지는지 웹 UI에서 실시간 실험해 봅니다.
+
+---
+
+## 컨셉 보틀넥 설정 파일 자동 생성
+
+커스텀 데이터셋을 활용할 경우, `generate_concept_config.py` 스크립트를 돌려 데이터의 메타데이터 CSV를 완벽히 자동 스캔하여 JSON 규격의 CBM 가이드 파일을 얻을 수 있습니다:
 
 ```bash
 uv run python generate_concept_config.py \
@@ -92,6 +108,3 @@ uv run python generate_concept_config.py \
     --ignore_cols lesion_id,image_type,isic_id,attribution,copyright_license,image_manipulation \
     --output_path concept_config.json
 ```
-
-> [!TIP]
-> **수동 수정 가이드:** 스크립트로 자동 생성된 JSON/YAML 파일은 훌륭한 초기 기준점을 제공합니다. 생성 후 범주형(Categorical)과 수치형(Numerical) 타입을 바꾸거나, min-max 경계 조정, 불필요한 컨셉 가지치기 등 자유롭게 직접 열어 수동 조정하여 사용할 수 있습니다.

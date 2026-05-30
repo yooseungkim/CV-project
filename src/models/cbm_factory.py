@@ -90,6 +90,7 @@ class UniversalFlexibleCBM(nn.Module):
             num_concepts=num_concepts
         )
         self.concept_activation = nn.Sigmoid()
+        self.dropout = nn.Dropout(p=0.2)
         self.classifier_head = nn.Linear(num_concepts, num_classes)
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:
@@ -132,8 +133,11 @@ class UniversalFlexibleCBM(nn.Module):
         # Concept activation (Phase 1 baseline)
         concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
         
+        # Apply dropout to regularize concept predictions
+        concept_probs_dropout = self.dropout(concept_probs)
+        
         # Final classification target output logits
-        class_logits = self.classifier_head(concept_probs)  # [B, num_classes]
+        class_logits = self.classifier_head(concept_probs_dropout)  # [B, num_classes]
         
         return class_logits, concept_logits, attn_weights
 

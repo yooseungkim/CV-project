@@ -2,34 +2,57 @@
 
 This project provides a highly modular, dataset-agnostic Attention-Based Concept Bottleneck Model (Attention-CBM) pipeline designed for medical and fine-grained visual categorization. 
 
-## Features
+---
+
+## 🚀 Key Premium Features
+
 - **Spatial Concept Grounding:** Uses a Cross-Attention mechanism (`nn.MultiheadAttention`) with learnable concept queries over 2D spatial feature maps, completely replacing Global Average Pooling (GAP) for pixel-level explainability.
-- **Universal Flexible Backbone:** Built primarily for `timm` backbones (which dynamically preserve spatial dimensions via `global_pool=''`). The model dynamically infers feature dimensions, requiring no hardcoded values.
-- **Unified Data Pipeline:** Abstract `BaseDataset` ensures all loaders produce a standardized tuple `(image_tensor, concept_labels_tensor, target_label_tensor)` and support unified `dataset_config` parameterization.
-- **Dynamic Config Inference:** Standalone utility script to auto-generate CBM concept configs by analyzing dataset metadata CSV profiles with intelligent type-inference heuristics.
-- **Hybrid Loss Training:** Built-in support for target classification loss and concept bottleneck loss, weighted by a `--lambda_c` hyperparameter.
-- **Sequential Training Support:** Built-in arguments to independently freeze the vision backbone or the classifier head.
+- **Multi-Class Disease Classification:** Transitioned from binary labels to full 11-class multi-class disease classification (`AKIEC`, `BCC`, `BEN_OTH`, `BKL`, `DF`, `INF`, `MAL_OTH`, `MEL`, `NV`, `SCCKA`, `VASC`) integrated across dataset loading, metrics, loss functions, and inference.
+- **Class-Imbalance Mitigation:** Dynamically computes **Inverse-Frequency Class Weights** from the training dataset distribution and integrates them into `nn.CrossEntropyLoss` to handle severe class imbalances (e.g., BCC: 2522 vs. MAL_OTH: 9) during multi-class training.
+- **Advanced Gradio Web Application & Human-in-the-Loop:**
+  - **Filtered Attention Maps:** Categorical sub-classes are logically grouped under their parent concepts (e.g., `site_foot`, `site_genital` -> `site`). The visualization **only shows the single highest-probability (argmax) choice** for each categorical concept, keeping the UI clean (exactly 11 active heatmaps instead of 22 cluttered ones).
+  - **Categorical Dropdowns:** Replaced cluttered individual $[0.0, 1.0]$ sliders for categorical choices with a **single, unified Dropdown component** per concept (e.g. `site` selection dropdown). Selecting an option automatically one-hot encodes it behind the scenes.
+  - **Scaled Numerical Sliders:** Sliders for numerical concepts are automatically bounded by their real physical min/max values defined in `concept_config.json` (e.g., `age_approx` is $5$ to $85$ years).
+    - *Forward Prediction:* Scales $[0, 1]$ model sigmoid values to real physical scales.
+    - *Intervention:* Normalizes user's physical adjustments back to $[0, 1]$ before passing them to the model classifier.
+  - **Ultra-Compact Multi-Column Layout:** Employs a beautiful 2-column layout panel inside a custom-scrollable box with optimized CSS to fit all controllers on a single screen.
+- **Advanced Multi-Stage Resuming & Transfer Learning:**
+  - Exposes the `--resume_checkpoint` argument (and YAML parameter) in `main.py`.
+  - Employs a **hybrid checkpoint loading strategy**: tries strict loading (`strict=True`) first, and automatically falls back to non-strict loading (`strict=False`) with a warning. This allows seamless transfer of backbone and concept attention weights even when modifying task settings (such as binarization or changing class counts).
+- **Flexible Weight Saving:** Introduced `--save_filename` to allow specifying static output filenames (e.g., `phase1_cbm.pth`), making multi-stage chained training highly scriptable.
+- **Per-Concept Validation Tracking:** 
+  - Computes and logs the individual validation accuracy of **all 22 flattened concepts** to Weights & Biases (`val_concept_acc/{concept_name}`).
+  - Automatically prints the **Top-3 struggling concepts** to the console at the end of each validation epoch for instant developer feedback.
+- **Ultra-Fast Memory Caching:** Support for full dataset RAM-caching (`cache_in_memory: true`) completely eliminates disk I/O bottlenecks during training.
+
+---
 
 ## Directory Structure
 ```
 project_root/
-├── data/                   # (Ignored in git) Store MILK10K and other data here
+├── checkpoints/            # Saved weights organized by backbone model name
+├── configs/
+│   └── train_config.yaml   # Comprehensive model, optimizer, scheduler, & early-stop settings
+├── data/                   # (Ignored in git) Store MILK10K and other raw data here
 ├── src/
 │   ├── data/
 │   │   ├── __init__.py
 │   │   ├── base_dataset.py # Abstract base class for datasets
-│   │   └── milk10k.py      # MILK10K dataset implementation
+│   │   └── milk10k.py      # MILK10K multi-class dataset implementation
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── cbm_factory.py  # UniversalFlexibleCBM implementation
 │   └── utils/
 │       ├── __init__.py
 │       └── metrics.py      # Utilities for evaluating concept and target accuracy
-├── generate_concept_config.py # Standalone script to auto-generate CBM concept configs
+├── app.py                  # High-performance Gradio explorer web application
+├── generate_concept_config.py # Utility script to auto-generate CBM concept configs
 ├── main.py                 # Entry point for training and evaluation
 ├── requirements.txt        # Dependencies exported from uv
 └── README.md
 ```
+
+---
 
 ## Setup Environment
 
@@ -39,95 +62,49 @@ This project utilizes `uv` for fast dependency management.
 # Initialize uv if not already done
 uv init --python 3.12
 
-# Dependencies are managed in pyproject.toml / uv.lock.
-# You can install the environment with:
+# Install dependencies and sync the lockfile
 uv sync
 ```
 
 *(Alternatively, use `pip install -r requirements.txt` if not using `uv`)*
 
-## Usage Examples
-
-Run the training pipeline using the `main.py` entry point. The script will automatically adapt the internal CBM layer structures based on the provided `--concept_config_path` and `--num_classes`.
-
-> **Note:** The `open_clip` backbone is currently not supported for the Attention-CBM architecture due to the requirement for raw 2D spatial feature maps, which are uniformly extracted from `timm` models via `global_pool=''`.
-
-### 1. Training with a `timm` Backbone (ResNet50)
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name resnet50 \
-    --lambda_c 1.0 \
-    --num_classes 1 \
-    --epochs 5 \
-    --batch_size 16
-```
-
-### 2. Sequential Training (Freezing Backbone)
-Freeze the vision backbone and only train the attention queries, projection layers, and classifier:
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name convnext_base \
-    --freeze_backbone
-```
-
-### 3. Weights & Biases Logging & Backbone Identification
-Weights & Biases (wandb) logging is enabled by default. The run names are dynamically generated using the backbone name and current timestamp:
-- Example: `resnet50-cbm-20260530_010616`
-
-All CLI arguments (such as `backbone_name`, `backbone_type`, and `lambda_c`) are automatically logged under the wandb `config` dictionary, allowing you to easily filter, group, and compare runs by backbone in the wandb dashboard.
-
-To disable wandb logging (for instance during debug runs), pass `--use_wandb False`:
-```bash
-uv run python main.py \
-    --dataset milk10k \
-    --concept_config_path data/MILK10K/concept_config.json \
-    --backbone_type timm \
-    --backbone_name resnet50 \
-    --use_wandb False
-```
-
 ---
 
-## Model Weight Saving
+## Usage Examples
 
-After training completes, the model weights (`state_dict`) are automatically saved to your configured `--save_dir` grouped into backbone-specific directories. The saved weights filename contains the run timestamp and the backbone training mode:
+### 1. Two-Stage Chained Training (Concept Grounding ➡️ Target Optimization)
 
-- **Default Root Directory:** `checkpoints/{backbone_name}/`
-- **Filename Pattern:** `{YYYYMMDD_HHMMSS}_cbm_{mode}.pth` (e.g. `20260530_010630_cbm_full.pth` or `20260530_010630_cbm_frozen_backbone.pth`)
-- **Override Path:** Customize the root save folder using `--save_dir [PATH]` (default: `checkpoints`)
+You can chain training runs together using the `--save_filename` and `--resume_checkpoint` commands.
+- **Phase 1:** Train for 10 epochs with a strong concept penalty (`lambda_c = 5.0`) to force the model to ground the concept bottlenecks properly, and save it as `phase1_cbm.pth`.
+- **Phase 2:** Load the Phase 1 weights, loosen the concept penalty (`lambda_c = 0.5`), and train for another 10 epochs to maximize classification accuracy, saving it as `phase2_cbm.pth`.
+
+```bash
+uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 5.0 --save_filename phase1_cbm.pth && \
+uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 0.5 --resume_checkpoint checkpoints/resnet50/phase1_cbm.pth --save_filename phase2_cbm.pth
+```
+
+### 2. Gradio Web Application (Interactive Explorer)
+
+Once the model is trained, launch the premium Gradio interactive explorer by passing your checkpoint and specifying the number of target classes:
+
+```bash
+uv run python app.py --checkpoint checkpoints/resnet50/phase2_cbm.pth --num_classes 11 --port 7860
+```
+
+Open [http://127.0.0.1:7860](http://127.0.0.1:7860) in your web browser to:
+1. Drag and drop dermoscopy images to predict the **Top-3 highest-probability classes**.
+2. View **filtered attention maps** showing only the selected category for categorical attributes.
+3. Manually edit clinical parameters using **compact dropdowns** (e.g. sex, site) and **physical sliders** (e.g. age) to see how the model dynamically updates predictions (Human-in-the-Loop intervention).
 
 ---
 
 ## Auto-Generating Concept Configuration Files
 
-This project includes a standalone script `generate_concept_config.py` that fully automates the creation of a structured Concept Configuration file by parsing your dataset's metadata CSV.
+If working with custom datasets, use the `generate_concept_config.py` script to inspect your metadata and generate CBM-ready configuration files:
 
-### Heuristics & Rules
-- **Type Inference:** Auto-classifies each metadata column (excluding ignored ones) into `categorical` (if `object`, `bool`, `string`, or numeric with `< 15` unique values) or `numerical` (if numeric with `>= 15` unique values).
-- **Metadata Extraction:**
-  - For **Categorical** concepts: Compiles all unique values as a sorted `classes` list (ignoring NaNs).
-  - For **Numerical** concepts: Auto-calculates `min` and `max` scaling bounds (ignoring NaNs).
-- **Type Safety:** Auto-converts numpy datatypes into native Python formats to guarantee serializable outputs.
-
-### CLI Usage Example
-Generate a `concept_config.json` profile for your dataset by ignoring non-concept identifiers:
 ```bash
 uv run python generate_concept_config.py \
     --csv_path data/MILK10K/MILK10k_Test_Metadata.csv \
     --ignore_cols lesion_id,image_type,isic_id,attribution,copyright_license,image_manipulation \
     --output_path concept_config.json
 ```
-
-> [!TIP]
-> **Manual Refinements:** The generated configuration is a standard JSON/YAML file that serves as a highly robust starting point. It is fully encouraged to manually inspect, edit, and adjust this file after generation. For example, you can manually reclassify a concept from `numerical` to `categorical`, adjust the min-max boundaries, correct category order, or prune unwanted concepts.
-
-## Adding a New Dataset
-1. Create a new dataset class in `src/data/` that inherits from `BaseDataset`.
-2. Implement the `__len__` and `__getitem__` methods.
-3. Import and initialize it in `main.py` when the corresponding `--dataset` argument is passed. No changes to the model architecture are required!

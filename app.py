@@ -37,6 +37,8 @@ MODEL: Optional[UniversalFlexibleCBM] = None
 DEVICE: torch.device = torch.device("cpu")
 CONCEPT_NAMES: list[str] = []
 CONCEPT_CONFIG: dict = {}
+CONCEPT_GROUPS: list[dict] = []
+TARGET_CLASSES: list[str] = []
 NUM_CONCEPTS: int = 0
 NUM_CLASSES: int = 1
 
@@ -126,8 +128,16 @@ def run_inference(image: Image.Image):
         prediction_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
     else:
         probs = torch.softmax(class_logits, dim=-1).squeeze(0)
-        pred_idx = probs.argmax().item()
-        prediction_text = f"**Predicted class: {pred_idx}** (confidence: {probs[pred_idx]:.4f})"
+        top_k = min(3, NUM_CLASSES)
+        top_probs, top_idxs = probs.topk(top_k)
+        lines = []
+        for i in range(top_k):
+            idx = top_idxs[i].item()
+            p = top_probs[i].item()
+            name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
+            marker = "🔴" if i == 0 else "⚪"
+            lines.append(f"{marker} **{name}**: {p:.4f}")
+        prediction_text = "\n".join(lines)
 
     # Concept values
     concept_vals = concept_probs.squeeze(0).cpu().tolist()
@@ -141,16 +151,38 @@ def run_inference(image: Image.Image):
     )
 
     heatmap_gallery = []
-    for c in range(NUM_CONCEPTS):
-        hm = attn_upsampled[0, c].cpu().numpy()
-        name = CONCEPT_NAMES[c] if c < len(CONCEPT_NAMES) else f"Concept {c}"
-        pil_img = _generate_single_heatmap(img_np, hm, name)
-        heatmap_gallery.append((pil_img, name))
+    for group in CONCEPT_GROUPS:
+        if group["type"] == "numerical":
+            c_idx = group["flat_indices"][0]
+            val = concept_vals[c_idx]
+            # scale value to original physical range for visualization title
+            orig_val = group["min"] + (group["max"] - group["min"]) * val
+            if group["min"].is_integer() and group["max"].is_integer():
+                orig_val = int(round(orig_val))
+            else:
+                orig_val = round(orig_val, 2)
+            
+            hm = attn_upsampled[0, c_idx].cpu().numpy()
+            name = f"{group['name']}: {orig_val}"
+            pil_img = _generate_single_heatmap(img_np, hm, name)
+            heatmap_gallery.append((pil_img, name))
+        else:
+            # Categorical concept
+            probs = [concept_vals[idx] for idx in group["flat_indices"]]
+            max_idx = np.argmax(probs)
+            max_c_idx = group["flat_indices"][max_idx]
+            selected_class = group["classes"][max_idx]
+            max_prob = probs[max_idx]
+            
+            hm = attn_upsampled[0, max_c_idx].cpu().numpy()
+            name = f"{group['name']}: {selected_class} ({max_prob:.2f})"
+            pil_img = _generate_single_heatmap(img_np, hm, name)
+            heatmap_gallery.append((pil_img, name))
 
     return prediction_text, concept_vals, heatmap_gallery, img_np
 
 
-def repredict_with_adjusted_concepts(*slider_values):
+def repredict_with_adjusted_concepts(*component_values):
     """
     Re-run only the classifier head with user-adjusted concept values.
     This is the human-in-the-loop intervention point.
@@ -158,9 +190,30 @@ def repredict_with_adjusted_concepts(*slider_values):
     if MODEL is None:
         return "No model loaded."
 
-    # Build concept tensor from slider values
+    # Reconstruct flat concept tensor in [0, 1]
+    concept_probs_list = [0.0] * NUM_CONCEPTS
+    
+    for i, group in enumerate(CONCEPT_GROUPS):
+        val = component_values[i]
+        if group["type"] == "numerical":
+            # Scale down from [min, max] to [0, 1]
+            min_val = group["min"]
+            max_val = group["max"]
+            norm_val = (float(val) - min_val) / (max_val - min_val + 1e-8)
+            norm_val = max(0.0, min(1.0, norm_val))
+            concept_probs_list[group["flat_indices"][0]] = norm_val
+        else:
+            # Categorical dropdown: val is a string representing the selected class
+            # One-hot encode
+            selected_cls = str(val)
+            for cls_idx, cls_str in zip(group["flat_indices"], group["classes"]):
+                if cls_str == selected_cls:
+                    concept_probs_list[cls_idx] = 1.0
+                else:
+                    concept_probs_list[cls_idx] = 0.0
+
     concept_probs = torch.tensor(
-        [list(slider_values)], dtype=torch.float32, device=DEVICE
+        [concept_probs_list], dtype=torch.float32, device=DEVICE
     )
 
     MODEL.eval()
@@ -173,8 +226,16 @@ def repredict_with_adjusted_concepts(*slider_values):
         return f"**{pred_label}** (Malignancy probability: {prob:.4f})"
     else:
         probs = torch.softmax(class_logits, dim=-1).squeeze(0)
-        pred_idx = probs.argmax().item()
-        return f"**Predicted class: {pred_idx}** (confidence: {probs[pred_idx]:.4f})"
+        top_k = min(3, NUM_CLASSES)
+        top_probs, top_idxs = probs.topk(top_k)
+        lines = []
+        for i in range(top_k):
+            idx = top_idxs[i].item()
+            p = top_probs[i].item()
+            name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
+            marker = "🔴" if i == 0 else "⚪"
+            lines.append(f"{marker} **{name}**: {p:.4f}")
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +264,44 @@ APP_CSS = """
     margin-bottom: 1.5rem;
 }
 .concept-slider-group {
-    max-height: 500px;
+    max-height: 420px;
     overflow-y: auto;
-    padding: 8px;
+    padding: 6px !important;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background-color: #f9fafb;
+}
+/* Extremely tight padding for components in the grid */
+.concept-slider-group .compact-comp {
+    padding: 2px 6px !important;
+    margin: 0 !important;
+    background-color: #ffffff;
+}
+/* Reduce default Gradio block paddings/margins inside container */
+.concept-slider-group .block {
+    padding: 4px 6px !important;
+    margin: 1px 0 !important;
+    min-width: 0 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+}
+/* Make labels small, bold, and clean */
+.concept-slider-group label span {
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    margin-bottom: 1px !important;
+    color: #374151 !important;
+}
+/* Tight range inputs */
+.concept-slider-group input[type="range"] {
+    margin-top: 1px !important;
+    margin-bottom: 1px !important;
+    height: 4px !important;
+}
+/* Tight dropdown fields */
+.concept-slider-group .wrap {
+    padding: 1px 4px !important;
+    font-size: 0.8rem !important;
 }
 """
 
@@ -265,18 +361,61 @@ def build_app() -> gr.Blocks:
 
         with gr.Row():
             with gr.Column(scale=3, elem_classes="concept-slider-group"):
-                # Build sliders dynamically based on concepts
-                concept_sliders = []
-                for i, name in enumerate(CONCEPT_NAMES):
-                    slider = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        step=0.01,
-                        value=0.5,
-                        label=name,
-                        interactive=True
-                    )
-                    concept_sliders.append(slider)
+                group_name_to_comp = {}
+                col1_groups = CONCEPT_GROUPS[::2]
+                col2_groups = CONCEPT_GROUPS[1::2]
+                
+                with gr.Row():
+                    with gr.Column():
+                        for group in col1_groups:
+                            if group["type"] == "numerical":
+                                is_int = (group["min"].is_integer() and group["max"].is_integer())
+                                step = 1.0 if is_int else 0.01
+                                comp = gr.Slider(
+                                    minimum=group["min"],
+                                    maximum=group["max"],
+                                    step=step,
+                                    value=(group["min"] + group["max"]) / 2,
+                                    label=group["name"],
+                                    interactive=True,
+                                    elem_classes="compact-comp"
+                                )
+                            else:
+                                comp = gr.Dropdown(
+                                    choices=group["classes"],
+                                    value=group["classes"][0],
+                                    label=group["name"],
+                                    interactive=True,
+                                    elem_classes="compact-comp"
+                                )
+                            group_name_to_comp[group["name"]] = comp
+                            
+                    with gr.Column():
+                        for group in col2_groups:
+                            if group["type"] == "numerical":
+                                is_int = (group["min"].is_integer() and group["max"].is_integer())
+                                step = 1.0 if is_int else 0.01
+                                comp = gr.Slider(
+                                    minimum=group["min"],
+                                    maximum=group["max"],
+                                    step=step,
+                                    value=(group["min"] + group["max"]) / 2,
+                                    label=group["name"],
+                                    interactive=True,
+                                    elem_classes="compact-comp"
+                                )
+                            else:
+                                comp = gr.Dropdown(
+                                    choices=group["classes"],
+                                    value=group["classes"][0],
+                                    label=group["name"],
+                                    interactive=True,
+                                    elem_classes="compact-comp"
+                                )
+                            group_name_to_comp[group["name"]] = comp
+                
+                # Reconstruct concept_components in the exact order of CONCEPT_GROUPS
+                concept_components = [group_name_to_comp[g["name"]] for g in CONCEPT_GROUPS]
 
             with gr.Column(scale=1):
                 repredict_btn = gr.Button(
@@ -285,7 +424,7 @@ def build_app() -> gr.Blocks:
                     size="lg"
                 )
                 adjusted_prediction = gr.Markdown(
-                    value="*Adjust sliders and click Re-predict*"
+                    value="*Adjust concepts and click Re-predict*"
                 )
 
         # ---- Event Handlers ----
@@ -295,28 +434,42 @@ def build_app() -> gr.Blocks:
                     "*Please upload an image first.*",
                     gr.update(),
                     [],
-                    *[gr.update() for _ in concept_sliders]
+                    *[gr.update() for _ in concept_components]
                 )
 
             pred_text, concept_vals, gallery, _ = run_inference(image)
 
-            # Build slider updates to reflect predicted values
-            slider_updates = []
-            for i in range(len(concept_sliders)):
-                val = concept_vals[i] if i < len(concept_vals) else 0.5
-                slider_updates.append(gr.update(value=round(val, 4)))
+            # Build updates to reflect predicted values
+            component_updates = []
+            for group in CONCEPT_GROUPS:
+                if group["type"] == "numerical":
+                    val = concept_vals[group["flat_indices"][0]]
+                    # Scale val [0, 1] to [min, max]
+                    scaled_val = group["min"] + (group["max"] - group["min"]) * val
+                    # Round value for clean display
+                    if group["min"].is_integer() and group["max"].is_integer():
+                        scaled_val = int(round(scaled_val))
+                    else:
+                        scaled_val = round(scaled_val, 4)
+                    component_updates.append(gr.update(value=scaled_val))
+                else:
+                    # Find highest probability index
+                    probs = [concept_vals[idx] for idx in group["flat_indices"]]
+                    max_idx = np.argmax(probs)
+                    selected_cls = group["classes"][max_idx]
+                    component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_vals, gallery, *slider_updates)
+            return (pred_text, concept_vals, gallery, *component_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, *concept_sliders]
+            outputs=[prediction_output, concept_state, heatmap_gallery, *concept_components]
         )
 
         repredict_btn.click(
             fn=repredict_with_adjusted_concepts,
-            inputs=concept_sliders,
+            inputs=concept_components,
             outputs=[adjusted_prediction]
         )
 
@@ -348,14 +501,17 @@ def parse_app_args():
         '--num_classes', type=int, default=1
     )
     parser.add_argument(
+        '--target_classes', type=str, default="",
+        help="Comma-separated target class names (e.g. 'AKIEC,BCC,BEN_OTH,...')"
+    )
+    parser.add_argument(
         '--port', type=int, default=7860,
         help="Port to serve the Gradio app on"
     )
     return parser.parse_args()
 
-
 def main():
-    global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, NUM_CONCEPTS, NUM_CLASSES
+    global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES
 
     args = parse_app_args()
 
@@ -366,25 +522,54 @@ def main():
     with open(args.concept_config_path, 'r', encoding='utf-8') as f:
         CONCEPT_CONFIG = json.load(f)
 
-    # Build concepts_flat (same logic as dataset classes)
+    # Build concepts_flat & CONCEPT_GROUPS (same logic as dataset classes)
     concepts_flat = []
     total_dims = 0
+    CONCEPT_GROUPS = []
+    
     for name, info in CONCEPT_CONFIG.items():
         ctype = info.get("type", "numerical")
         if ctype == "categorical":
             classes = info.get("classes", [])
+            classes_str = [str(c) for c in classes]
+            group = {
+                "name": name,
+                "type": "categorical",
+                "classes": classes_str,
+                "flat_indices": list(range(total_dims, total_dims + len(classes)))
+            }
             for cls_val in classes:
                 concepts_flat.append(f"{name}_{cls_val}")
             total_dims += len(classes)
         else:
+            group = {
+                "name": name,
+                "type": "numerical",
+                "min": float(info.get("min", 0.0)),
+                "max": float(info.get("max", 1.0)),
+                "flat_indices": [total_dims]
+            }
             concepts_flat.append(name)
             total_dims += 1
+        CONCEPT_GROUPS.append(group)
 
     CONCEPT_NAMES = concepts_flat
     NUM_CONCEPTS = total_dims
     NUM_CLASSES = args.num_classes
 
+    # Target class names for multi-class display
+    if args.target_classes:
+        TARGET_CLASSES = [c.strip() for c in args.target_classes.split(',')]
+    elif NUM_CLASSES > 1:
+        # Default MILK10K classes
+        from src.data.milk10k import MILK10KDataset
+        TARGET_CLASSES = MILK10KDataset.GT_LABEL_COLS
+    else:
+        TARGET_CLASSES = []
+
     print(f"Loaded {NUM_CONCEPTS} concepts from {args.concept_config_path}")
+    if TARGET_CLASSES:
+        print(f"Target classes ({len(TARGET_CLASSES)}): {TARGET_CLASSES}")
 
     # 2. Initialize model
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

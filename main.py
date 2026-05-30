@@ -118,6 +118,7 @@ def parse_args():
     if "pin_memory" in tr_cfg: flat_defaults["pin_memory"] = tr_cfg["pin_memory"]
     if "cache_in_memory" in tr_cfg: flat_defaults["cache_in_memory"] = tr_cfg["cache_in_memory"]
     if "max_cache_size_gb" in tr_cfg: flat_defaults["max_cache_size_gb"] = tr_cfg["max_cache_size_gb"]
+    if "resume_checkpoint" in tr_cfg: flat_defaults["resume_checkpoint"] = tr_cfg["resume_checkpoint"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -150,6 +151,8 @@ def parse_args():
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
     parser.add_argument('--max_cache_size_gb', type=float, default=flat_defaults.get('max_cache_size_gb', 10.0))
+    parser.add_argument('--resume_checkpoint', type=str, default=flat_defaults.get('resume_checkpoint', None), help="Path to checkpoint .pth to resume or fine-tune from")
+    parser.add_argument('--save_filename', type=str, default=None, help="Custom filename to save the final weights")
     
     args = parser.parse_args()
     return args, config_data
@@ -214,6 +217,11 @@ def main():
 
     tqdm.write(f"  📂 Dataset: {args.dataset} | Concepts: {num_concepts} | Classes: {num_classes}")
     tqdm.write(f"  📊 Train: {len(train_dataset)} samples | Val: {len(val_dataset)} samples")
+    
+    # Log target class names if available
+    target_classes = resolved_config.get("target_classes", [])
+    if target_classes:
+        tqdm.write(f"  🏷️  Classes: {target_classes}")
 
     train_loader = DataLoader(
         train_dataset, 
@@ -247,6 +255,20 @@ def main():
         model.freeze_classifier()
         tqdm.write("  🔒 Classifier head frozen")
         
+    if args.resume_checkpoint:
+        if os.path.exists(args.resume_checkpoint):
+            tqdm.write(f"  🔄 Loading pre-trained weights from: {args.resume_checkpoint}")
+            state_dict = torch.load(args.resume_checkpoint, map_location=device, weights_only=True)
+            try:
+                model.load_state_dict(state_dict, strict=True)
+                tqdm.write("  ✅ Weights loaded successfully (strict match).")
+            except RuntimeError as e:
+                tqdm.write(f"  ⚠️ Warning: Strict loading failed. Attempting non-strict load. Error: {e}")
+                model.load_state_dict(state_dict, strict=False)
+                tqdm.write("  ✅ Weights loaded successfully (non-strict match).")
+        else:
+            tqdm.write(f"  ❌ Error: Checkpoint path '{args.resume_checkpoint}' does not exist. Starting training from scratch.")
+            
     model.to(device)
 
     # 3. Loss & Optimizer Setup
@@ -259,7 +281,18 @@ def main():
         else:
             target_criterion = nn.BCEWithLogitsLoss()
     else:
-        target_criterion = nn.CrossEntropyLoss()
+        # Multi-class: compute inverse-frequency class weights from training data
+        if hasattr(train_dataset, 'df') and not train_dataset.dummy_mode:
+            target_col = resolved_config.get("target_col", "diagnosis_idx")
+            class_counts = train_dataset.df[target_col].value_counts().sort_index()
+            # Inverse-frequency weights normalized so they sum to num_classes
+            weights = 1.0 / class_counts.values.astype(float)
+            weights = weights / weights.sum() * num_classes
+            class_weight = torch.tensor(weights, dtype=torch.float32, device=device)
+            target_criterion = nn.CrossEntropyLoss(weight=class_weight)
+            tqdm.write(f"  ⚖️  Class weights (inv-freq): {[f'{w:.2f}' for w in weights]}")
+        else:
+            target_criterion = nn.CrossEntropyLoss()
         
     # Configure custom optimizer based on config
     opt_cfg = config_data.get("optimizer", {})
@@ -295,11 +328,11 @@ def main():
     else:  # default 'adam'
         optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
     
-    tqdm.write(f"  ⚙️  Optimizer: {opt_type} | Scheduler: {sched_type}")
-        
     # Configure custom scheduler based on config
     sched_cfg = config_data.get("scheduler", {})
     sched_type = sched_cfg.get("type", "none").lower()
+    
+    tqdm.write(f"  ⚙️  Optimizer: {opt_type} | Scheduler: {sched_type}")
     scheduler = None
     
     if sched_type == "cosine":
@@ -394,6 +427,8 @@ def main():
         val_concept_acc = 0.0
         val_target_acc = 0.0
         val_vis_data = None  # store first batch data for visualization
+        all_val_concept_probs = []
+        all_val_concept_targets = []
         
         with torch.no_grad():
             for val_images, val_concepts, val_targets in val_loader:
@@ -415,6 +450,9 @@ def main():
                 val_concept_acc += calculate_concept_accuracy(v_concept_probs, val_concepts)
                 val_target_acc += calculate_accuracy(v_class_logits, val_targets)
                 
+                all_val_concept_probs.append(v_concept_probs.cpu())
+                all_val_concept_targets.append(val_concepts.cpu())
+                
                 # Capture first batch for visualization
                 if val_vis_data is None:
                     val_vis_data = (val_images, v_attn_weights)
@@ -425,6 +463,28 @@ def main():
         avg_val_concept_acc = val_concept_acc / n_val
         avg_val_target_acc = val_target_acc / n_val
         avg_val_loss = avg_val_concept_loss + avg_val_target_loss
+        
+        # Calculate individual concept accuracies for detailed validation logging
+        val_individual_concept_accs = {}
+        if all_val_concept_probs:
+            val_concept_probs_all = torch.cat(all_val_concept_probs, dim=0)
+            val_concept_targets_all = torch.cat(all_val_concept_targets, dim=0)
+            concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
+            for c in range(num_concepts):
+                name = concepts_list[c] if c < len(concepts_list) else f"Concept_{c}"
+                preds_c = (val_concept_probs_all[:, c] > 0.5).float()
+                targets_c = (val_concept_targets_all[:, c] > 0.5).float()
+                acc_c = (preds_c == targets_c).float().mean().item()
+                val_individual_concept_accs[f"val_concept_acc/{name}"] = acc_c
+                
+            # Log struggling concepts to console
+            sorted_concept_accs = sorted(
+                [(concepts_list[c] if c < len(concepts_list) else f"Concept_{c}", val_individual_concept_accs[f"val_concept_acc/{concepts_list[c] if c < len(concepts_list) else f'Concept_{c}'}"])
+                 for c in range(num_concepts)],
+                key=lambda x: x[1]
+            )
+            lowest_3_str = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
+            tqdm.write(f"  🔍 Struggling Concepts: {lowest_3_str}")
         
         # ---- Visualization: save heatmaps to visualizations/{run_name}/{epoch}/ ----
         if val_vis_data is not None:
@@ -494,7 +554,7 @@ def main():
                 break
               
         if args.use_wandb:
-            wandb.log({
+            log_dict = {
                 "epoch": epoch + 1,
                 "train/total_loss": avg_concept_loss + avg_target_loss,
                 "train/concept_loss": avg_concept_loss,
@@ -504,14 +564,19 @@ def main():
                 "val/target_loss": avg_val_target_loss,
                 "val/accuracy": avg_val_target_acc,
                 "val/concept_accuracy": avg_val_concept_acc
-            })
+            }
+            log_dict.update(val_individual_concept_accs)
+            wandb.log(log_dict)
               
     # Save Model Weights
     mode = "frozen_backbone" if args.freeze_backbone else "full"
     save_subdir = os.path.join(args.save_dir, args.backbone_name)
     os.makedirs(save_subdir, exist_ok=True)
     
-    save_filename = f"{timestamp}_cbm_{mode}.pth"
+    if args.save_filename:
+        save_filename = args.save_filename
+    else:
+        save_filename = f"{timestamp}_cbm_{mode}.pth"
     save_path = os.path.join(save_subdir, save_filename)
     torch.save(model.state_dict(), save_path)
     

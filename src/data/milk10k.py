@@ -7,17 +7,24 @@ from PIL import Image
 from src.data.base_dataset import BaseDataset
 
 class MILK10KDataset(BaseDataset):
+    # Ground truth disease categories (one-hot columns in GroundTruth CSV)
+    GT_LABEL_COLS = [
+        'AKIEC', 'BCC', 'BEN_OTH', 'BKL', 'DF',
+        'INF', 'MAL_OTH', 'MEL', 'NV', 'SCCKA', 'VASC'
+    ]
+
     @classmethod
     def get_default_config(cls) -> dict:
         return {
             "num_concepts": 7,
-            "num_classes": 1,
+            "num_classes": len(cls.GT_LABEL_COLS),
             "concepts": [
                 'MONET_ulceration_crust', 'MONET_hair', 'MONET_vasculature_vessels', 
                 'MONET_erythema', 'MONET_pigmented', 'MONET_gel_water_drop_fluid_dermoscopy_liquid', 
                 'MONET_skin_markings_pen_ink_purple_pen'
             ],
-            "target_col": 'Malignancy',
+            "target_col": 'diagnosis_idx',
+            "target_classes": cls.GT_LABEL_COLS,
             "default_csv_path": 'data/MILK10K/MILK10k_Training_Metadata.csv',
             "default_image_dir": 'data/MILK10K/MILK10k_Training_Input/MILK10k_Training_Input'
         }
@@ -65,11 +72,19 @@ class MILK10KDataset(BaseDataset):
                 gt_df = pd.read_csv(gt_csv)
                 if 'lesion_id' in full_df.columns and 'lesion_id' in gt_df.columns:
                     full_df = pd.merge(full_df, gt_df, on='lesion_id', how='left')
-                    # Compute Malignancy targets if malignant columns exist
+                    
+                    # Build multi-class label: one-hot → integer class index
+                    gt_label_cols = self.GT_LABEL_COLS
+                    if all(col in full_df.columns for col in gt_label_cols):
+                        full_df['diagnosis_idx'] = full_df[gt_label_cols].values.argmax(axis=1)
+                        self.config["target_classes"] = gt_label_cols
+                        self.config["num_classes"] = len(gt_label_cols)
+                        print(f"Merged ground truth from {gt_csv} → {len(gt_label_cols)}-class classification (diagnosis_idx)")
+                    
+                    # Also keep legacy binary Malignancy column for backward compat
                     malignant_cols = ['AKIEC', 'BCC', 'MEL', 'SCCKA', 'MAL_OTH']
                     if all(col in full_df.columns for col in malignant_cols):
-                        full_df['Malignancy'] = full_df[malignant_cols].sum(axis=1)
-                        print(f"Merged ground truth labels from {gt_csv} and computed '{self.config.get('target_col', 'Malignancy')}' targets.")
+                        full_df['Malignancy'] = full_df[malignant_cols].sum(axis=1).clip(upper=1.0)
             
             # Deterministic split: 70% train, 15% val, 15% test
             shuffled_df = full_df.sample(frac=1.0, random_state=42).reset_index(drop=True)
@@ -266,7 +281,14 @@ class MILK10KDataset(BaseDataset):
             concept_tensor = torch.tensor(concept_vals, dtype=torch.float32)
         
         # Extract target value
-        target_val = float(row.get(self.target_col, 0.0))
-        target_tensor = torch.tensor([target_val], dtype=torch.float32)
+        num_classes = self.config.get("num_classes", 1)
+        if num_classes > 1:
+            # Multi-class: return integer class index
+            target_idx = int(row.get(self.target_col, 0))
+            target_tensor = torch.tensor([target_idx], dtype=torch.long)
+        else:
+            # Binary: return float
+            target_val = float(row.get(self.target_col, 0.0))
+            target_tensor = torch.tensor([target_val], dtype=torch.float32)
         
         return image, concept_tensor, target_tensor

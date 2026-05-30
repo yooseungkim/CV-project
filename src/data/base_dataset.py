@@ -32,7 +32,8 @@ class BaseDataset(Dataset, ABC):
             "num_concepts": 0,
             "num_classes": 1,
             "concepts": [],
-            "target_col": ""
+            "target_col": "",
+            "target_classes": []
         }
 
     def _estimate_dataset_size_gb(self) -> float:
