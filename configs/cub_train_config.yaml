@@ -6,7 +6,7 @@
 backbone:
   backbone_type: "timm"
   backbone_name: "resnet50"
-  freeze_backbone: false
+  freeze_backbone: true
   freeze_head: false
 
 # 2. Dataset Setup
@@ -18,11 +18,11 @@ dataset:
 
 # 3. Core Training Hyperparameters
 training:
-  phase1_epochs: 15
+  phase1_epochs: 30
   phase2_epochs: 50
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
-  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  l1_lambda: 0.00001  # L1 Lasso Regularization for Phase 2 classifier head
   latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   save_dir: "checkpoints"
@@ -37,12 +37,14 @@ training:
 optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
-  phase1_lr: 0.0001
+  phase1_lr: 0.01
   phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
-  weight_decay: 0.0001
+  weight_decay: 0.01
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
-  focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
+  # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
+  focal_alpha: 0.85
   focal_gamma: 2.0  # Focal loss focus exponent gamma
+  ortho_lambda: 0.00  # Orthogonality loss coefficient to force attention map separation
 
 # 5. Learning Rate Scheduler Options
 scheduler:

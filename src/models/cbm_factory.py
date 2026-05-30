@@ -5,47 +5,39 @@ import open_clip
 
 class ConceptAttentionLayer(nn.Module):
     def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
+        """Concept-specific Spatial Attention Layer.
+        Replaces global average pooling and multihead cross-attention. Each concept learns
+        its own unique 1x1 conv mapping to spatial location and individual feature projection.
+        """
         super().__init__()
         self.num_concepts = num_concepts
         self.feature_dim = feature_dim
         
-        # Learnable concept queries: [1, num_concepts, feature_dim]
-        self.concept_queries = nn.Parameter(torch.randn(1, num_concepts, feature_dim))
+        # 1x1 Conv to produce spatial attention logits for each concept
+        self.attention_conv = nn.Conv2d(feature_dim, num_concepts, kernel_size=1)
         
-        # Multihead Attention
-        self.attention = nn.MultiheadAttention(
-            embed_dim=feature_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
-        
-        # Projection from attended features to a single scalar per concept
-        self.concept_proj = nn.Linear(feature_dim, 1)
+        # Concept-specific weight projections: [num_concepts, feature_dim]
+        self.concept_proj = nn.Parameter(torch.randn(num_concepts, feature_dim))
+        self.concept_bias = nn.Parameter(torch.zeros(num_concepts))
 
     def forward(self, features: torch.Tensor):
         # features: [B, C, H, W]
         B, C, H, W = features.shape
         
-        # Reshape to [B, H*W, C]
-        features_flat = features.flatten(2).transpose(1, 2)
+        # 1. Spatial Attention Map generation
+        attn_logits = self.attention_conv(features)  # [B, num_concepts, H, W]
         
-        # Expand concept queries for the batch: [B, num_concepts, C]
-        queries = self.concept_queries.expand(B, -1, -1)
+        # Softmax over spatial dimensions (H, W)
+        attn_weights = torch.softmax(attn_logits.view(B, self.num_concepts, -1), dim=-1).view(B, self.num_concepts, H, W)
         
-        # Cross-attention: queries=[B, num_concepts, C], keys/values=[B, H*W, C]
-        # attn_output: [B, num_concepts, C]
-        # attn_weights: [B, num_concepts, H*W]
-        attn_output, attn_weights = self.attention(
-            query=queries,
-            key=features_flat,
-            value=features_flat
-        )
+        # 2. Weighted Sum of features: [B, num_concepts, H*W] x [B, H*W, C] -> [B, num_concepts, C]
+        features_flat = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
+        attn_flat = attn_weights.view(B, self.num_concepts, -1)  # [B, num_concepts, H*W]
         
-        # Project to concept logits: [B, num_concepts, 1] -> [B, num_concepts]
-        concept_logits = self.concept_proj(attn_output).squeeze(-1)
+        weighted_features = torch.bmm(attn_flat, features_flat)  # [B, num_concepts, C]
         
-        # Reshape attention weights to spatial dimensions: [B, num_concepts, H, W]
-        attn_weights = attn_weights.view(B, self.num_concepts, H, W)
+        # 3. Concept Logits prediction
+        concept_logits = (weighted_features * self.concept_proj.unsqueeze(0)).sum(dim=-1) + self.concept_bias.unsqueeze(0)  # [B, num_concepts]
         
         return concept_logits, attn_weights
 
@@ -76,6 +68,35 @@ class UniversalFlexibleCBM(nn.Module):
                 num_classes=0, 
                 global_pool=''
             )
+            
+            # Apply True 14x14 Spatial Surgery to preserve spatial detail (beaks, eyes, etc.)
+            # Changing the stride of layer4's downsampling blocks from 2 to 1 keeps spatial map at 14x14
+            if backbone_name.startswith('resnet') and hasattr(self.backbone, 'layer4'):
+                try:
+                    # For ResNet18/34 (BasicBlock): stride is in conv1
+                    if hasattr(self.backbone.layer4[0], 'conv1') and self.backbone.layer4[0].conv1.stride == (2, 2):
+                        self.backbone.layer4[0].conv1.stride = (1, 1)
+                    # For ResNet50/101/152 (BottleneckBlock): stride is in conv2
+                    if hasattr(self.backbone.layer4[0], 'conv2') and self.backbone.layer4[0].conv2.stride == (2, 2):
+                        self.backbone.layer4[0].conv2.stride = (1, 1)
+                    
+                    if hasattr(self.backbone.layer4[0], 'downsample') and self.backbone.layer4[0].downsample is not None:
+                        if hasattr(self.backbone.layer4[0].downsample[0], 'stride'):
+                            self.backbone.layer4[0].downsample[0].stride = (1, 1)
+                            
+                    # Apply Dilated Convolutions (Atrous Conv) to maintain receptive field alignment (DeepLab style)
+                    # We set dilation=2 and padding=2 on all 3x3 convolutions in layer4 blocks
+                    for block in self.backbone.layer4:
+                        if hasattr(block, 'conv1') and block.conv1.kernel_size == (3, 3):
+                            block.conv1.dilation = (2, 2)
+                            block.conv1.padding = (2, 2)
+                        if hasattr(block, 'conv2') and block.conv2.kernel_size == (3, 3):
+                            block.conv2.dilation = (2, 2)
+                            block.conv2.padding = (2, 2)
+                            
+                    print("🛠️ True 14x14 Dilated Surgery: Modified layer4 strides to (1, 1) and conv dilations to (2, 2) to preserve receptive field alignment.")
+                except Exception as e:
+                    print(f"⚠️ Warning: Stride surgery failed on resnet backbone: {e}. Falling back to standard stride.")
         elif self.backbone_type == 'clip':
             raise NotImplementedError(
                 "Attention-CBM with raw spatial feature maps is currently only supported "
@@ -113,7 +134,6 @@ class UniversalFlexibleCBM(nn.Module):
             if isinstance(features, tuple):
                 features = features[0]
             
-            # Expected shape for spatial features: [1, C, H, W] (e.g. [1, 2048, 7, 7])
             if len(features.shape) != 4:
                 raise ValueError(
                     f"Expected 4D output from backbone [B, C, H, W], but got shape {features.shape}. "

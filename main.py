@@ -34,6 +34,33 @@ def str_or_float(v):
     except ValueError:
         return str(v)
 
+def calculate_orthogonality_loss(attn_weights):
+    """
+    attn_weights: Tensor of shape (B, num_concepts, H, W)
+    Computes pairwise cosine similarity between attention maps and penalizes overlap.
+    """
+    B, num_concepts, H, W = attn_weights.shape
+    if num_concepts <= 1:
+        return torch.tensor(0.0, device=attn_weights.device)
+        
+    # Flatten spatial dimensions
+    attn_flat = attn_weights.view(B, num_concepts, -1)
+    
+    # L2 normalize attention maps over spatial dimension to compute cosine similarity
+    attn_norm = attn_flat / (torch.norm(attn_flat, p=2, dim=-1, keepdim=True) + 1e-8)
+    
+    # Compute pairwise dot product matrix (cosine similarity): (B, num_concepts, num_concepts)
+    sim_matrix = torch.bmm(attn_norm, attn_norm.transpose(1, 2))
+    
+    # Sum up off-diagonal elements
+    diag_sum = sim_matrix.diagonal(dim1=1, dim2=2).sum(dim=1)
+    total_sum = sim_matrix.sum(dim=(1, 2))
+    off_diag_sum = total_sum - diag_sum
+    
+    # Normalize by the number of off-diagonal pairs
+    loss_ortho = off_diag_sum / (num_concepts * (num_concepts - 1))
+    return loss_ortho.mean()
+
 def calculate_pos_weights(dataset, num_concepts_supervised):
     """Calculates the ratio of negative to positive samples for each concept to balance BCE loss."""
     import pandas as pd
@@ -245,6 +272,7 @@ def parse_args():
     if "max_cache_size_gb" in tr_cfg: flat_defaults["max_cache_size_gb"] = tr_cfg["max_cache_size_gb"]
     if "resume_checkpoint" in tr_cfg: flat_defaults["resume_checkpoint"] = tr_cfg["resume_checkpoint"]
     if "latent_concepts" in tr_cfg: flat_defaults["latent_concepts"] = tr_cfg["latent_concepts"]
+    if "run_app" in tr_cfg: flat_defaults["run_app"] = tr_cfg["run_app"]
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     
@@ -256,6 +284,7 @@ def parse_args():
     if "concept_loss_type" in opt_cfg: flat_defaults["concept_loss_type"] = opt_cfg["concept_loss_type"]
     if "focal_alpha" in opt_cfg: flat_defaults["focal_alpha"] = opt_cfg["focal_alpha"]
     if "focal_gamma" in opt_cfg: flat_defaults["focal_gamma"] = opt_cfg["focal_gamma"]
+    if "ortho_lambda" in opt_cfg: flat_defaults["ortho_lambda"] = opt_cfg["ortho_lambda"]
     
     # early stopping patience
     es_cfg = config_data.get("early_stopping", {})
@@ -294,6 +323,7 @@ def parse_args():
     parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce'], help="Concept loss function type")
     parser.add_argument('--focal_alpha', type=str_or_float, default=flat_defaults.get('focal_alpha', 'dynamic'), help="Alpha parameter for Focal Loss (float or 'dynamic')")
     parser.add_argument('--focal_gamma', type=float, default=flat_defaults.get('focal_gamma', 2.0), help="Gamma parameter for Focal Loss")
+    parser.add_argument('--ortho_lambda', type=float, default=flat_defaults.get('ortho_lambda', 0.05), help="Orthogonality regularization loss multiplier for attention map separation")
     parser.add_argument('--l1_lambda', type=float, default=flat_defaults.get('l1_lambda', 0.0), help="L1 Lasso regularization multiplier for Phase 2 classifier")
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
     parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
@@ -309,6 +339,7 @@ def parse_args():
     parser.add_argument('--max_cache_size_gb', type=float, default=flat_defaults.get('max_cache_size_gb', 10.0))
     parser.add_argument('--resume_checkpoint', type=str, default=flat_defaults.get('resume_checkpoint', None), help="Path to checkpoint .pth to resume or fine-tune from")
     parser.add_argument('--save_filename', type=str, default=None, help="Custom filename to save the final weights")
+    parser.add_argument('--run_app', type=str2bool, default=flat_defaults.get('run_app', True), help="Automatically launch Gradio app after training finishes")
     
     args = parser.parse_args()
     return args, config_data
@@ -317,6 +348,19 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     tqdm.write(f"\n{'-'*60}")
     tqdm.write("  🎬 Phase 1: Concept Learning (Backbone & Concept Head)")
     tqdm.write(f"{'-'*60}")
+    
+    # Extract concept grouping indices from dataset for group-level orthogonality loss
+    concept_groups_indices = None
+    train_dataset = train_loader.dataset
+    if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+        concept_groups_indices = []
+        for info in train_dataset.concept_features_info:
+            start = info["start_idx"]
+            num = info["num_feats"]
+            indices = [idx for idx in range(start, start + num) if idx < num_concepts_supervised]
+            if indices:
+                concept_groups_indices.append(indices)
+        tqdm.write(f"  📂 Group-level Orthogonality: Detected {len(concept_groups_indices)} semantic attribute groups for separation.")
     
     # classifier_head 가중치 동결
     for param in model.classifier_head.parameters():
@@ -381,19 +425,39 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             concepts = concepts.to(device)
             
             optimizer.zero_grad()
-            _, concept_logits, _ = model(images)
+            _, concept_logits, attn_weights = model(images)
             
             # Use raw logits with BCEWithLogitsLoss
             loss_c = concept_criterion(concept_logits[:, :num_concepts_supervised], concepts)
-            loss_c.backward()
+            
+            # Compute spatial orthogonality loss for the supervised concept attention maps
+            if getattr(args, "ortho_lambda", 0.0) > 0.0:
+                supervised_attn = attn_weights[:, :num_concepts_supervised]
+                if concept_groups_indices is not None:
+                    # Aggregate attention maps to group level (mean of concepts in each group)
+                    group_attns = []
+                    for indices in concept_groups_indices:
+                        group_attn_agg = supervised_attn[:, indices].mean(dim=1)
+                        group_attns.append(group_attn_agg)
+                    attn_to_ortho = torch.stack(group_attns, dim=1)
+                else:
+                    attn_to_ortho = supervised_attn
+                
+                loss_ortho = calculate_orthogonality_loss(attn_to_ortho)
+                total_loss = loss_c + args.ortho_lambda * loss_ortho
+            else:
+                total_loss = loss_c
+                loss_ortho = torch.tensor(0.0, device=device)
+                
+            total_loss.backward()
             optimizer.step()
             
-            total_loss_c += loss_c.item()
+            total_loss_c += total_loss.item()
             
             # Calculate Balanced Accuracy for train batch reporting
             batch_metrics = calculate_concept_metrics(concept_logits[:, :num_concepts_supervised].detach(), concepts)
             total_acc_c += batch_metrics["mean_balanced_acc"]
-            train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", BA=f"{batch_metrics['mean_balanced_acc']:.4f}")
+            train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", OL=f"{loss_ortho.item():.4f}", BA=f"{batch_metrics['mean_balanced_acc']:.4f}")
             
         avg_loss_c = total_loss_c / len(train_loader)
         avg_acc_c = total_acc_c / len(train_loader)
@@ -414,7 +478,25 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 
                 # BCEWithLogitsLoss with raw logits
                 v_loss_c = concept_criterion(v_concept_logits[:, :num_concepts_supervised], val_concepts)
-                val_loss_c += v_loss_c.item()
+                
+                if getattr(args, "ortho_lambda", 0.0) > 0.0:
+                    v_supervised_attn = v_attn_weights[:, :num_concepts_supervised]
+                    if concept_groups_indices is not None:
+                        # Aggregate attention maps to group level
+                        v_group_attns = []
+                        for indices in concept_groups_indices:
+                            v_group_attn_agg = v_supervised_attn[:, indices].mean(dim=1)
+                            v_group_attns.append(v_group_attn_agg)
+                        v_attn_to_ortho = torch.stack(v_group_attns, dim=1)
+                    else:
+                        v_attn_to_ortho = v_supervised_attn
+                    
+                    v_loss_ortho = calculate_orthogonality_loss(v_attn_to_ortho)
+                    v_total_loss = v_loss_c + args.ortho_lambda * v_loss_ortho
+                else:
+                    v_total_loss = v_loss_c
+                    
+                val_loss_c += v_total_loss.item()
                 
                 # Append raw logits to compute final metrics over the entire epoch
                 all_val_probs.append(v_concept_logits[:, :num_concepts_supervised].cpu())
@@ -893,6 +975,31 @@ def main():
 
     if args.use_wandb:
         wandb.finish()
+
+    # Automatically launch Gradio app using subprocess to execute app.py
+    if args.run_app:
+        tqdm.write(f"\n🚀 Launching Gradio inference application automatically...")
+        import subprocess
+        import sys
+        
+        # Build command dynamically matching the trained model parameters
+        cmd = [
+            sys.executable, "app.py",
+            "--checkpoint", save_path,
+            "--concept_config_path", args.concept_config_path or "data/MILK10K/concept_config.json",
+            "--backbone_type", args.backbone_type,
+            "--backbone_name", args.backbone_name,
+            "--num_classes", str(num_classes)
+        ]
+        # Include latent_concepts if greater than zero
+        if args.latent_concepts > 0:
+            cmd.extend(["--latent_concepts", str(args.latent_concepts)])
+            
+        tqdm.write(f"  Running: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd)
+        except KeyboardInterrupt:
+            tqdm.write("\n👋 Gradio app stopped by user.")
 
 if __name__ == "__main__":
     main()

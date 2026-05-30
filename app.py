@@ -207,6 +207,10 @@ def repredict_with_adjusted_concepts(*component_values):
                 else:
                     concept_probs_list[cls_idx] = 0.0
 
+    # If the model has latent concepts, pad them with zeros for classification
+    if MODEL is not None and getattr(MODEL, "num_latent_concepts", 0) > 0:
+        concept_probs_list.extend([0.0] * MODEL.num_latent_concepts)
+
     concept_probs = torch.tensor(
         [concept_probs_list], dtype=torch.float32, device=DEVICE
     )
@@ -500,6 +504,10 @@ def parse_app_args():
         help="Comma-separated target class names (e.g. 'AKIEC,BCC,BEN_OTH,...')"
     )
     parser.add_argument(
+        '--latent_concepts', type=int, default=0,
+        help="Number of latent concepts (automatically detected from checkpoint if not specified)"
+    )
+    parser.add_argument(
         '--port', type=int, default=7860,
         help="Port to serve the Gradio app on"
     )
@@ -592,23 +600,36 @@ def main():
     if TARGET_CLASSES:
         print(f"Target classes ({len(TARGET_CLASSES)}): {TARGET_CLASSES}")
 
-    # 2. Initialize model
+    # 2. Inspect checkpoint first to automatically detect model parameters
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    MODEL = UniversalFlexibleCBM(
-        backbone_type=args.backbone_type,
-        backbone_name=args.backbone_name,
-        num_supervised_concepts=NUM_CONCEPTS,
-        num_classes=NUM_CLASSES,
-        num_latent_concepts=0
-    )
-
-    # 3. Load checkpoint
     checkpoint_path = args.checkpoint
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     state_dict = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    
+    # Auto-detect number of latent concepts from classifier_head weight shape
+    latent_concepts = args.latent_concepts
+    if "classifier_head.weight" in state_dict:
+        checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
+        detected_latent = checkpoint_dims - NUM_CONCEPTS
+        if detected_latent >= 0:
+            latent_concepts = detected_latent
+            print(f"🔮 Auto-detected latent concepts from checkpoint: {latent_concepts} (Total dimensions: {checkpoint_dims})")
+        else:
+            print(f"⚠️ Warning: Checkpoint dimensions ({checkpoint_dims}) are less than supervised concepts ({NUM_CONCEPTS}). Using args.latent_concepts={args.latent_concepts}.")
+    else:
+        print(f"⚠️ Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
+
+    # 3. Initialize model with correct parameters
+    MODEL = UniversalFlexibleCBM(
+        backbone_type=args.backbone_type,
+        backbone_name=args.backbone_name,
+        num_supervised_concepts=NUM_CONCEPTS,
+        num_classes=NUM_CLASSES,
+        num_latent_concepts=latent_concepts
+    )
+
     MODEL.load_state_dict(state_dict)
     MODEL.to(DEVICE)
     MODEL.eval()

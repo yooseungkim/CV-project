@@ -54,6 +54,7 @@ class CUB2011Dataset(BaseDataset):
             print(f"Warning: metadata not found at {resolved_csv}. Running in dummy mode ({self.split} split).")
             self.df = pd.DataFrame()
             self.concept_matrix = None
+            self.bbox_df = None
         else:
             # 1. Load CUB-200-2011 base mapping files
             images_df = pd.read_csv(resolved_csv, sep=r'\s+', header=None, names=['image_id', 'image_path'])
@@ -67,6 +68,16 @@ class CUB2011Dataset(BaseDataset):
             # Merge base frames
             merged = images_df.merge(labels_df, on='image_id').merge(split_df, on='image_id')
             
+            # Load bounding boxes for regional bird cropping
+            bbox_file = os.path.join(data_root, 'bounding_boxes.txt')
+            if os.path.exists(bbox_file):
+                print(f"Loading bounding boxes from: {bbox_file}")
+                self.bbox_df = pd.read_csv(bbox_file, sep=r'\s+', header=None, names=['image_id', 'x', 'y', 'w', 'h'])
+                self.bbox_df.set_index('image_id', inplace=True)
+            else:
+                print(f"Warning: Bounding boxes file not found at {bbox_file}. Running without bounding boxes.")
+                self.bbox_df = None
+                
             # 2. Slice deterministic train, val, test splits
             train_raw = merged[merged['is_train'] == 1].reset_index(drop=True)
             test_val_raw = merged[merged['is_train'] == 0].reset_index(drop=True)
@@ -157,11 +168,27 @@ class CUB2011Dataset(BaseDataset):
         self.target_col = self.config.get("target_col", "class_id")
         self.config["num_classes"] = 200
 
-        self.transform = transform or transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        if transform is not None:
+            self.transform = transform
+        else:
+            if self.split == 'train':
+                # Advanced dynamic data augmentation for training to prevent overfitting
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.RandomCrop((224, 224)),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomRotation(degrees=15),
+                    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+            else:
+                # Static, deterministic transforms for validation/testing
+                self.transform = transforms.Compose([
+                    transforms.Resize((224, 224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
 
         # Caching
         self.cache_in_memory = cache_in_memory
@@ -189,6 +216,7 @@ class CUB2011Dataset(BaseDataset):
             
         row = self.df.iloc[idx]
         image_idx = int(row['image_idx'])
+        image_id = int(row['image_id'])
         
         # Load image
         img_name = row['image_path']
@@ -199,9 +227,24 @@ class CUB2011Dataset(BaseDataset):
         except FileNotFoundError:
             image = Image.new('RGB', (224, 224), color=(0, 0, 0))
             
-        if self.transform:
-            image = self.transform(image)
-            
+        # Crop image using bounding box if available
+        if getattr(self, 'bbox_df', None) is not None and image_id in self.bbox_df.index:
+            bbox = self.bbox_df.loc[image_id]
+            img_w, img_h = image.size
+            x = max(0.0, float(bbox['x']))
+            y = max(0.0, float(bbox['y']))
+            w = max(1.0, float(bbox['w']))
+            h = max(1.0, float(bbox['h']))
+            x1 = min(img_w - 1.0, x)
+            y1 = min(img_h - 1.0, y)
+            x2 = min(img_w, x1 + w)
+            y2 = min(img_h, y1 + h)
+            if x2 > x1 and y2 > y1:
+                image = image.crop((x1, y1, x2, y2))
+                
+        # Do NOT apply transform here; return raw PIL Image so we can cache it
+        # and apply dynamic augmentations on the fly during __getitem__
+        
         # Extract concepts from matrix
         concept_vals = self.concept_matrix[image_idx]
         concept_tensor = torch.tensor(concept_vals, dtype=torch.float32)
@@ -210,4 +253,17 @@ class CUB2011Dataset(BaseDataset):
         target_idx = int(row[self.target_col]) - 1
         target_tensor = torch.tensor([target_idx], dtype=torch.long)
         
+        return image, concept_tensor, target_tensor
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self._cache_populated and self._cache is not None:
+            image, concept_tensor, target_tensor = self._cache[idx]
+        else:
+            image, concept_tensor, target_tensor = self._load_sample(idx)
+            
+        # Apply the transform dynamically on the fly
+        if self.transform:
+            if isinstance(image, Image.Image):
+                image = self.transform(image)
+                
         return image, concept_tensor, target_tensor
