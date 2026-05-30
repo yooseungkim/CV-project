@@ -121,6 +121,8 @@ def parse_args():
     if "max_cache_size_gb" in tr_cfg: flat_defaults["max_cache_size_gb"] = tr_cfg["max_cache_size_gb"]
     if "resume_checkpoint" in tr_cfg: flat_defaults["resume_checkpoint"] = tr_cfg["resume_checkpoint"]
     if "latent_concepts" in tr_cfg: flat_defaults["latent_concepts"] = tr_cfg["latent_concepts"]
+    if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
+    if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -142,6 +144,8 @@ def parse_args():
     parser.add_argument('--latent_concepts', '--latent-concepts', type=int, default=flat_defaults.get('latent_concepts', 0), help="Number of unsupervised latent concepts to append to the bottleneck")
     parser.add_argument('--num_classes', type=int, default=flat_defaults.get('num_classes', 1))
     parser.add_argument('--epochs', type=int, default=flat_defaults.get('epochs', 1))
+    parser.add_argument('--phase1_epochs', type=int, default=flat_defaults.get('phase1_epochs', None), help="Number of epochs for Phase 1 (Concept Learning)")
+    parser.add_argument('--phase2_epochs', type=int, default=flat_defaults.get('phase2_epochs', None), help="Number of epochs for Phase 2 (Target Learning)")
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
     parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
     parser.add_argument('--lambda_c', type=float, default=flat_defaults.get('lambda_c', 1.0))
@@ -159,6 +163,312 @@ def parse_args():
     
     args = parser.parse_args()
     return args, config_data
+
+def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config):
+    tqdm.write(f"\n{'-'*60}")
+    tqdm.write("  🎬 Phase 1: Concept Learning (Backbone & Concept Head)")
+    tqdm.write(f"{'-'*60}")
+    
+    # classifier_head 가중치 동결
+    for param in model.classifier_head.parameters():
+        param.requires_grad = False
+        
+    if not args.freeze_backbone:
+        for param in model.backbone.parameters():
+            param.requires_grad = True
+    for param in model.concept_attention.parameters():
+        param.requires_grad = True
+        
+    opt_cfg = config_data.get("optimizer", {})
+    opt_type = opt_cfg.get("type", "adam").lower()
+    weight_decay = opt_cfg.get("weight_decay", 0.0)
+    backbone_lr = opt_cfg.get("backbone_lr")
+    head_lr = opt_cfg.get("head_lr")
+    
+    param_groups = []
+    if not args.freeze_backbone:
+        backbone_trainable = [p for p in model.backbone.parameters() if p.requires_grad]
+        if backbone_lr is not None:
+            param_groups.append({"params": backbone_trainable, "lr": backbone_lr})
+        else:
+            param_groups.append({"params": backbone_trainable, "lr": args.lr})
+            
+    concept_trainable = [p for p in model.concept_attention.parameters() if p.requires_grad]
+    if head_lr is not None:
+        param_groups.append({"params": concept_trainable, "lr": head_lr})
+    else:
+        param_groups.append({"params": concept_trainable, "lr": args.lr})
+        
+    if opt_type == "adamw":
+        optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
+    elif opt_type == "sgd":
+        momentum = opt_cfg.get("momentum", 0.9)
+        optimizer = optim.SGD(param_groups, weight_decay=weight_decay, momentum=momentum)
+    else:
+        optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
+        
+    sched_cfg = config_data.get("scheduler", {})
+    sched_type = sched_cfg.get("type", "none").lower()
+    scheduler = None
+    phase1_epochs = args.phase1_epochs if args.phase1_epochs is not None else args.epochs
+    
+    if sched_type == "cosine":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase1_epochs, eta_min=sched_cfg.get("eta_min", 1e-6))
+    elif sched_type == "step":
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=sched_cfg.get("step_size", 10), gamma=sched_cfg.get("gamma", 0.1))
+        
+    # Phase 1은 val_concept_loss를 기반으로 early stopping 수행
+    es_handler = EarlyStopping(patience=5, min_delta=0.0, monitor="val_concept_loss")
+    
+    for epoch in range(phase1_epochs):
+        model.train()
+        total_loss_c = 0.0
+        total_acc_c = 0.0
+        
+        train_pbar = tqdm(train_loader, desc=f"  P1 Epoch {epoch+1}/{phase1_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
+        for images, concepts, _ in train_pbar:
+            images = images.to(device)
+            concepts = concepts.to(device)
+            
+            optimizer.zero_grad()
+            _, concept_logits, _ = model(images)
+            concept_probs = torch.sigmoid(concept_logits)
+            
+            loss_c = concept_criterion(concept_probs[:, :num_concepts_supervised], concepts)
+            loss_c.backward()
+            optimizer.step()
+            
+            total_loss_c += loss_c.item()
+            total_acc_c += calculate_concept_accuracy(concept_probs[:, :num_concepts_supervised].detach(), concepts)
+            train_pbar.set_postfix(CL=f"{loss_c.item():.4f}")
+            
+        avg_loss_c = total_loss_c / len(train_loader)
+        avg_acc_c = total_acc_c / len(train_loader)
+        
+        model.eval()
+        val_loss_c = 0.0
+        val_acc_c = 0.0
+        all_val_probs = []
+        all_val_targets = []
+        val_vis_data = None
+        
+        with torch.no_grad():
+            for val_images, val_concepts, _ in val_loader:
+                val_images = val_images.to(device)
+                val_concepts = val_concepts.to(device)
+                
+                _, v_concept_logits, v_attn_weights = model(val_images)
+                v_concept_probs = torch.sigmoid(v_concept_logits)
+                
+                v_loss_c = concept_criterion(v_concept_probs[:, :num_concepts_supervised], val_concepts)
+                val_loss_c += v_loss_c.item()
+                val_acc_c += calculate_concept_accuracy(v_concept_probs[:, :num_concepts_supervised], val_concepts)
+                
+                all_val_probs.append(v_concept_probs[:, :num_concepts_supervised].cpu())
+                all_val_targets.append(val_concepts.cpu())
+                if val_vis_data is None:
+                    val_vis_data = (val_images, v_attn_weights)
+                    
+        avg_val_loss_c = val_loss_c / len(val_loader)
+        avg_val_acc_c = val_acc_c / len(val_loader)
+        
+        # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
+        tqdm.write(f"[Phase 1] Epoch {epoch+1:02d}/{phase1_epochs:02d} | Train Concept Loss: {avg_loss_c:.4f} | Val Concept Loss: {avg_val_loss_c:.4f} | Val Concept Acc: {avg_val_acc_c * 100:.2f}%")
+        
+        concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
+        
+        # struggling concepts는 마지막 epoch이거나 조기종료일 때만 출력하여 로그 노이즈 최소화
+        is_last_epoch = (epoch == phase1_epochs - 1)
+        es_handler(avg_val_loss_c, model)
+        
+        if all_val_probs and (is_last_epoch or es_handler.early_stop):
+            val_probs_all = torch.cat(all_val_probs, dim=0)
+            val_targets_all = torch.cat(all_val_targets, dim=0)
+            val_individual_accs = {}
+            for c in range(num_concepts_supervised):
+                name = concepts_list[c] if c < len(concepts_list) else f"Concept_{c}"
+                preds_c = (val_probs_all[:, c] > 0.5).float()
+                targets_c = (val_targets_all[:, c] > 0.5).float()
+                val_individual_accs[f"val_concept_acc/{name}"] = (preds_c == targets_c).float().mean().item()
+            
+            sorted_concept_accs = sorted(
+                [(concepts_list[c] if c < len(concepts_list) else f"Concept_{c}", val_individual_accs[f"val_concept_acc/{concepts_list[c] if c < len(concepts_list) else f'Concept_{c}'}"])
+                 for c in range(num_concepts_supervised)],
+                key=lambda x: x[1]
+            )
+            lowest_3 = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
+            tqdm.write(f"  🔍 Final Struggling Concepts: {lowest_3}")
+            
+        if val_vis_data is not None and (is_last_epoch or es_handler.early_stop):
+            vis_images, vis_attn = val_vis_data
+            num_samples = min(4, vis_images.size(0))
+            heatmap_images = generate_concept_heatmaps(
+                image_tensor=vis_images[:num_samples],
+                attn_weights=vis_attn[:num_samples, :num_concepts_supervised],
+                concept_names=concepts_list
+            )
+            epoch_vis_dir = os.path.join("visualizations", run_name, f"phase1_epoch_{epoch + 1}")
+            os.makedirs(epoch_vis_dir, exist_ok=True)
+            for idx, img in enumerate(heatmap_images):
+                img.save(os.path.join(epoch_vis_dir, f"sample_{idx + 1}.png"))
+                
+        if scheduler is not None:
+            scheduler.step()
+            
+        if es_handler.early_stop:
+            tqdm.write(f"  🛑 Early stopping Phase 1 at Epoch {epoch + 1}. Restoring best Phase 1 weights.")
+            model.load_state_dict(es_handler.best_weights)
+            break
+            
+        if args.use_wandb:
+            import wandb
+            log_dict = {
+                "phase1_epoch": epoch + 1,
+                "train/concept_loss": avg_loss_c,
+                "val/concept_loss": avg_val_loss_c,
+                "val/concept_accuracy": avg_val_acc_c
+            }
+            # wandb에는 개별 정확도를 매 에포크 기록
+            if 'val_individual_accs' in locals():
+                log_dict.update(val_individual_accs)
+            wandb.log(log_dict)
+
+def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
+    tqdm.write(f"\n{'-'*60}")
+    tqdm.write("  🎬 Phase 2: Target Learning (Classifier Head)")
+    tqdm.write(f"{'-'*60}")
+    
+    # 백본과 컨셉 어텐션 가중치 엄격히 동결
+    for param in model.backbone.parameters():
+        param.requires_grad = False
+    for param in model.concept_attention.parameters():
+        param.requires_grad = False
+    for param in model.classifier_head.parameters():
+        param.requires_grad = True
+        
+    opt_cfg = config_data.get("optimizer", {})
+    opt_type = opt_cfg.get("type", "adam").lower()
+    weight_decay = opt_cfg.get("weight_decay", 0.0)
+    head_lr = opt_cfg.get("head_lr", args.lr)
+    
+    if opt_type == "adamw":
+        optimizer = optim.AdamW(model.classifier_head.parameters(), lr=head_lr, weight_decay=weight_decay)
+    elif opt_type == "sgd":
+        momentum = opt_cfg.get("momentum", 0.9)
+        optimizer = optim.SGD(model.classifier_head.parameters(), lr=head_lr, weight_decay=weight_decay, momentum=momentum)
+    else:
+        optimizer = optim.Adam(model.classifier_head.parameters(), lr=head_lr, weight_decay=weight_decay)
+        
+    sched_cfg = config_data.get("scheduler", {})
+    sched_type = sched_cfg.get("type", "none").lower()
+    scheduler = None
+    phase2_epochs = args.phase2_epochs if args.phase2_epochs is not None else args.epochs
+    
+    if sched_type == "cosine":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase2_epochs, eta_min=sched_cfg.get("eta_min", 1e-6))
+    elif sched_type == "step":
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=sched_cfg.get("step_size", 10), gamma=sched_cfg.get("gamma", 0.1))
+        
+    es_cfg = config_data.get("early_stopping", {})
+    es_handler = None
+    if es_cfg.get("enabled", False):
+        patience = es_cfg.get("patience", 5)
+        min_delta = es_cfg.get("min_delta", 0.0)
+        monitor = es_cfg.get("monitor", "val_target_loss")
+        es_handler = EarlyStopping(patience=patience, min_delta=min_delta, monitor=monitor)
+        tqdm.write(f"  🛑 Phase 2 Early stopping: monitor={monitor}, patience={patience}")
+        
+    for epoch in range(phase2_epochs):
+        model.train()
+        total_loss_t = 0.0
+        total_acc_t = 0.0
+        
+        train_pbar = tqdm(train_loader, desc=f"  P2 Epoch {epoch+1}/{phase2_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
+        for images, _, targets in train_pbar:
+            images = images.to(device)
+            targets = targets.to(device)
+            
+            # 이전 단계에서 학습된 컨셉 예측값을 그래프 연산 분리하여 추출
+            with torch.no_grad():
+                features = model.backbone(images)
+                concept_logits, _ = model.concept_attention(features)
+                concept_probs = model.concept_activation(concept_logits)
+                
+            optimizer.zero_grad()
+            concept_probs_dropout = model.dropout(concept_probs)
+            class_logits = model.classifier_head(concept_probs_dropout)
+            
+            if num_classes == 1:
+                loss_t = target_criterion(class_logits, targets)
+            else:
+                loss_t = target_criterion(class_logits, targets.view(-1).long())
+                
+            loss_t.backward()
+            optimizer.step()
+            
+            total_loss_t += loss_t.item()
+            total_acc_t += calculate_accuracy(class_logits.detach(), targets)
+            train_pbar.set_postfix(TL=f"{loss_t.item():.4f}")
+            
+        avg_loss_t = total_loss_t / len(train_loader)
+        avg_acc_t = total_acc_t / len(train_loader)
+        
+        model.eval()
+        val_loss_t = 0.0
+        val_acc_t = 0.0
+        
+        with torch.no_grad():
+            for val_images, _, val_targets in val_loader:
+                val_images = val_images.to(device)
+                val_targets = val_targets.to(device)
+                
+                v_features = model.backbone(val_images)
+                v_concept_logits, _ = model.concept_attention(v_features)
+                v_concept_probs = model.concept_activation(v_concept_logits)
+                
+                v_class_logits = model.classifier_head(v_concept_probs)
+                
+                if num_classes == 1:
+                    v_loss_t = target_criterion(v_class_logits, val_targets)
+                else:
+                    v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
+                    
+                val_loss_t += v_loss_t.item()
+                val_acc_t += calculate_accuracy(v_class_logits, val_targets)
+                
+        avg_val_loss_t = val_loss_t / len(val_loader)
+        avg_val_acc_t = val_acc_t / len(val_loader)
+        
+        # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
+        tqdm.write(f"[Phase 2] Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {avg_val_acc_t * 100:.2f}%")
+        
+        if scheduler is not None:
+            scheduler.step()
+            
+        if es_handler is not None:
+            monitor_target = es_handler.monitor.lower()
+            if monitor_target == "val_target_loss" or monitor_target == "val_loss":
+                monitor_score = avg_val_loss_t
+            elif monitor_target == "val_accuracy" or monitor_target == "val_acc":
+                monitor_score = avg_val_acc_t
+            else:
+                monitor_score = avg_val_loss_t
+                
+            es_handler(monitor_score, model)
+            if es_handler.early_stop:
+                tqdm.write(f"  🛑 Early stopping Phase 2 at Epoch {epoch + 1}. Restoring best Phase 2 weights.")
+                model.load_state_dict(es_handler.best_weights)
+                break
+                
+        if args.use_wandb:
+            import wandb
+            log_dict = {
+                "phase2_epoch": epoch + 1,
+                "train/target_loss": avg_loss_t,
+                "val/target_loss": avg_val_loss_t,
+                "val/accuracy": avg_val_acc_t
+            }
+            wandb.log(log_dict)
 
 def main():
     args, config_data = parse_args()
@@ -229,18 +539,23 @@ def main():
     if target_classes:
         tqdm.write(f"  🏷️  Classes: {target_classes}")
 
+    num_workers = args.num_workers
+    if getattr(train_dataset, "cache_in_memory", False):
+        tqdm.write("  ⚡ In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
+        num_workers = 0
+
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
         shuffle=True,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
         pin_memory=args.pin_memory
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size, 
         shuffle=False,
-        num_workers=args.num_workers,
+        num_workers=num_workers,
         pin_memory=args.pin_memory
     )
 
@@ -319,70 +634,6 @@ def main():
         else:
             target_criterion = nn.CrossEntropyLoss()
         
-    # Configure custom optimizer based on config
-    opt_cfg = config_data.get("optimizer", {})
-    opt_type = opt_cfg.get("type", "adam").lower()
-    weight_decay = opt_cfg.get("weight_decay", 0.0)
-    
-    # Differential LR separation
-    backbone_lr = opt_cfg.get("backbone_lr")
-    head_lr = opt_cfg.get("head_lr")
-    
-    if backbone_lr is not None and head_lr is not None:
-        # Separate parameters
-        backbone_params = list(model.backbone.parameters())
-        backbone_param_ids = set(id(p) for p in backbone_params)
-        head_params = [p for p in model.parameters() if id(p) not in backbone_param_ids]
-        
-        # Filter trainable parameters
-        backbone_trainable = [p for p in backbone_params if p.requires_grad]
-        head_trainable = [p for p in head_params if p.requires_grad]
-        
-        param_groups = [
-            {"params": backbone_trainable, "lr": backbone_lr},
-            {"params": head_trainable, "lr": head_lr}
-        ]
-    else:
-        param_groups = [{"params": filter(lambda p: p.requires_grad, model.parameters()), "lr": args.lr}]
-    
-    if opt_type == "adamw":
-        optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
-    elif opt_type == "sgd":
-        momentum = opt_cfg.get("momentum", 0.9)
-        optimizer = optim.SGD(param_groups, weight_decay=weight_decay, momentum=momentum)
-    else:  # default 'adam'
-        optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
-    
-    # Configure custom scheduler based on config
-    sched_cfg = config_data.get("scheduler", {})
-    sched_type = sched_cfg.get("type", "none").lower()
-    
-    tqdm.write(f"  ⚙️  Optimizer: {opt_type} | Scheduler: {sched_type}")
-    scheduler = None
-    
-    if sched_type == "cosine":
-        T_max = sched_cfg.get("T_max", args.epochs)
-        eta_min = sched_cfg.get("eta_min", 1e-6)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
-    elif sched_type == "step":
-        step_size = sched_cfg.get("step_size", 10)
-        gamma = sched_cfg.get("gamma", 0.1)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
-    elif sched_type == "plateau":
-        patience = sched_cfg.get("patience", 3)
-        factor = sched_cfg.get("factor", 0.1)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=patience, factor=factor)
-        
-    # Configure Early Stopping based on config
-    es_cfg = config_data.get("early_stopping", {})
-    es_handler = None
-    if es_cfg.get("enabled", False):
-        patience = es_cfg.get("patience", 5)
-        min_delta = es_cfg.get("min_delta", 0.0)
-        monitor = es_cfg.get("monitor", "val_loss")
-        es_handler = EarlyStopping(patience=patience, min_delta=min_delta, monitor=monitor)
-        tqdm.write(f"  🛑 Early stopping: monitor={monitor}, patience={patience}")
-
     # 3b. Weights & Biases Initialization
     if args.use_wandb:
         import wandb
@@ -394,205 +645,37 @@ def main():
         tqdm.write(f"  📡 W&B run initialized")
 
     tqdm.write(f"{'='*60}\n")
-    # 4. Training Loop
-    epoch_pbar = tqdm(range(args.epochs), desc="Training", unit="epoch")
     
-    for epoch in epoch_pbar:
-        # ---- Training Phase ----
-        model.train()
-        total_concept_loss = 0.0
-        total_target_loss = 0.0
-        total_concept_acc = 0.0
-        total_target_acc = 0.0
-        
-        train_pbar = tqdm(
-            train_loader,
-            desc=f"  Epoch {epoch+1}/{args.epochs}",
-            bar_format="{l_bar}{bar:25}{r_bar}",
-            leave=False
-        )
-        
-        for images, concepts, targets in train_pbar:
-            images = images.to(device)
-            concepts = concepts.to(device)
-            targets = targets.to(device)
-            
-            optimizer.zero_grad()
-            
-            class_logits, concept_logits, attn_weights = model(images)
-            concept_probs = torch.sigmoid(concept_logits)
-            
-            loss_c = concept_criterion(concept_probs[:, :num_concepts_supervised], concepts)
-            if num_classes == 1:
-                loss_t = target_criterion(class_logits, targets)
-            else:
-                loss_t = target_criterion(class_logits, targets.view(-1).long())
-            loss = loss_t + args.lambda_c * loss_c
-            
-            loss.backward()
-            optimizer.step()
-            
-            total_concept_loss += loss_c.item()
-            total_target_loss += loss_t.item()
-            total_concept_acc += calculate_concept_accuracy(concept_probs[:, :num_concepts_supervised].detach(), concepts)
-            total_target_acc += calculate_accuracy(class_logits.detach(), targets)
-            
-            train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", TL=f"{loss_t.item():.4f}")
-        
-        n_train = len(train_loader)
-        avg_concept_loss = total_concept_loss / n_train
-        avg_target_loss = total_target_loss / n_train
-        avg_concept_acc = total_concept_acc / n_train
-        avg_target_acc = total_target_acc / n_train
-        
-        # ---- Validation Phase (no separate progress bar) ----
-        model.eval()
-        val_concept_loss = 0.0
-        val_target_loss = 0.0
-        val_concept_acc = 0.0
-        val_target_acc = 0.0
-        val_vis_data = None  # store first batch data for visualization
-        all_val_concept_probs = []
-        all_val_concept_targets = []
-        
-        with torch.no_grad():
-            for val_images, val_concepts, val_targets in val_loader:
-                val_images = val_images.to(device)
-                val_concepts = val_concepts.to(device)
-                val_targets = val_targets.to(device)
-                
-                v_class_logits, v_concept_logits, v_attn_weights = model(val_images)
-                v_concept_probs = torch.sigmoid(v_concept_logits)
-                
-                v_loss_c = concept_criterion(v_concept_probs[:, :num_concepts_supervised], val_concepts)
-                if num_classes == 1:
-                    v_loss_t = target_criterion(v_class_logits, val_targets)
-                else:
-                    v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
-                
-                val_concept_loss += v_loss_c.item()
-                val_target_loss += v_loss_t.item()
-                val_concept_acc += calculate_concept_accuracy(v_concept_probs[:, :num_concepts_supervised], val_concepts)
-                val_target_acc += calculate_accuracy(v_class_logits, val_targets)
-                
-                all_val_concept_probs.append(v_concept_probs[:, :num_concepts_supervised].cpu())
-                all_val_concept_targets.append(val_concepts.cpu())
-                
-                # Capture first batch for visualization
-                if val_vis_data is None:
-                    val_vis_data = (val_images, v_attn_weights)
-        
-        n_val = len(val_loader)
-        avg_val_concept_loss = val_concept_loss / n_val
-        avg_val_target_loss = val_target_loss / n_val
-        avg_val_concept_acc = val_concept_acc / n_val
-        avg_val_target_acc = val_target_acc / n_val
-        avg_val_loss = avg_val_concept_loss + avg_val_target_loss
-        
-        # Calculate individual concept accuracies for detailed validation logging
-        val_individual_concept_accs = {}
-        if all_val_concept_probs:
-            val_concept_probs_all = torch.cat(all_val_concept_probs, dim=0)
-            val_concept_targets_all = torch.cat(all_val_concept_targets, dim=0)
-            concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
-            for c in range(num_concepts_supervised):
-                name = concepts_list[c] if c < len(concepts_list) else f"Concept_{c}"
-                preds_c = (val_concept_probs_all[:, c] > 0.5).float()
-                targets_c = (val_concept_targets_all[:, c] > 0.5).float()
-                acc_c = (preds_c == targets_c).float().mean().item()
-                val_individual_concept_accs[f"val_concept_acc/{name}"] = acc_c
-                
-            # Log struggling concepts to console
-            sorted_concept_accs = sorted(
-                [(concepts_list[c] if c < len(concepts_list) else f"Concept_{c}", val_individual_concept_accs[f"val_concept_acc/{concepts_list[c] if c < len(concepts_list) else f'Concept_{c}'}"])
-                 for c in range(num_concepts_supervised)],
-                key=lambda x: x[1]
-            )
-            lowest_3_str = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
-            tqdm.write(f"  🔍 Struggling Concepts: {lowest_3_str}")
-        
-        # ---- Visualization: save heatmaps to visualizations/{run_name}/{epoch}/ ----
-        if val_vis_data is not None:
-            vis_images, vis_attn = val_vis_data
-            num_samples = min(4, vis_images.size(0))
-            
-            heatmap_images = generate_concept_heatmaps(
-                image_tensor=vis_images[:num_samples],
-                attn_weights=vis_attn[:num_samples, :num_concepts_supervised],
-                concept_names=resolved_config.get("concepts_flat", resolved_config["concepts"])
-            )
-            
-            # Save locally: visualizations/{run_name}/epoch_{N}/sample_{i}.png
-            epoch_vis_dir = os.path.join("visualizations", run_name, f"epoch_{epoch + 1}")
-            os.makedirs(epoch_vis_dir, exist_ok=True)
-            for idx, img in enumerate(heatmap_images):
-                img.save(os.path.join(epoch_vis_dir, f"sample_{idx + 1}.png"))
-            
-            # Log to W&B if enabled
-            if args.use_wandb:
-                import wandb
-                wandb.log({
-                    "val/concept_heatmaps": [
-                        wandb.Image(img, caption=f"Sample {idx + 1}")
-                        for idx, img in enumerate(heatmap_images)
-                    ]
-                }, commit=False)
-        
-        # ---- Update epoch progress bar with summary ----
-        epoch_pbar.set_postfix(
-            TrCL=f"{avg_concept_loss:.4f}",
-            TrTL=f"{avg_target_loss:.4f}",
-            VaCL=f"{avg_val_concept_loss:.4f}",
-            VaTL=f"{avg_val_target_loss:.4f}",
-            VAcc=f"{avg_val_target_acc:.4f}"
-        )
-              
-        # 1. Step Learning Rate Scheduler
-        if scheduler is not None:
-            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(avg_val_loss)
-            else:
-                scheduler.step()
-                
-        # 2. Evaluate Early Stopping
-        if es_handler is not None:
-            # Map monitor target to metric value
-            monitor_target = es_handler.monitor.lower()
-            if monitor_target == "val_loss":
-                monitor_score = avg_val_loss
-            elif monitor_target == "val_target_loss":
-                monitor_score = avg_val_target_loss
-            elif monitor_target == "val_concept_loss":
-                monitor_score = avg_val_concept_loss
-            elif monitor_target == "val_acc" or monitor_target == "val_t_acc":
-                monitor_score = avg_val_target_acc
-            elif monitor_target == "val_concept_acc" or monitor_target == "val_c_acc":
-                monitor_score = avg_val_concept_acc
-            else:
-                monitor_score = avg_val_loss
-                
-            es_handler(monitor_score, model)
-            
-            if es_handler.early_stop:
-                tqdm.write(f"\n  🛑 Early stopping at Epoch {epoch + 1}. Restoring best weights.")
-                model.load_state_dict(es_handler.best_weights)
-                break
-              
-        if args.use_wandb:
-            log_dict = {
-                "epoch": epoch + 1,
-                "train/total_loss": avg_concept_loss + avg_target_loss,
-                "train/concept_loss": avg_concept_loss,
-                "train/target_loss": avg_target_loss,
-                "val/total_loss": avg_val_loss,
-                "val/concept_loss": avg_val_concept_loss,
-                "val/target_loss": avg_val_target_loss,
-                "val/accuracy": avg_val_target_acc,
-                "val/concept_accuracy": avg_val_concept_acc
-            }
-            log_dict.update(val_individual_concept_accs)
-            wandb.log(log_dict)
-              
+    # 4. Sequential Training Phases
+    # Phase 1: Concept Learning
+    train_phase1(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        concept_criterion=concept_criterion,
+        device=device,
+        args=args,
+        config_data=config_data,
+        run_name=run_name,
+        num_concepts_supervised=num_concepts_supervised,
+        resolved_config=resolved_config
+    )
+    
+    # Phase 2: Target Learning
+    train_phase2(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        target_criterion=target_criterion,
+        device=device,
+        args=args,
+        config_data=config_data,
+        run_name=run_name,
+        num_concepts_supervised=num_concepts_supervised,
+        resolved_config=resolved_config,
+        num_classes=num_classes
+    )
+
     # Save Model Weights
     mode = "frozen_backbone" if args.freeze_backbone else "full"
     save_subdir = os.path.join(args.save_dir, args.backbone_name)

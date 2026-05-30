@@ -26,7 +26,7 @@ training:
   save_dir: "checkpoints"
   resume_checkpoint: null
   use_wandb: false  # Disable by default for local execution, set to true to monitor via wandb
-  num_workers: 8
+  num_workers: 16
   pin_memory: true
   cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
   max_cache_size_gb: 15.0
