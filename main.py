@@ -284,10 +284,28 @@ def main():
         # Multi-class: compute inverse-frequency class weights from training data
         if hasattr(train_dataset, 'df') and not train_dataset.dummy_mode:
             target_col = resolved_config.get("target_col", "diagnosis_idx")
-            class_counts = train_dataset.df[target_col].value_counts().sort_index()
+            target_to_idx = getattr(train_dataset, "target_to_idx", None)
+            
+            counts = [0] * num_classes
+            for val in train_dataset.df[target_col].dropna():
+                if target_to_idx is not None and val in target_to_idx:
+                    idx = target_to_idx[val]
+                else:
+                    try:
+                        idx = int(val)
+                    except (ValueError, TypeError):
+                        idx = 0
+                if 0 <= idx < num_classes:
+                    counts[idx] += 1
+            
+            # Ensure at least 1 count to avoid division by zero
+            counts = [max(1, c) for c in counts]
+            
             # Inverse-frequency weights normalized so they sum to num_classes
-            weights = 1.0 / class_counts.values.astype(float)
-            weights = weights / weights.sum() * num_classes
+            weights = [1.0 / c for c in counts]
+            sum_weights = sum(weights)
+            weights = [w / sum_weights * num_classes for w in weights]
+            
             class_weight = torch.tensor(weights, dtype=torch.float32, device=device)
             target_criterion = nn.CrossEntropyLoss(weight=class_weight)
             tqdm.write(f"  ⚖️  Class weights (inv-freq): {[f'{w:.2f}' for w in weights]}")

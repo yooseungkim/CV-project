@@ -1,0 +1,51 @@
+# ==============================================================================
+# Model Training Configuration for Attention-CBM Pipeline (Derm7pt Dataset)
+# ==============================================================================
+
+# 1. Vision Backbone Settings
+backbone:
+  backbone_type: "timm"
+  backbone_name: "resnet50"
+  freeze_backbone: false
+  freeze_head: false
+
+# 2. Dataset Setup
+dataset:
+  dataset: "derm7pt"
+  csv_path: "data/derm7pt/meta/meta.csv"
+  image_dir: "data/derm7pt/images"
+  concept_config_path: "data/derm7pt/concept_config.json"
+
+# 3. Core Training Hyperparameters
+training:
+  epochs: 20
+  batch_size: 16  # Optimized for derm7pt split sizes
+  lambda_c: 3.0   # Scale factor for concept loss
+  num_classes: 20  # 20 unique diagnoses
+  save_dir: "checkpoints"
+  resume_checkpoint: null
+  use_wandb: false  # Disable by default for local execution
+  num_workers: 4
+  pin_memory: true
+  cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
+  max_cache_size_gb: 10.0
+
+# 4. Optimizer Configurations
+optimizer:
+  type: "adamw"
+  backbone_lr: 0.00001  # Differential LR
+  head_lr: 0.001
+  weight_decay: 0.0001
+
+# 5. Learning Rate Scheduler Options
+scheduler:
+  type: "cosine"
+  T_max: 20
+  eta_min: 0.000001
+
+# 6. Early Stopping Criteria
+early_stopping:
+  enabled: true
+  monitor: "val_target_loss"
+  patience: 7
+  min_delta: 0.001

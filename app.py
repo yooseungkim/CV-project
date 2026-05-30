@@ -561,9 +561,17 @@ def main():
     if args.target_classes:
         TARGET_CLASSES = [c.strip() for c in args.target_classes.split(',')]
     elif NUM_CLASSES > 1:
-        # Default MILK10K classes
-        from src.data.milk10k import MILK10KDataset
-        TARGET_CLASSES = MILK10KDataset.GT_LABEL_COLS
+        if NUM_CLASSES == 20:
+            try:
+                from src.data.derm7pt import Derm7PtDataset
+                dataset = Derm7PtDataset(cache_in_memory=False)
+                TARGET_CLASSES = sorted(list(dataset.target_to_idx.keys()))
+            except Exception as e:
+                TARGET_CLASSES = [f"Class {i}" for i in range(NUM_CLASSES)]
+        else:
+            # Default MILK10K classes
+            from src.data.milk10k import MILK10KDataset
+            TARGET_CLASSES = MILK10KDataset.GT_LABEL_COLS
     else:
         TARGET_CLASSES = []
 
