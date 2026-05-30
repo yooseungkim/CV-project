@@ -606,7 +606,11 @@ def main():
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    state_dict = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    loaded_checkpoint = torch.load(checkpoint_path, map_location=DEVICE, weights_only=True)
+    if isinstance(loaded_checkpoint, dict) and "state_dict" in loaded_checkpoint:
+        state_dict = loaded_checkpoint["state_dict"]
+    else:
+        state_dict = loaded_checkpoint
     
     # Auto-detect number of latent concepts from classifier_head weight shape
     latent_concepts = args.latent_concepts

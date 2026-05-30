@@ -843,7 +843,11 @@ def main():
     if args.resume_checkpoint:
         if os.path.exists(args.resume_checkpoint):
             tqdm.write(f"  🔄 Loading pre-trained weights from: {args.resume_checkpoint}")
-            state_dict = torch.load(args.resume_checkpoint, map_location=device, weights_only=True)
+            loaded_checkpoint = torch.load(args.resume_checkpoint, map_location=device, weights_only=True)
+            if isinstance(loaded_checkpoint, dict) and 'state_dict' in loaded_checkpoint:
+                state_dict = loaded_checkpoint['state_dict']
+            else:
+                state_dict = loaded_checkpoint
             try:
                 model.load_state_dict(state_dict, strict=True)
                 tqdm.write("  ✅ Weights loaded successfully (strict match).")
@@ -965,7 +969,14 @@ def main():
         simple_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         save_filename = f"{args.dataset}_{args.backbone_name}_latent{args.latent_concepts}_{simple_timestamp}.pt"
     save_path = os.path.join(save_subdir, save_filename)
-    torch.save(model.state_dict(), save_path)
+    
+    # Pack model state_dict along with full training configs for absolute reproducibility & lineage tracking
+    checkpoint = {
+        'state_dict': model.state_dict(),
+        'config': config_data,
+        'args': vars(args)
+    }
+    torch.save(checkpoint, save_path)
     
     tqdm.write(f"\n{'='*60}")
     tqdm.write(f"  ✅ Training complete!")
