@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from src.data.milk10k import MILK10KDataset
 from src.data.derm7pt import Derm7PtDataset
+from src.data.cub import CUB2011Dataset
 from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy
 from src.utils.visualization import generate_concept_heatmaps
@@ -60,7 +61,7 @@ class EarlyStopping:
 
 def get_dataset_choices():
     data_dir = 'data'
-    default_choices = ['milk10k', 'derm7pt']
+    default_choices = ['milk10k', 'derm7pt', 'cub']
     if not os.path.exists(data_dir):
         return default_choices
     choices = []
@@ -177,6 +178,8 @@ def main():
         dataset_class = MILK10KDataset
     elif args.dataset == 'derm7pt':
         dataset_class = Derm7PtDataset
+    elif args.dataset in ['cub', 'cub_200_2011', 'cvpr2016_cub']:
+        dataset_class = CUB2011Dataset
     else:
         raise ValueError(f"Unknown dataset {args.dataset}")
 

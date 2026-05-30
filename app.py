@@ -568,6 +568,24 @@ def main():
                 TARGET_CLASSES = sorted(list(dataset.target_to_idx.keys()))
             except Exception as e:
                 TARGET_CLASSES = [f"Class {i}" for i in range(NUM_CLASSES)]
+        elif NUM_CLASSES == 200:
+            try:
+                classes_path = "data/CUB_200_2011/classes.txt"
+                classes = []
+                with open(classes_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                name = " ".join(parts[1:])
+                                if '.' in name:
+                                    name = name.split('.', 1)[1]
+                                name = name.replace('_', ' ')
+                                classes.append(name)
+                TARGET_CLASSES = classes
+            except Exception as e:
+                TARGET_CLASSES = [f"Class {i}" for i in range(NUM_CLASSES)]
         else:
             # Default MILK10K classes
             from src.data.milk10k import MILK10KDataset

@@ -1,0 +1,52 @@
+# ==============================================================================
+# Model Training Configuration for Attention-CBM Pipeline (CUB-200-2011 Dataset)
+# ==============================================================================
+
+# 1. Vision Backbone Settings
+backbone:
+  backbone_type: "timm"
+  backbone_name: "resnet50"
+  freeze_backbone: false
+  freeze_head: false
+
+# 2. Dataset Setup
+dataset:
+  dataset: "cub"
+  csv_path: "data/CUB_200_2011/images.txt"
+  image_dir: "data/CUB_200_2011/images"
+  concept_config_path: "data/CUB_200_2011/concept_config.json"
+
+# 3. Core Training Hyperparameters
+training:
+  epochs: 20
+  batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
+  lambda_c: 0.1  # Scale factor for concept loss
+  latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
+  num_classes: 200  # 200 unique bird species
+  save_dir: "checkpoints"
+  resume_checkpoint: null
+  use_wandb: false  # Disable by default for local execution, set to true to monitor via wandb
+  num_workers: 8
+  pin_memory: true
+  cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
+  max_cache_size_gb: 15.0
+
+# 4. Optimizer Configurations
+optimizer:
+  type: "adamw"
+  backbone_lr: 0.00001  # Differential LR
+  head_lr: 0.001
+  weight_decay: 0.0001
+
+# 5. Learning Rate Scheduler Options
+scheduler:
+  type: "cosine"
+  T_max: 20
+  eta_min: 0.000001
+
+# 6. Early Stopping Criteria
+early_stopping:
+  enabled: true
+  monitor: "val_target_loss"
+  patience: 5
+  min_delta: 0.001
