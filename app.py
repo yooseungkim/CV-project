@@ -113,13 +113,8 @@ def run_inference(image: Image.Image):
     # Forward pass (extract intermediate representations)
     MODEL.eval()
     with torch.no_grad():
-        features = MODEL.backbone(img_tensor)
-        if isinstance(features, tuple):
-            features = features[0]
-
-        concept_logits, attn_weights = MODEL.concept_attention(features)
+        class_logits, concept_logits, attn_weights = MODEL(img_tensor)
         concept_probs = torch.sigmoid(concept_logits)  # [1, num_concepts]
-        class_logits = MODEL.classifier_head(concept_probs)  # [1, num_classes]
 
     # Prediction result
     if NUM_CLASSES == 1:
@@ -603,8 +598,9 @@ def main():
     MODEL = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
-        num_concepts=NUM_CONCEPTS,
-        num_classes=NUM_CLASSES
+        num_supervised_concepts=NUM_CONCEPTS,
+        num_classes=NUM_CLASSES,
+        num_latent_concepts=0
     )
 
     # 3. Load checkpoint

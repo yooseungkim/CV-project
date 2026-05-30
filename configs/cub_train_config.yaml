@@ -18,10 +18,12 @@ dataset:
 
 # 3. Core Training Hyperparameters
 training:
-  epochs: 20
+  phase1_epochs: 15
+  phase2_epochs: 50
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
-  latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
+  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   save_dir: "checkpoints"
   resume_checkpoint: null
@@ -35,18 +37,23 @@ training:
 optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
-  head_lr: 0.001
+  phase1_lr: 0.0001
+  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
   weight_decay: 0.0001
+  concept_loss_type: "focal"  # Choices: ["focal", "bce"]
+  focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
+  focal_gamma: 2.0  # Focal loss focus exponent gamma
 
 # 5. Learning Rate Scheduler Options
 scheduler:
   type: "cosine"
-  T_max: 20
   eta_min: 0.000001
 
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true
-  monitor: "val_target_loss"
-  patience: 5
+  phase1_monitor: "val_concept_loss"
+  phase1_patience: 5
+  phase2_monitor: "val_target_loss"
+  phase2_patience: 10  # Longer patience for Phase 2 target learning
   min_delta: 0.001

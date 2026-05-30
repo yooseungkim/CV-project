@@ -55,13 +55,16 @@ class UniversalFlexibleCBM(nn.Module):
         self,
         backbone_type: str,
         backbone_name: str,
-        num_concepts: int,
+        num_supervised_concepts: int,
         num_classes: int,
+        num_latent_concepts: int = 0,
         pretrained: bool = True
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
-        self.num_concepts = num_concepts
+        self.num_supervised_concepts = num_supervised_concepts
+        self.num_latent_concepts = num_latent_concepts
+        self.num_concepts = num_supervised_concepts + num_latent_concepts
         self.num_classes = num_classes
 
         # 1. Initialize Backbone
@@ -85,13 +88,18 @@ class UniversalFlexibleCBM(nn.Module):
         feature_dim, spatial_h, spatial_w = self._infer_feature_dim()
 
         # 3. Layer Construction
-        self.concept_attention = ConceptAttentionLayer(
+        self.supervised_attention = ConceptAttentionLayer(
             feature_dim=feature_dim, 
-            num_concepts=num_concepts
+            num_concepts=num_supervised_concepts
         )
+        if self.num_latent_concepts > 0:
+            self.latent_attention = ConceptAttentionLayer(
+                feature_dim=feature_dim, 
+                num_concepts=num_latent_concepts
+            )
         self.concept_activation = nn.Sigmoid()
         self.dropout = nn.Dropout(p=0.2)
-        self.classifier_head = nn.Linear(num_concepts, num_classes)
+        self.classifier_head = nn.Linear(self.num_concepts, num_classes)
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:
         """Pass a dummy tensor through the backbone to dynamically infer feature and spatial dimensions."""
@@ -126,9 +134,15 @@ class UniversalFlexibleCBM(nn.Module):
             features = features[0]
             
         # Attention-based concept projection
-        # concept_logits: [B, num_concepts]
-        # attn_weights: [B, num_concepts, H_attn, W_attn]
-        concept_logits, attn_weights = self.concept_attention(features)
+        supervised_logits, supervised_attn = self.supervised_attention(features)
+        
+        if self.num_latent_concepts > 0:
+            latent_logits, latent_attn = self.latent_attention(features)
+            concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+            attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+        else:
+            concept_logits = supervised_logits
+            attn_weights = supervised_attn
         
         # Concept activation (Phase 1 baseline)
         concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
@@ -160,3 +174,25 @@ class UniversalFlexibleCBM(nn.Module):
         """Unfreezes the classifier head parameters."""
         for param in self.classifier_head.parameters():
             param.requires_grad = True
+
+    def freeze_supervised_attention(self):
+        """Freezes the supervised concept attention parameters."""
+        for param in self.supervised_attention.parameters():
+            param.requires_grad = False
+
+    def unfreeze_supervised_attention(self):
+        """Unfreezes the supervised concept attention parameters."""
+        for param in self.supervised_attention.parameters():
+            param.requires_grad = True
+
+    def freeze_latent_attention(self):
+        """Freezes the latent concept attention parameters."""
+        if self.num_latent_concepts > 0:
+            for param in self.latent_attention.parameters():
+                param.requires_grad = False
+
+    def unfreeze_latent_attention(self):
+        """Unfreezes the latent concept attention parameters."""
+        if self.num_latent_concepts > 0:
+            for param in self.latent_attention.parameters():
+                param.requires_grad = True

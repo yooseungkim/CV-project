@@ -26,3 +26,33 @@ def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: tor
     if total == 0:
         return 0.0
     return (correct / total).item()
+
+def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, threshold: float = 0.0) -> dict:
+    """Calculates Balanced Accuracy, True Positive Rate (TPR), and True Negative Rate (TNR)
+    across all concepts to robustly evaluate models on highly sparse concept annotations.
+    
+    Args:
+        concept_logits: Raw prediction logits from the concept predictor (pre-Sigmoid).
+        concept_targets: Ground truth concept targets.
+        threshold: The decision threshold for logits (default 0.0 is equivalent to Sigmoid > 0.5).
+    """
+    preds_bin = (concept_logits > threshold).float()
+    targets_bin = (concept_targets > 0.5).float()
+
+    tp = (preds_bin * targets_bin).sum(dim=0)
+    tn = ((1 - preds_bin) * (1 - targets_bin)).sum(dim=0)
+    fp = (preds_bin * (1 - targets_bin)).sum(dim=0)
+    fn = ((1 - preds_bin) * targets_bin).sum(dim=0)
+
+    tpr = tp / (tp + fn + 1e-8)
+    tnr = tn / (tn + fp + 1e-8)
+
+    balanced_accs = (tpr + tnr) / 2.0
+    
+    metrics = {
+        "mean_balanced_acc": balanced_accs.mean().item(),
+        "individual_balanced_acc": balanced_accs,
+        "tpr": tpr.mean().item(),
+        "tnr": tnr.mean().item()
+    }
+    return metrics
