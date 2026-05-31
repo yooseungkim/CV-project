@@ -27,16 +27,40 @@ def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: tor
         return 0.0
     return (correct / total).item()
 
-def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, threshold: float = 0.0) -> dict:
+def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold: float = 0.0) -> dict:
     """Calculates Balanced Accuracy, True Positive Rate (TPR), and True Negative Rate (TNR)
-    across all concepts to robustly evaluate models on highly sparse concept annotations.
+    across all concepts to robustly evaluate models, dynamically adapting to mutually exclusive groups.
     
     Args:
-        concept_logits: Raw prediction logits from the concept predictor (pre-Sigmoid).
+        concept_logits: Raw prediction logits from the concept predictor (pre-activation).
         concept_targets: Ground truth concept targets.
-        threshold: The decision threshold for logits (default 0.0 is equivalent to Sigmoid > 0.5).
+        concept_groups_info: Optional list of (start_idx, num_feats) representing attribute groups.
+        threshold: The decision threshold for Sigmoid/Softmax logits (default 0.0 is equivalent to probability > 0.5).
     """
-    preds_bin = (concept_logits > threshold).float()
+    preds_bin = torch.zeros_like(concept_logits)
+    
+    if concept_groups_info is not None:
+        for start_idx, num_feats in concept_groups_info:
+            group_logits = concept_logits[:, start_idx : start_idx + num_feats]
+            if num_feats > 1:
+                # Group Softmax prediction: the argmax along the group dimension is active
+                group_preds = torch.zeros_like(group_logits)
+                max_logits, argmax_idx = torch.max(group_logits, dim=-1)
+                
+                # Confidence Masking: Only predict the argmax if the model is confident (max logit > threshold)
+                # This elegantly handles occlusions where the ground truth is all-zeros [0, 0, 0, ...]
+                valid_mask = max_logits > threshold
+                group_preds.scatter_(1, argmax_idx.unsqueeze(-1), 1.0)
+                group_preds = group_preds * valid_mask.unsqueeze(-1).float()
+                
+                preds_bin[:, start_idx : start_idx + num_feats] = group_preds
+            else:
+                # Sigmoid / 1D binary fallback: threshold at logit > threshold (0.0)
+                preds_bin[:, start_idx : start_idx + num_feats] = (group_logits > threshold).float()
+    else:
+        # Global Sigmoid fallback: threshold all at logit > threshold (0.0)
+        preds_bin = (concept_logits > threshold).float()
+        
     targets_bin = (concept_targets > 0.5).float()
 
     tp = (preds_bin * targets_bin).sum(dim=0)

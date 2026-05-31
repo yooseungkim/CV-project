@@ -402,7 +402,7 @@ def parse_args():
     args = parser.parse_args()
     return args, config_data
 
-def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config):
+def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, concept_groups_info=None):
     tqdm.write(f"\n{'-'*60}")
     tqdm.write("  🎬 Phase 1: Concept Learning (Backbone & Concept Head)")
     tqdm.write(f"{'-'*60}")
@@ -527,7 +527,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             total_loss_c += total_loss.item()
             
             # Calculate Balanced Accuracy for train batch reporting
-            batch_metrics = calculate_concept_metrics(concept_logits[:, :num_concepts_supervised].detach(), concepts)
+            batch_metrics = calculate_concept_metrics(concept_logits[:, :num_concepts_supervised].detach(), concepts, concept_groups_info=concept_groups_info)
             total_acc_c += batch_metrics["mean_balanced_acc"]
             train_pbar.set_postfix(CL=f"{loss_c.item():.4f}", OL=f"{loss_ortho.item():.4f}", BA=f"{batch_metrics['mean_balanced_acc']:.4f}")
             
@@ -582,7 +582,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         if all_val_probs:
             val_logits_all = torch.cat(all_val_probs, dim=0)
             val_targets_all = torch.cat(all_val_targets, dim=0)
-            val_metrics = calculate_concept_metrics(val_logits_all, val_targets_all)
+            val_metrics = calculate_concept_metrics(val_logits_all, val_targets_all, concept_groups_info=concept_groups_info)
             avg_val_acc_c = val_metrics["mean_balanced_acc"]
             val_tpr = val_metrics["tpr"]
             val_tnr = val_metrics["tnr"]
@@ -1051,7 +1051,8 @@ def main():
         config_data=config_data,
         run_name=run_name,
         num_concepts_supervised=num_concepts_supervised,
-        resolved_config=resolved_config
+        resolved_config=resolved_config,
+        concept_groups_info=concept_groups_info
     )
     
     # Phase 2: Target Learning
