@@ -696,6 +696,7 @@ def main():
     backbone_name = args.backbone_name
     backbone_type = args.backbone_type
     use_concept_groups = True
+    use_cosine_attention = getattr(args, 'use_cosine_attention', False)
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -703,6 +704,8 @@ def main():
             use_lora = checkpoint_args['use_lora']
             lora_r = checkpoint_args.get('lora_r', 8)
             lora_alpha = checkpoint_args.get('lora_alpha', 16.0)
+        if 'use_cosine_attention' in checkpoint_args:
+            use_cosine_attention = checkpoint_args['use_cosine_attention']
         if 'backbone_name' in checkpoint_args:
             backbone_name = checkpoint_args['backbone_name']
             backbone_type = checkpoint_args.get('backbone_type', 'timm')
@@ -717,6 +720,8 @@ def main():
             use_lora = bb_cfg['use_lora']
             lora_r = bb_cfg.get('lora_r', 8)
             lora_alpha = bb_cfg.get('lora_alpha', 16.0)
+        if 'use_cosine_attention' in bb_cfg:
+            use_cosine_attention = bb_cfg['use_cosine_attention']
         if 'backbone_name' in bb_cfg:
             backbone_name = bb_cfg['backbone_name']
             backbone_type = bb_cfg.get('backbone_type', 'timm')
@@ -728,11 +733,16 @@ def main():
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
         if has_lora_keys:
             use_lora = True
+        # Detect cosine attention from state_dict keys (cosine path has q_proj/k_proj, standard has cross_attention)
+        has_cosine_keys = any(".q_proj.weight" in k and "supervised_attention" in k for k in state_dict.keys())
+        has_mha_keys    = any(".cross_attention." in k for k in state_dict.keys())
+        if has_cosine_keys and not has_mha_keys:
+            use_cosine_attention = True
         # Dynamic inference of ViT shape based on weight keys
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_concept_groups=True")
+        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True")
 
     # Command line argument override
     if getattr(args, 'no_grouping', False):
@@ -792,7 +802,8 @@ def main():
         use_lora=use_lora,
         lora_r=lora_r,
         lora_alpha=lora_alpha,
-        concept_groups_info=concept_groups_info
+        concept_groups_info=concept_groups_info,
+        use_cosine_attention=use_cosine_attention
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

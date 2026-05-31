@@ -177,83 +177,89 @@ class ViTBackboneWrapper(nn.Module):
 
 
 class ViTCrossAttentionLayer(nn.Module):
-    def __init__(self, embed_dim: int, num_concepts: int, num_heads: int = 4):
-        """Concept-specific Cross-Attention Layer for ViT backbones with Cosine Attention.
-        Replaces standard scaled dot-product attention with L2-normalized cosine attention
-        to suppress the high-norm border-patch outliers that DINOv2 produces on tightly
-        cropped images ("Vision Transformers Need Registers", ICLR 2024).
+    def __init__(self, embed_dim: int, num_concepts: int, num_heads: int = 4,
+                 use_cosine_attention: bool = False):
+        """Concept-specific Multihead Cross-Attention Layer for ViT backbones.
 
-        Architecture:
-          - Learnable concept queries (Q) are L2-normalized.
-          - DINOv2 patch tokens projected to keys (K) are L2-normalized.
-          - Scores = (Q_norm @ K_norm.T) / temperature  -> softmax -> weighted sum of values (V).
-          - Concept logits = cosine(attn_out, concept_proj) / temperature + bias.
+        Two attention modes are supported via `use_cosine_attention`:
+          - False (default): Standard nn.MultiheadAttention (stable, pretrained-checkpoint compatible).
+          - True: L2-normalized Cosine Attention with learnable temperature, which suppresses
+            the high-norm border-patch outliers produced by DINOv2 on tightly cropped images
+            ("Vision Transformers Need Registers", ICLR 2024).
         """
         super().__init__()
         self.num_concepts = num_concepts
         self.embed_dim = embed_dim
+        self.use_cosine_attention = use_cosine_attention
         
         # Learnable concept queries: [1, num_concepts, embed_dim]
         self.concept_queries = nn.Parameter(torch.randn(1, num_concepts, embed_dim))
-        
-        # Explicit Q / K / V projections (replacing nn.MultiheadAttention)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         
         # Concept-specific projections & biases: [num_concepts, embed_dim]
         self.concept_proj = nn.Parameter(torch.randn(num_concepts, embed_dim))
         self.concept_bias = nn.Parameter(torch.zeros(num_concepts))
         
-        # Learnable temperature for cosine similarity scaling (init=1 -> no-op at start)
-        self.temperature = nn.Parameter(torch.ones(1))
-        
-        # Surgical initialization: bias prevents Focal Loss logit explosion (RetinaNet Prior pi=0.01)
+        # Surgical initialization of bias to prevent Focal Loss logit explosion (RetinaNet Prior pi=0.01)
         pi = 0.01
         bias_init = -math.log((1 - pi) / pi)
         nn.init.constant_(self.concept_bias, bias_init)
-        # Xavier uniform for projection layers
-        for linear in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
-            nn.init.xavier_uniform_(linear.weight)
+
+        if use_cosine_attention:
+            # Explicit Q / K / V projections for cosine attention path
+            self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+            self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+            self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+            self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+            # Learnable temperature (init=1 -> no-op at start)
+            self.temperature = nn.Parameter(torch.ones(1))
+            for linear in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
+                nn.init.xavier_uniform_(linear.weight)
+        else:
+            # Standard multihead cross-attention
+            self.cross_attention = nn.MultiheadAttention(embed_dim, num_heads=num_heads, batch_first=True)
 
     def forward(self, features: torch.Tensor):
-        # features: patch tokens [B, N_patches, embed_dim] (e.g. N=196 for 14x14 grid)
+        # features: patch tokens [B, N_patches, embed_dim]
         B, N, D = features.shape
-        
-        # --- Project queries, keys, values ---
         queries = self.concept_queries.expand(B, -1, -1)  # [B, num_concepts, D]
-        Q = self.q_proj(queries)    # [B, num_concepts, D]
-        K = self.k_proj(features)   # [B, N, D]
-        V = self.v_proj(features)   # [B, N, D]
-        
-        # --- Cosine Attention: L2-normalize Q and K along the feature dimension ---
-        Q_norm = F.normalize(Q, p=2, dim=-1)  # [B, num_concepts, D]
-        K_norm = F.normalize(K, p=2, dim=-1)  # [B, N, D]
-        
-        # Cosine similarity scores: [B, num_concepts, N]
-        attn_scores = torch.bmm(Q_norm, K_norm.transpose(1, 2)) / self.temperature.clamp(min=1e-4)
-        
-        # Softmax over patch dimension to get normalized attention weights
-        attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, num_concepts, N]
-        
-        # Weighted sum of values: [B, num_concepts, D]
-        attn_out = self.out_proj(torch.bmm(attn_weights, V))  # [B, num_concepts, D]
-        
-        # --- Concept logits via cosine similarity with learnable concept projections ---
-        concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)  # [num_concepts, D]
-        attn_out_norm = F.normalize(attn_out, p=2, dim=-1)               # [B, num_concepts, D]
-        concept_logits = (
-            (attn_out_norm * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
-            / self.temperature.clamp(min=1e-4)
-            + self.concept_bias.unsqueeze(0)
-        )  # [B, num_concepts]
-        
-        # Reshape attention weights: [B, num_concepts, N] -> [B, num_concepts, H_attn, W_attn]
+
+        if self.use_cosine_attention:
+            # --- Cosine Attention path ---
+            Q = self.q_proj(queries)   # [B, num_concepts, D]
+            K = self.k_proj(features)  # [B, N, D]
+            V = self.v_proj(features)  # [B, N, D]
+
+            Q_norm = F.normalize(Q, p=2, dim=-1)
+            K_norm = F.normalize(K, p=2, dim=-1)
+
+            attn_scores = torch.bmm(Q_norm, K_norm.transpose(1, 2)) / self.temperature.clamp(min=1e-4)
+            attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, num_concepts, N]
+            attn_out = self.out_proj(torch.bmm(attn_weights, V))  # [B, num_concepts, D]
+
+            concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)
+            attn_out_norm = F.normalize(attn_out, p=2, dim=-1)
+            concept_logits = (
+                (attn_out_norm * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
+                / self.temperature.clamp(min=1e-4)
+                + self.concept_bias.unsqueeze(0)
+            )
+        else:
+            # --- Standard MultiheadAttention path ---
+            attn_out, attn_weights = self.cross_attention(
+                query=queries,
+                key=features,
+                value=features
+            )  # attn_out: [B, num_concepts, D], attn_weights: [B, num_concepts, N]
+
+            concept_logits = (
+                (attn_out * self.concept_proj.unsqueeze(0)).sum(dim=-1)
+                + self.concept_bias.unsqueeze(0)
+            )
+
+        # Reshape attention weights: [B, num_concepts, N] -> [B, num_concepts, sqrt(N), sqrt(N)]
         H_attn = int(math.sqrt(N))
-        W_attn = H_attn
-        attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, W_attn)
-        
+        attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, H_attn)
+
         return concept_logits, attn_weights_2d, attn_out
 
 
@@ -269,7 +275,8 @@ class UniversalFlexibleCBM(nn.Module):
         use_lora: bool = False,
         lora_r: int = 8,
         lora_alpha: float = 16.0,
-        concept_groups_info: Optional[List[Tuple[int, int]]] = None
+        concept_groups_info: Optional[List[Tuple[int, int]]] = None,
+        use_cosine_attention: bool = False
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -354,15 +361,19 @@ class UniversalFlexibleCBM(nn.Module):
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
             print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
             
-            # Layer Construction for ViT (using Multihead Cross-Attention)
+            # Layer Construction for ViT
+            attn_mode = "Cosine" if use_cosine_attention else "Standard MultiheadAttention"
+            print(f"🛠️ Attention Mode: {attn_mode} (use_cosine_attention={use_cosine_attention})")
             self.supervised_attention = ViTCrossAttentionLayer(
                 embed_dim=embed_dim,
-                num_concepts=num_supervised_concepts
+                num_concepts=num_supervised_concepts,
+                use_cosine_attention=use_cosine_attention
             )
             if self.num_latent_concepts > 0:
                 self.latent_attention = ViTCrossAttentionLayer(
                     embed_dim=embed_dim,
-                    num_concepts=num_latent_concepts
+                    num_concepts=num_latent_concepts,
+                    use_cosine_attention=use_cosine_attention
                 )
         else:
             raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")

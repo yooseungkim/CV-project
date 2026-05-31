@@ -11,6 +11,7 @@ backbone:
   use_lora: true          # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
   lora_r: 16             # LoRA rank dimension
   lora_alpha: 16.0        # LoRA scaling factor alpha
+  use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
 
 # 2. Dataset Setup
 dataset:

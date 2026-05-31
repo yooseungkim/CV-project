@@ -333,6 +333,7 @@ def parse_args():
     if "use_lora" in bb_cfg: flat_defaults["use_lora"] = bb_cfg["use_lora"]
     if "lora_r" in bb_cfg: flat_defaults["lora_r"] = bb_cfg["lora_r"]
     if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
+    if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -436,6 +437,7 @@ def parse_args():
     parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
+    parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
@@ -875,14 +877,18 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{'-'*60}")
-    tqdm.write("  🎬 Phase 3: Joint Parameter Tuning (Full Architecture End-to-End)")
+    tqdm.write("  🎬 Phase 3: Backbone & Classifier Fine-Tuning (Concept Head Frozen)")
     tqdm.write(f"{'-'*60}")
     
-    # 1. Unfreeze everything (LoRA adapters in backbone, all attention & classification layers)
-    model.unfreeze_backbone()
-    model.unfreeze_supervised_attention()
-    model.unfreeze_latent_attention()
+    # 1. Freeze Concept Head (supervised + latent attention) — preserve Phase 1 learned attention
+    model.freeze_supervised_attention()
+    model.freeze_latent_attention()
+    tqdm.write("  🔒 Concept Head frozen: supervised & latent attention weights are fixed.")
+    
+    # 2. Unfreeze only LoRA backbone adapters + classifier head
+    model.unfreeze_backbone()    # LoRA-active: only lora_A / lora_B params, pretrained weights stay frozen
     model.unfreeze_classifier()
+    tqdm.write("  🔓 Backbone (LoRA adapters) and Classifier Head unfrozen for fine-tuning.")
     
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
@@ -893,7 +899,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     phase3_epochs = args.phase3_epochs
     
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    tqdm.write(f"  🧠 Trainable parameters in Phase 3: {len(trainable_params)}")
+    trainable_names  = [n for n, p in model.named_parameters() if p.requires_grad]
+    tqdm.write(f"  🧠 Trainable parameters in Phase 3: {len(trainable_params)} tensors")
+    tqdm.write(f"     └─ Modules: {', '.join(dict.fromkeys(n.split('.')[0] for n in trainable_names))}")
     
     if opt_type == "adamw":
         optimizer = optim.AdamW(trainable_params, lr=phase3_lr, weight_decay=weight_decay)
@@ -1176,7 +1184,8 @@ def main():
         use_lora=args.use_lora,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        concept_groups_info=concept_groups_info
+        concept_groups_info=concept_groups_info,
+        use_cosine_attention=args.use_cosine_attention
     )
     
     if args.freeze_backbone:
