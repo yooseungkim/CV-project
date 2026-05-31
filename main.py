@@ -334,6 +334,7 @@ def parse_args():
     if "lora_r" in bb_cfg: flat_defaults["lora_r"] = bb_cfg["lora_r"]
     if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
     if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
+    if "use_group_broadcasting" in bb_cfg: flat_defaults["use_group_broadcasting"] = bb_cfg["use_group_broadcasting"]
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -764,13 +765,23 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             # 이전 단계에서 학습된 수퍼바이즈드 컨셉 예측값을 그래프 연산 분리하여 추출
             with torch.no_grad():
                 features = model.backbone(images)
-                supervised_logits, _, supervised_features = model.supervised_attention(features)
+                if hasattr(model.supervised_attention, 'mlp'):
+                    supervised_logits, supervised_max_indices = model.supervised_attention(features)
+                    gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+                    supervised_features = torch.gather(features, dim=1, index=gather_indices)
+                else:
+                    supervised_logits, _, supervised_features = model.supervised_attention(features)
                 
             optimizer.zero_grad()
             
             # 레이턴트 컨셉은 그래디언트를 흘려주어야 하므로 no_grad 밖에서 계산
             if model.num_latent_concepts > 0:
-                latent_logits, _, latent_features = model.latent_attention(features)
+                if hasattr(model.latent_attention, 'mlp'):
+                    latent_logits, latent_max_indices = model.latent_attention(features)
+                    gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+                    latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                else:
+                    latent_logits, _, latent_features = model.latent_attention(features)
                 concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
             else:
                 concept_logits = supervised_logits

@@ -5,9 +5,14 @@
 # 1. Vision Backbone Settings
 backbone:
   backbone_type: "timm"
-  backbone_name: "resnet50"
+  backbone_name: "vit_base_patch14_dinov2"
   freeze_backbone: false
   freeze_head: false
+  use_lora: true          # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
+  lora_r: 16             # LoRA rank dimension
+  lora_alpha: 16.0        # LoRA scaling factor alpha
+  use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (default: off)
+  use_group_broadcasting: true  # GroupToConceptAttention: 7 groups -> 28 independent BCE classifiers
 
 # 2. Dataset Setup
 dataset:
@@ -15,17 +20,21 @@ dataset:
   csv_path: "data/derm7pt/meta/meta.csv"
   image_dir: "data/derm7pt/images"
   concept_config_path: "data/derm7pt/concept_config.json"
+  use_concept_groups: false  # Disable GroupSoftmax to let independent BCE mapping work
 
 # 3. Core Training Hyperparameters
 training:
-  epochs: 20
+  phase1_epochs: 20
+  phase2_epochs: 30
+  phase3_epochs: 10  # Joint end-to-end parameter tuning
   batch_size: 64  # Optimized for derm7pt split sizes
   lambda_c: 0.1  # Scale factor for concept loss
-  latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
-  num_classes: 20  # 20 unique diagnoses
+  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
+  num_classes: 20  # 20 unique diagnoses in derm7pt
   save_dir: "checkpoints"
   resume_checkpoint: null
-  use_wandb: true  # Disable by default for local execution
+  use_wandb: true  # Set to true if monitoring via wandb is desired
   num_workers: 16
   pin_memory: true
   cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
@@ -35,18 +44,25 @@ training:
 optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
-  head_lr: 0.001
-  weight_decay: 0.0001
+  phase1_lr: 0.0005
+  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
+  phase3_lr: 0.00001  # Small joint learning rate for end-to-end Phase 3 tuning
+  weight_decay: 0.05
+  concept_loss_type: "bce"  # BCEWithLogitsLoss is required for Group Broadcasting
 
 # 5. Learning Rate Scheduler Options
 scheduler:
-  type: "cosine"
-  T_max: 20
+  type: "cosine_with_warmup"
+  warmup_epochs: 3
   eta_min: 0.000001
 
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true
-  monitor: "val_target_loss"
-  patience: 7
+  phase1_monitor: "val_concept_loss"
+  phase1_patience: 5
+  phase2_monitor: "val_target_loss"
+  phase2_patience: 7
+  phase3_monitor: "val_target_loss"
+  phase3_patience: 5
   min_delta: 0.001

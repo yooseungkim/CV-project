@@ -373,6 +373,40 @@ class GroupToConceptAttention(nn.Module):
         return concept_logits, attn_weights_2d, concept_features
 
 
+class PatchWiseMLPConceptHead(nn.Module):
+    def __init__(self, feature_dim: int, num_concepts: int, hidden_dim: int = 384):
+        """Patch-wise MLP Concept Head with Global Max Pooling.
+        Processes each visual patch token independently through a shared non-linear MLP,
+        and applies Global Max Pooling over the spatial dimension to extract the peak
+        activation and its patch location index.
+        """
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_concepts = num_concepts
+        
+        self.mlp = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, num_concepts)
+        )
+        
+        # Surgical prior initialization to prevent BCE logit explosion (RetinaNet Prior pi=0.01)
+        pi = 0.01
+        bias_init = -math.log((1 - pi) / pi)
+        nn.init.constant_(self.mlp[-1].bias, bias_init)
+
+    def forward(self, patch_features: torch.Tensor):
+        # patch_features: [B, N_patches, feature_dim]
+        # MLP maps [B, N_patches, feature_dim] -> [B, N_patches, num_concepts]
+        logits_per_patch = self.mlp(patch_features)
+        
+        # Global Max Pooling over spatial dimension (N_patches)
+        concept_logits, max_indices = torch.max(logits_per_patch, dim=1)
+        
+        return concept_logits, max_indices
+
+
 class UniversalFlexibleCBM(nn.Module):
     def __init__(
         self,
@@ -485,29 +519,18 @@ class UniversalFlexibleCBM(nn.Module):
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
             print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
 
-            if use_group_broadcasting:
-                # ── Group Broadcasting Architecture ──────────────────────────
-                print(f"🛠️ Attention Mode: GroupToConceptAttention ({num_groups} groups → {num_supervised_concepts} concepts)")
-                self.supervised_attention = GroupToConceptAttention(
-                    embed_dim=embed_dim,
-                    num_groups=num_groups,
-                    num_concepts=num_supervised_concepts,
-                    group_mapping=group_mapping
-                )
-            else:
-                # ── Standard per-concept Attention ───────────────────────────
-                attn_mode = "Cosine" if use_cosine_attention else "Standard MultiheadAttention"
-                print(f"🛠️ Attention Mode: {attn_mode} (use_cosine_attention={use_cosine_attention})")
-                self.supervised_attention = ViTCrossAttentionLayer(
-                    embed_dim=embed_dim,
-                    num_concepts=num_supervised_concepts,
-                    use_cosine_attention=use_cosine_attention
-                )
+            # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
+            print(f"🛠️ Concept Head: PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
+            self.supervised_attention = PatchWiseMLPConceptHead(
+                feature_dim=embed_dim,
+                num_concepts=num_supervised_concepts,
+                hidden_dim=384
+            )
             if self.num_latent_concepts > 0:
-                self.latent_attention = ViTCrossAttentionLayer(
-                    embed_dim=embed_dim,
-                    num_concepts=num_latent_concepts,
-                    use_cosine_attention=use_cosine_attention
+                self.latent_attention = PatchWiseMLPConceptHead(
+                    feature_dim=embed_dim,
+                    num_concepts=self.num_latent_concepts,
+                    hidden_dim=384
                 )
         else:
             raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")
@@ -560,18 +583,56 @@ class UniversalFlexibleCBM(nn.Module):
         if isinstance(features, tuple):
             features = features[0]
             
-        # Attention-based concept projection
-        supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
-        
-        if self.num_latent_concepts > 0:
-            latent_logits, latent_attn, latent_features = self.latent_attention(features)
-            concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
-            attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+        if self.backbone_name.startswith('resnet'):
+            # ResNet still uses spatial attention conv
+            supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+            if self.num_latent_concepts > 0:
+                latent_logits, latent_attn, latent_features = self.latent_attention(features)
+                concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+            else:
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
         else:
-            concept_logits = supervised_logits
-            attn_weights = supervised_attn
-            latent_features = None
-        
+            # ViT / DINOv2 uses PatchWiseMLPConceptHead
+            supervised_logits, supervised_max_indices = self.supervised_attention(features)
+            
+            # Convert supervised_max_indices [B, num_supervised_concepts] to sparse/smoothed dynamically-sized maps
+            B = supervised_max_indices.size(0)
+            N_patches = features.size(1) # e.g. 256 or 196
+            H_attn = int(math.sqrt(N_patches))
+            device = supervised_max_indices.device
+            
+            sparse_maps = torch.zeros(B, self.num_supervised_concepts, N_patches, device=device)
+            sparse_maps.scatter_(2, supervised_max_indices.unsqueeze(-1), 1.0)
+            sparse_maps = sparse_maps.view(B, self.num_supervised_concepts, H_attn, H_attn)
+            
+            from torchvision.transforms.functional import gaussian_blur
+            supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+            
+            # Mimic supervised features as gathered maximum patch tokens for compatibility
+            gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+            supervised_features = torch.gather(features, dim=1, index=gather_indices)
+            
+            if self.num_latent_concepts > 0:
+                latent_logits, latent_max_indices = self.latent_attention(features)
+                
+                sparse_latent_maps = torch.zeros(B, self.num_latent_concepts, N_patches, device=device)
+                sparse_latent_maps.scatter_(2, latent_max_indices.unsqueeze(-1), 1.0)
+                sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
+                latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                
+                gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+                latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                
+                concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+            else:
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
+                
         # Concept activation (Phase 1 baseline or Group Softmax)
         concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
         
