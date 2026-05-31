@@ -27,7 +27,7 @@ def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: tor
         return 0.0
     return (correct / total).item()
 
-def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold: float = 0.0) -> dict:
+def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold = 0.0) -> dict:
     """Calculates Balanced Accuracy, True Positive Rate (TPR), and True Negative Rate (TNR)
     across all concepts to robustly evaluate models, dynamically adapting to mutually exclusive groups.
     
@@ -35,10 +35,19 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
         concept_logits: Raw prediction logits from the concept predictor (pre-activation).
         concept_targets: Ground truth concept targets.
         concept_groups_info: Optional list of (start_idx, num_feats) representing attribute groups.
-        threshold: The decision threshold for Sigmoid/Softmax logits (default 0.0 is equivalent to probability > 0.5).
+        threshold: The decision threshold for Sigmoid/Softmax logits. Can be a single float or a tensor of shape [num_concepts].
     """
     preds_bin = torch.zeros_like(concept_logits)
+    num_concepts = concept_logits.shape[-1]
     
+    # Resolve threshold to a tensor of shape [num_concepts] on the correct device
+    if isinstance(threshold, (int, float)):
+        thresh_tensor = torch.full((num_concepts,), float(threshold), device=concept_logits.device)
+    elif isinstance(threshold, torch.Tensor):
+        thresh_tensor = threshold.to(concept_logits.device)
+    else:
+        thresh_tensor = torch.tensor(threshold, dtype=torch.float32, device=concept_logits.device)
+        
     if concept_groups_info is not None:
         for start_idx, num_feats in concept_groups_info:
             group_logits = concept_logits[:, start_idx : start_idx + num_feats]
@@ -48,18 +57,19 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
                 max_logits, argmax_idx = torch.max(group_logits, dim=-1)
                 
                 # Confidence Masking: Only predict the argmax if the model is confident (max logit > threshold)
-                # This elegantly handles occlusions where the ground truth is all-zeros [0, 0, 0, ...]
-                valid_mask = max_logits > threshold
+                g_threshold = thresh_tensor[start_idx : start_idx + num_feats].mean()
+                valid_mask = max_logits > g_threshold
                 group_preds.scatter_(1, argmax_idx.unsqueeze(-1), 1.0)
                 group_preds = group_preds * valid_mask.unsqueeze(-1).float()
                 
                 preds_bin[:, start_idx : start_idx + num_feats] = group_preds
             else:
-                # Sigmoid / 1D binary fallback: threshold at logit > threshold (0.0)
-                preds_bin[:, start_idx : start_idx + num_feats] = (group_logits > threshold).float()
+                # Sigmoid / 1D binary fallback: threshold at logit > threshold
+                g_threshold = thresh_tensor[start_idx]
+                preds_bin[:, start_idx : start_idx + num_feats] = (group_logits > g_threshold).float()
     else:
-        # Global Sigmoid fallback: threshold all at logit > threshold (0.0)
-        preds_bin = (concept_logits > threshold).float()
+        # Global Sigmoid fallback: threshold all at logit > threshold
+        preds_bin = (concept_logits > thresh_tensor.unsqueeze(0)).float()
         
     targets_bin = (concept_targets > 0.5).float()
 
@@ -88,3 +98,89 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
         "tnr": tnr.mean().item()
     }
     return metrics
+
+
+def find_optimal_concept_thresholds(
+    concept_logits: torch.Tensor,
+    concept_targets: torch.Tensor,
+    concept_groups_info = None,
+    candidate_thresholds = None
+) -> torch.Tensor:
+    """
+    Finds the optimal threshold for each concept using Youden's J statistic 
+    (maximizing Balanced Accuracy) on the validation set.
+    
+    Args:
+        concept_logits: Validation concept prediction logits.
+        concept_targets: Validation concept ground truth.
+        concept_groups_info: Optional list of (start_idx, num_feats) representing attribute groups.
+        candidate_thresholds: List of logit thresholds to search over. 
+                             Defaults to 41 points between -4.0 and 4.0.
+    
+    Returns:
+        optimal_thresholds: Tensor of shape [num_concepts] containing the optimal logit threshold for each concept.
+    """
+    if candidate_thresholds is None:
+        # Search in logit space: -4.0 (prob=0.018) to 4.0 (prob=0.982)
+        candidate_thresholds = torch.linspace(-4.0, 4.0, 41, device=concept_logits.device)
+        
+    num_concepts = concept_logits.shape[1]
+    optimal_thresholds = torch.zeros(num_concepts, device=concept_logits.device)
+    
+    # We do the search per concept/group
+    if concept_groups_info is not None:
+        for start_idx, num_feats in concept_groups_info:
+            best_j = -1.0
+            best_thresh = 0.0
+            
+            # For each group, we search for a shared threshold that maximizes the average group balanced accuracy
+            for thresh in candidate_thresholds:
+                # Calculate metrics for this specific group under candidate threshold
+                # We can construct a temp threshold tensor
+                temp_thresh = torch.tensor([thresh] * num_concepts, device=concept_logits.device)
+                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh)
+                
+                # Get the individual balanced acc for the active columns of this group
+                group_bal_acc = metrics["individual_balanced_acc"][start_idx : start_idx + num_feats].mean().item()
+                
+                if group_bal_acc > best_j:
+                    best_j = group_bal_acc
+                    best_thresh = thresh.item()
+                    
+            for idx in range(start_idx, start_idx + num_feats):
+                optimal_thresholds[idx] = best_thresh
+    else:
+        # Binary fallback: independent Youden J search per concept
+        for c in range(num_concepts):
+            best_j = -1.0
+            best_thresh = 0.0
+            
+            c_logits = concept_logits[:, c]
+            c_targets = (concept_targets[:, c] > 0.5).float()
+            
+            # If target has no positive or no negative instances in validation set, default to 0.0 logit
+            if c_targets.sum() == 0 or (1 - c_targets).sum() == 0:
+                optimal_thresholds[c] = 0.0
+                continue
+                
+            for thresh in candidate_thresholds:
+                preds = (c_logits > thresh).float()
+                
+                tp = (preds * c_targets).sum()
+                tn = ((1 - preds) * (1 - c_targets)).sum()
+                fp = (preds * (1 - c_targets)).sum()
+                fn = ((1 - preds) * c_targets).sum()
+                
+                tpr = tp / (tp + fn + 1e-8)
+                tnr = tn / (tn + fp + 1e-8)
+                
+                # Youden's J = TPR + TNR - 1 (maximizing J is equivalent to maximizing Balanced Accuracy)
+                j_stat = (tpr + tnr - 1.0).item()
+                
+                if j_stat > best_j:
+                    best_j = j_stat
+                    best_thresh = thresh.item()
+                    
+            optimal_thresholds[c] = best_thresh
+            
+    return optimal_thresholds

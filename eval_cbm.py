@@ -80,11 +80,12 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     # Compute Target Classification Accuracy
     topk_accs = calculate_topk_accuracy(all_class_logits, all_gt_targets)
     
-    # Compute Concept Metrics (Balanced Acc, TPR, TNR)
+    # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
         all_concept_logits, 
         all_gt_concepts, 
-        concept_groups_info=concept_groups_info
+        concept_groups_info=concept_groups_info,
+        threshold=model.concept_thresholds.cpu()
     )
     
     return topk_accs, concept_metrics, all_concept_probs, all_gt_concepts, all_gt_targets

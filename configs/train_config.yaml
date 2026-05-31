@@ -15,6 +15,10 @@ backbone:
   
   # Freeze final classification head weights (true/false)
   freeze_head: false
+  
+  # DINOv2 Self-Attention Foreground Silhouette Masking settings (only supported for DINOv2 models)
+  use_dino_mask: false
+  dino_mask_threshold: 0.35
 
 # 2. Dataset Setup
 dataset:
@@ -50,6 +54,9 @@ training:
   
   # Directory to save trained model weights
   save_dir: "checkpoints"
+  
+  # Optimize validation concept decision thresholds via Youden's J statistic
+  use_dynamic_threshold: true
   
   # Path to pre-trained model weights (.pth) to resume or fine-tune from. Set null to train from scratch.
   resume_checkpoint: null

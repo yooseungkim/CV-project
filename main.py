@@ -11,7 +11,7 @@ from src.data.milk10k import MILK10KDataset
 from src.data.derm7pt import Derm7PtDataset
 from src.data.cub import CUB2011Dataset
 from src.models.cbm_factory import UniversalFlexibleCBM
-from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy, calculate_concept_metrics
+from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy, calculate_concept_metrics, find_optimal_concept_thresholds
 from src.utils.visualization import generate_concept_heatmaps
 
 def str2bool(v):
@@ -335,6 +335,8 @@ def parse_args():
     if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
     if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
     if "use_group_broadcasting" in bb_cfg: flat_defaults["use_group_broadcasting"] = bb_cfg["use_group_broadcasting"]
+    if "use_dino_mask" in bb_cfg: flat_defaults["use_dino_mask"] = bb_cfg["use_dino_mask"]
+    if "dino_mask_threshold" in bb_cfg: flat_defaults["dino_mask_threshold"] = bb_cfg["dino_mask_threshold"]
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -362,6 +364,7 @@ def parse_args():
     if "run_app" in tr_cfg: flat_defaults["run_app"] = tr_cfg["run_app"]
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
+    if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -440,6 +443,9 @@ def parse_args():
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
     parser.add_argument('--use_group_broadcasting', type=str2bool, default=flat_defaults.get('use_group_broadcasting', False), help="Use GroupToConceptAttention: group queries → independent BCE classifiers based on concept_config (fixes TPR/TNR collapse from Group Softmax)")
+    parser.add_argument('--use_dino_mask', type=str2bool, default=flat_defaults.get('use_dino_mask', False), help="Use DINOv2 self-attention to generate a silhouette foreground mask for background suppression")
+    parser.add_argument('--dino_mask_threshold', type=float, default=flat_defaults.get('dino_mask_threshold', 0.35), help="Threshold to binarize DINOv2 attention map for silhouette mask")
+    parser.add_argument('--use_dynamic_threshold', type=str2bool, default=flat_defaults.get('use_dynamic_threshold', True), help="Optimize validation concept decision thresholds via Youden's J statistic")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
@@ -701,6 +707,75 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             if 'val_individual_accs' in locals():
                 log_dict.update(val_individual_accs)
             wandb.log(log_dict)
+            
+    # ── Final Validation Optimal Threshold Search ─────────────────────────
+    model.eval()
+    all_val_logits = []
+    all_val_targets = []
+    
+    with torch.no_grad():
+        for val_images, val_concepts, _ in val_loader:
+            val_images = val_images.to(device)
+            val_concepts = val_concepts.to(device)
+            
+            _, val_concept_logits, _ = model(val_images)
+            
+            all_val_logits.append(val_concept_logits[:, :num_concepts_supervised].cpu())
+            all_val_targets.append(val_concepts.cpu())
+            
+    all_val_logits = torch.cat(all_val_logits, dim=0)
+    all_val_targets = torch.cat(all_val_targets, dim=0)
+    
+    # 1. Compute legacy/default metrics (threshold = 0.0)
+    concept_groups_indices = None
+    if not getattr(args, "use_group_broadcasting", False) and resolved_config is not None:
+        concept_groups_indices = []
+        total_dims = 0
+        for name, info in resolved_config.items():
+            ctype = info.get("type", "numerical")
+            if ctype == "categorical":
+                classes = info.get("classes", [])
+                num_feats = len(classes)
+                concept_groups_indices.append(list(range(total_dims, total_dims + num_feats)))
+                total_dims += num_feats
+            else:
+                concept_groups_indices.append([total_dims])
+                total_dims += 1
+                
+    concept_groups_info = None
+    if concept_groups_indices is not None:
+        concept_groups_info = [(indices[0], len(indices)) for indices in concept_groups_indices]
+        
+    std_metrics = calculate_concept_metrics(
+        all_val_logits,
+        all_val_targets,
+        concept_groups_info=concept_groups_info
+    )
+    
+    # 2. Run Youden's J search
+    tqdm.write("\n🔍 Finding optimal per-concept validation thresholds using Youden's J statistic...")
+    optimal_thresholds = find_optimal_concept_thresholds(
+        all_val_logits,
+        all_val_targets,
+        concept_groups_info=concept_groups_info
+    )
+    
+    # Register optimal thresholds in model's buffer
+    model.concept_thresholds.copy_(optimal_thresholds)
+    
+    # 3. Compute optimal metrics
+    opt_metrics = calculate_concept_metrics(
+        all_val_logits,
+        all_val_targets,
+        concept_groups_info=concept_groups_info,
+        threshold=optimal_thresholds
+    )
+    
+    tqdm.write(f"\n📈 Phase 1 Validation side-by-side comparison:")
+    tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% ──> {opt_metrics['mean_balanced_acc']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% ──> {opt_metrics['tpr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   └─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% ──> {opt_metrics['tnr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"============================================================\n")
 
 def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{'-'*60}")
@@ -1244,7 +1319,9 @@ def main():
         use_cosine_attention=args.use_cosine_attention,
         use_group_broadcasting=args.use_group_broadcasting,
         num_groups=num_groups,
-        group_mapping=group_mapping
+        group_mapping=group_mapping,
+        use_dino_mask=args.use_dino_mask,
+        dino_mask_threshold=args.dino_mask_threshold
     )
     
     if args.freeze_backbone:

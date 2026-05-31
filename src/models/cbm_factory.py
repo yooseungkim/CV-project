@@ -152,12 +152,53 @@ def inject_lora_to_vit(model: nn.Module, r: int = 8, lora_alpha: float = 16.0) -
 
 
 class ViTBackboneWrapper(nn.Module):
-    def __init__(self, vit_model):
+    def __init__(self, vit_model, use_dino_mask: bool = False, mask_threshold: float = 0.35):
         """Wrapper for Vision Transformer to dynamically extract patch tokens while ignoring the CLS token.
         Ensures compatibility with internal feature representations and main training pipelines.
+        Supports DINOv2 attention silhouette foreground masking.
         """
         super().__init__()
         self.vit = vit_model
+        self.use_dino_mask = use_dino_mask
+        self.mask_threshold = mask_threshold
+        
+        if self.use_dino_mask:
+            if hasattr(self.vit, "blocks") and len(self.vit.blocks) > 0 and hasattr(self.vit.blocks[-1], "attn"):
+                attn_module = self.vit.blocks[-1].attn
+                attn_module.fused_attn = False  # Disable fused attention to force explicit weight computation
+                
+                import types
+                def custom_forward(attn_self, x, attn_mask=None, is_causal=False):
+                    B, N, C = x.shape
+                    qkv = attn_self.qkv(x).reshape(B, N, 3, attn_self.num_heads, attn_self.head_dim).permute(2, 0, 3, 1, 4)
+                    q, k, v = qkv.unbind(0)
+                    q, k = attn_self.q_norm(q), attn_self.k_norm(k)
+                    
+                    q = q * attn_self.scale
+                    attn = q @ k.transpose(-2, -1)
+                    
+                    if attn_mask is not None:
+                        from timm.layers.attention import resolve_self_attn_mask, maybe_add_mask
+                        attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
+                        attn = maybe_add_mask(attn, attn_bias)
+                        
+                    attn = attn.softmax(dim=-1)
+                    attn_self.last_attn_weights = attn
+                    
+                    attn = attn_self.attn_drop(attn)
+                    x = attn @ v
+                    
+                    x = x.transpose(1, 2).reshape(B, N, attn_self.attn_dim)
+                    x = attn_self.norm(x)
+                    x = attn_self.proj(x)
+                    x = attn_self.proj_drop(x)
+                    return x
+                
+                attn_module.forward = types.MethodType(custom_forward, attn_module)
+                print(f"👁️ DINOv2 Masking: Successfully patched final attention block of {self.vit.__class__.__name__} to extract self-attention maps (threshold={mask_threshold}).")
+            else:
+                print("⚠️ DINOv2 Masking: The backbone does not support attention patching (missing 'blocks' or 'attn'). Masking disabled.")
+                self.use_dino_mask = False
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Extract features (CLS token + patch tokens)
@@ -172,8 +213,29 @@ class ViTBackboneWrapper(nn.Module):
             "Ensure global pooling is disabled in timm and your model returns sequence-level features."
         )
         
-        # Ignore the CLS token at index 0 and return only patch tokens: [B, N_tokens - 1, C]
-        return feats[:, 1:]
+        patch_features = feats[:, 1:]
+        
+        if self.use_dino_mask:
+            attn = getattr(self.vit.blocks[-1].attn, "last_attn_weights", None)
+            if attn is not None:
+                # attn shape: [B, num_heads, N_tokens, N_tokens]
+                # CLS attention to all other patch tokens is at index 0 (CLS) to index 1: (all other tokens)
+                cls_attn = attn[:, :, 0, 1:]  # [B, num_heads, N_patches]
+                mean_attn = cls_attn.mean(dim=1)  # [B, N_patches]
+                
+                # Min-max normalization per-image to [0, 1] range to handle dynamic scale differences
+                min_val = mean_attn.min(dim=1, keepdim=True)[0]
+                max_val = mean_attn.max(dim=1, keepdim=True)[0]
+                norm_attn = (mean_attn - min_val) / (max_val - min_val + 1e-8)
+                
+                # Binarize silhouette mask using the configured threshold
+                silhouette_mask = (norm_attn > self.mask_threshold).float().unsqueeze(-1)  # [B, N_patches, 1]
+                
+                # Apply mask to patch features to isolate foreground tokens
+                patch_features = patch_features * silhouette_mask
+                
+        return patch_features
+
 
 
 class ViTCrossAttentionLayer(nn.Module):
@@ -425,6 +487,9 @@ class UniversalFlexibleCBM(nn.Module):
         use_group_broadcasting: bool = False,
         num_groups: int = 28,
         group_mapping: Optional[List[int]] = None,  # required when use_group_broadcasting=True
+        # ── DINOv2 Attention Silhouette Mask Settings ────────────────────────
+        use_dino_mask: bool = False,
+        dino_mask_threshold: float = 0.35,
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -508,7 +573,7 @@ class UniversalFlexibleCBM(nn.Module):
             # Load ViT / DINOv2 backbone with positional embedding interpolation enabled (dynamic_img_size=True)
             # This cleanly supports 224x224 input without hardcoded image sizing or silencing TypeErrors.
             vit_model = timm.create_model(backbone_name, pretrained=pretrained, dynamic_img_size=True)
-            self.backbone = ViTBackboneWrapper(vit_model)
+            self.backbone = ViTBackboneWrapper(vit_model, use_dino_mask=use_dino_mask, mask_threshold=dino_mask_threshold)
             
             # Apply LoRA 어댑터 주입 if requested
             self.lora_active = use_lora
@@ -551,6 +616,15 @@ class UniversalFlexibleCBM(nn.Module):
             
         self.dropout = nn.Dropout(p=0.2)
         self.classifier_head = nn.Linear(self.num_concepts, num_classes)
+        
+        # Register a buffer to store dynamically-found optimal validation logit thresholds
+        self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
+
+    def load_state_dict(self, state_dict, strict=True):
+        # If 'concept_thresholds' is not in the loaded state_dict, inject it to prevent strict loading errors
+        if 'concept_thresholds' not in state_dict:
+            state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
+        return super().load_state_dict(state_dict, strict=strict)
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:
         """Pass a dummy tensor through the backbone to dynamically infer feature dimensions (ResNet only)."""

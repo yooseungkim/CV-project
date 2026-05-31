@@ -93,6 +93,62 @@ def _generate_single_heatmap(
     return Image.open(buf)
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def generate_segmentation_overlay(img_np: np.ndarray, attn: Optional[torch.Tensor], use_mask: bool, threshold: float) -> Image.Image:
+    """Generate the binarized silhouette mask overlay or soft CLS-attention map overlay."""
+    if attn is None:
+        return Image.fromarray((img_np * 255).astype(np.uint8))
+        
+    try:
+        # cls_attn: [1, num_heads, N_patches]
+        cls_attn = attn[:, :, 0, 1:]
+        mean_attn = cls_attn.mean(dim=1)  # [1, N_patches]
+        
+        # Min-max normalization per image
+        min_val = mean_attn.min(dim=1, keepdim=True)[0]
+        max_val = mean_attn.max(dim=1, keepdim=True)[0]
+        norm_attn = (mean_attn - min_val) / (max_val - min_val + 1e-8)
+        
+        N_patches = norm_attn.size(1)
+        H_grid = int(math.sqrt(N_patches))
+        norm_attn_2d = norm_attn.view(1, 1, H_grid, H_grid)
+        
+        # Upsample to 224x224
+        norm_attn_upsampled = F.interpolate(norm_attn_2d, size=(224, 224), mode='bilinear', align_corners=False).squeeze().cpu().numpy()
+        
+        if use_mask:
+            # Binarized mask overlay: darken the background (multiply original image by mask * 0.75 + 0.25)
+            mask = (norm_attn_upsampled > threshold).astype(np.float32)
+            overlay = img_np * np.expand_dims(mask * 0.75 + 0.25, axis=-1)
+            overlay_img = (overlay * 255).astype(np.uint8)
+            return Image.fromarray(overlay_img)
+        else:
+            # Soft attention overlay
+            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
+            ax.imshow(img_np)
+            ax.imshow(norm_attn_upsampled, cmap='jet', alpha=0.45)
+            ax.axis('off')
+            plt.tight_layout(pad=0)
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
+            buf.seek(0)
+            plt.close(fig)
+            return Image.open(buf)
+    except Exception as e:
+        print(f"Error generating segmentation overlay: {e}")
+        return Image.fromarray((img_np * 255).astype(np.uint8))
+
+
 def _unnormalize_tensor(img_tensor: torch.Tensor) -> np.ndarray:
     """Reverse ImageNet normalization and convert to numpy HWC [0,1]."""
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -185,7 +241,19 @@ def run_inference(image: Image.Image):
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
 
-    return prediction_text, concept_vals, heatmap_gallery, img_np
+    # Intercept final block's attention weights to generate segmentation overlay
+    attn = None
+    use_mask = False
+    threshold = 0.35
+    
+    if hasattr(MODEL, "backbone") and hasattr(MODEL.backbone, "vit"):
+        attn = getattr(MODEL.backbone.vit.blocks[-1].attn, "last_attn_weights", None)
+        use_mask = getattr(MODEL.backbone, "use_dino_mask", False)
+        threshold = getattr(MODEL.backbone, "mask_threshold", 0.35)
+        
+    seg_pil = generate_segmentation_overlay(img_np, attn, use_mask, threshold)
+
+    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np
 
 
 def repredict_with_adjusted_concepts(*component_values):
@@ -274,45 +342,57 @@ APP_CSS = """
     font-size: 1rem;
     margin-bottom: 1.5rem;
 }
+/* Extremely tight & compact concept intervention container */
 .concept-slider-group {
-    max-height: 420px;
+    max-height: 380px !important;
     overflow-y: auto;
-    padding: 6px !important;
-    border: 1px solid #e5e7eb;
-    border-radius: 8px;
-    background-color: #f9fafb;
+    padding: 4px !important;
+    background-color: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
 }
-/* Extremely tight padding for components in the grid */
+/* Reduce vertical spacing between sliders */
 .concept-slider-group .compact-comp {
-    padding: 2px 6px !important;
-    margin: 0 !important;
-    background-color: #ffffff;
+    padding: 1px 4px !important;
+    margin: 0px !important;
 }
-/* Reduce default Gradio block paddings/margins inside container */
-.concept-slider-group .block {
-    padding: 4px 6px !important;
-    margin: 1px 0 !important;
-    min-width: 0 !important;
-    border-radius: 6px !important;
-    box-shadow: none !important;
+/* Shrink slider labels and value texts */
+.concept-slider-group label {
+    font-size: 0.72rem !important;
+    padding: 0px 2px !important;
 }
-/* Make labels small, bold, and clean */
 .concept-slider-group label span {
-    font-size: 0.75rem !important;
+    font-size: 0.72rem !important;
     font-weight: 600 !important;
-    margin-bottom: 1px !important;
-    color: #374151 !important;
+    color: #1e293b !important;
 }
-/* Tight range inputs */
+/* Shrink slider track and handle */
 .concept-slider-group input[type="range"] {
+    height: 3px !important;
     margin-top: 1px !important;
     margin-bottom: 1px !important;
-    height: 4px !important;
 }
-/* Tight dropdown fields */
-.concept-slider-group .wrap {
+.concept-slider-group input[type="number"] {
+    font-size: 0.72rem !important;
+    height: 18px !important;
+    padding: 1px 2px !important;
+    width: 45px !important;
+}
+/* Shrink radios and dropdowns */
+.concept-slider-group .gr-radio-group, .concept-slider-group .gr-dropdown {
+    font-size: 0.72rem !important;
+    padding: 1px 2px !important;
+}
+.concept-slider-group .gr-radio-group label {
+    font-size: 0.7rem !important;
     padding: 1px 4px !important;
-    font-size: 0.8rem !important;
+}
+/* Tight block margins */
+.concept-slider-group div.block {
+    padding: 1px 2px !important;
+    margin: 1px !important;
+    border-radius: 4px !important;
+    background-color: #ffffff !important;
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.02) !important;
 }
 """
 
@@ -330,13 +410,13 @@ def build_app() -> gr.Blocks:
         concept_state = gr.State([])
 
         with gr.Row():
-            # ==== Left Column: Input ====
+            # ==== Column 1: Input ====
             with gr.Column(scale=1):
                 gr.Markdown("### 📤 Input Image")
                 input_image = gr.Image(
                     type="pil",
                     label="Upload a dermoscopy image",
-                    height=300
+                    height=280
                 )
                 run_btn = gr.Button(
                     "🚀 Run Inference",
@@ -344,19 +424,28 @@ def build_app() -> gr.Blocks:
                     size="lg"
                 )
 
+            # ==== Column 2: DINOv2 Foreground Segmentation Overlay ====
+            with gr.Column(scale=1):
+                gr.Markdown("### 👁️ DINOv2 Foreground Segmentation")
+                seg_output = gr.Image(
+                    label="Foreground Mask Overlay",
+                    height=280,
+                    interactive=False
+                )
+                
                 gr.Markdown("### 🎯 Model Prediction")
                 prediction_output = gr.Markdown(
                     value="*Upload an image and click Run Inference*"
                 )
 
-            # ==== Right Column: Heatmaps ====
+            # ==== Column 3: Heatmaps ====
             with gr.Column(scale=2):
                 gr.Markdown("### 🖼️ Concept Attention Heatmaps")
                 heatmap_gallery = gr.Gallery(
                     label="Per-concept attention maps",
                     columns=4,
                     rows=2,
-                    height=500,
+                    height=360,
                     object_fit="contain"
                 )
 
@@ -373,87 +462,47 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=3, elem_classes="concept-slider-group"):
                 group_name_to_comp = {}
-                col1_groups = CONCEPT_GROUPS[::2]
-                col2_groups = CONCEPT_GROUPS[1::2]
+                num_cols = 3
+                cols_groups = [CONCEPT_GROUPS[i::num_cols] for i in range(num_cols)]
                 
                 with gr.Row():
-                    with gr.Column():
-                        for group in col1_groups:
-                            if group["type"] == "numerical":
-                                is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
-                                step = 1.0 if is_int else 0.01
-                                comp = gr.Slider(
-                                    minimum=group["min"],
-                                    maximum=group["max"],
-                                    step=step,
-                                    value=(group["min"] + group["max"]) / 2,
-                                    label=group["name"],
-                                    interactive=True,
-                                    elem_classes="compact-comp"
-                                )
-                            else:
-                                # Categorical Concept Component
-                                # Since it is categorical and not simply one-hot (can be all zeros due to occlusion),
-                                # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
-                                choices = group["classes"] + ["Not Visible / Occluded"]
-                                default_val = "Not Visible / Occluded"
-                                if len(group["classes"]) <= 4:
-                                    comp = gr.Radio(
-                                        choices=choices,
-                                        value=default_val,
+                    for col_idx in range(num_cols):
+                        with gr.Column():
+                            for group in cols_groups[col_idx]:
+                                if group["type"] == "numerical":
+                                    is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
+                                    step = 1.0 if is_int else 0.01
+                                    comp = gr.Slider(
+                                        minimum=group["min"],
+                                        maximum=group["max"],
+                                        step=step,
+                                        value=(group["min"] + group["max"]) / 2,
                                         label=group["name"],
                                         interactive=True,
                                         elem_classes="compact-comp"
                                     )
                                 else:
-                                    comp = gr.Dropdown(
-                                        choices=choices,
-                                        value=default_val,
-                                        label=group["name"],
-                                        multiselect=False,
-                                        interactive=True,
-                                        elem_classes="compact-comp"
-                                    )
-                            group_name_to_comp[group["name"]] = comp
-                            
-                    with gr.Column():
-                        for group in col2_groups:
-                            if group["type"] == "numerical":
-                                is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
-                                step = 1.0 if is_int else 0.01
-                                comp = gr.Slider(
-                                    minimum=group["min"],
-                                    maximum=group["max"],
-                                    step=step,
-                                    value=(group["min"] + group["max"]) / 2,
-                                    label=group["name"],
-                                    interactive=True,
-                                    elem_classes="compact-comp"
-                                )
-                            else:
-                                # Categorical Concept Component
-                                # Since it is categorical and not simply one-hot (can be all zeros due to occlusion),
-                                # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
-                                choices = group["classes"] + ["Not Visible / Occluded"]
-                                default_val = "Not Visible / Occluded"
-                                if len(group["classes"]) <= 4:
-                                    comp = gr.Radio(
-                                        choices=choices,
-                                        value=default_val,
-                                        label=group["name"],
-                                        interactive=True,
-                                        elem_classes="compact-comp"
-                                    )
-                                else:
-                                    comp = gr.Dropdown(
-                                        choices=choices,
-                                        value=default_val,
-                                        label=group["name"],
-                                        multiselect=False,
-                                        interactive=True,
-                                        elem_classes="compact-comp"
-                                    )
-                            group_name_to_comp[group["name"]] = comp
+                                    # Categorical Concept Component
+                                    choices = group["classes"] + ["Not Visible / Occluded"]
+                                    default_val = "Not Visible / Occluded"
+                                    if len(group["classes"]) <= 3:
+                                        comp = gr.Radio(
+                                            choices=choices,
+                                            value=default_val,
+                                            label=group["name"],
+                                            interactive=True,
+                                            elem_classes="compact-comp"
+                                        )
+                                    else:
+                                        comp = gr.Dropdown(
+                                            choices=choices,
+                                            value=default_val,
+                                            label=group["name"],
+                                            multiselect=False,
+                                            interactive=True,
+                                            elem_classes="compact-comp"
+                                        )
+                                group_name_to_comp[group["name"]] = comp
                 
                 # Reconstruct concept_components in the exact order of CONCEPT_GROUPS
                 concept_components = [group_name_to_comp[g["name"]] for g in CONCEPT_GROUPS]
@@ -475,10 +524,11 @@ def build_app() -> gr.Blocks:
                     "*Please upload an image first.*",
                     gr.update(),
                     [],
+                    gr.update(),
                     *[gr.update() for _ in concept_components]
                 )
 
-            pred_text, concept_vals, gallery, _ = run_inference(image)
+            pred_text, concept_vals, gallery, seg_pil, _ = run_inference(image)
 
             # Build updates to reflect predicted values
             component_updates = []
@@ -508,12 +558,12 @@ def build_app() -> gr.Blocks:
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_vals, gallery, *component_updates)
+            return (pred_text, concept_vals, gallery, seg_pil, *component_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, *concept_components]
+            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, *concept_components]
         )
 
         repredict_btn.click(
@@ -560,6 +610,14 @@ def parse_app_args():
     parser.add_argument(
         '--use_lora', action='store_true', default=False,
         help="Enable LoRA adapters for ViT backbone"
+    )
+    parser.add_argument(
+        '--use_dino_mask', type=str2bool, default=None,
+        help="Use DINOv2 self-attention to generate a silhouette foreground mask for background suppression"
+    )
+    parser.add_argument(
+        '--dino_mask_threshold', type=float, default=None,
+        help="Threshold to binarize DINOv2 attention map for silhouette mask"
     )
     parser.add_argument(
         '--no_grouping', action='store_true', default=False,
@@ -690,10 +748,7 @@ def main():
             print(f"🔮 Auto-detected latent concepts from checkpoint: {latent_concepts} (Total dimensions: {checkpoint_dims})")
         else:
             print(f"⚠️ Warning: Checkpoint dimensions ({checkpoint_dims}) are less than supervised concepts ({NUM_CONCEPTS}). Using args.latent_concepts={args.latent_concepts}.")
-    else:
         print(f"⚠️ Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
-
-    # Auto-detect LoRA configuration & backbone settings from checkpoint metadata or weight keys
     use_lora = getattr(args, 'use_lora', False)
     lora_r = getattr(args, 'lora_r', 8)
     lora_alpha = getattr(args, 'lora_alpha', 16.0)
@@ -702,6 +757,8 @@ def main():
     use_concept_groups = True
     use_cosine_attention = getattr(args, 'use_cosine_attention', False)
     use_group_broadcasting = getattr(args, 'use_group_broadcasting', False)
+    use_dino_mask = False
+    dino_mask_threshold = 0.35
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -718,7 +775,10 @@ def main():
             backbone_type = checkpoint_args.get('backbone_type', 'timm')
         if 'use_concept_groups' in checkpoint_args:
             use_concept_groups = checkpoint_args['use_concept_groups']
-        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}")
+        if 'use_dino_mask' in checkpoint_args:
+            use_dino_mask = checkpoint_args['use_dino_mask']
+            dino_mask_threshold = checkpoint_args.get('dino_mask_threshold', 0.35)
+        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
@@ -736,7 +796,10 @@ def main():
             backbone_type = bb_cfg.get('backbone_type', 'timm')
         if 'use_concept_groups' in ds_cfg:
             use_concept_groups = ds_cfg['use_concept_groups']
-        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}")
+        if 'use_dino_mask' in bb_cfg:
+            use_dino_mask = bb_cfg['use_dino_mask']
+            dino_mask_threshold = bb_cfg.get('dino_mask_threshold', 0.35)
+        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -755,12 +818,16 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
-
+        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+    
     # Command line argument override
     if getattr(args, 'no_grouping', False):
         use_concept_groups = False
         print("🔮 Command line override: Disabling concept grouping.")
+    if getattr(args, 'use_dino_mask', None) is not None:
+        use_dino_mask = args.use_dino_mask
+    if getattr(args, 'dino_mask_threshold', None) is not None:
+        dino_mask_threshold = args.dino_mask_threshold
 
     # Build concept_groups_info for dynamic softmax activation integration
     global USE_CONCEPT_GROUPS
@@ -835,7 +902,9 @@ def main():
         use_cosine_attention=use_cosine_attention,
         use_group_broadcasting=use_group_broadcasting,
         num_groups=num_groups,
-        group_mapping=group_mapping
+        group_mapping=group_mapping,
+        use_dino_mask=use_dino_mask,
+        dino_mask_threshold=dino_mask_threshold
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

@@ -13,6 +13,8 @@ backbone:
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
   use_group_broadcasting: false  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
+  use_dino_mask: true     # Use DINOv2 self-attention silhouette foreground masking
+  dino_mask_threshold: 0.35
 
 # 2. Dataset Setup
 dataset:
@@ -32,6 +34,7 @@ training:
   l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
   latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
+  use_dynamic_threshold: true  # Dynamic validation thresholding optimization
   save_dir: "checkpoints"
   resume_checkpoint: null
   use_wandb: true  # Disable by default for local execution, set to true to monitor via wandb

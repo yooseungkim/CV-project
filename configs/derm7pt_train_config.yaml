@@ -13,6 +13,8 @@ backbone:
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (default: off)
   use_group_broadcasting: true  # GroupToConceptAttention: 7 groups -> 28 independent BCE classifiers
+  use_dino_mask: false     # Set to false for derm7pt because surrounding skin (background) contains crucial contextual diagnostic cues
+  dino_mask_threshold: 0.35
 
 # 2. Dataset Setup
 dataset:
@@ -32,6 +34,7 @@ training:
   l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
   latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 20  # 20 unique diagnoses in derm7pt
+  use_dynamic_threshold: true  # Dynamic validation thresholding optimization
   save_dir: "checkpoints"
   resume_checkpoint: null
   use_wandb: true  # Set to true if monitoring via wandb is desired
