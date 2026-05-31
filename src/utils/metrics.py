@@ -68,10 +68,18 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
     fp = (preds_bin * (1 - targets_bin)).sum(dim=0)
     fn = ((1 - preds_bin) * targets_bin).sum(dim=0)
 
-    tpr = tp / (tp + fn + 1e-8)
-    tnr = tn / (tn + fp + 1e-8)
+    # Robust handling for cases where a class has no positive or negative targets in the current slice
+    has_pos = (tp + fn) > 0
+    has_neg = (tn + fp) > 0
 
-    balanced_accs = (tpr + tnr) / 2.0
+    tpr = torch.where(has_pos, tp / (tp + fn + 1e-8), torch.ones_like(tp))
+    tnr = torch.where(has_neg, tn / (tn + fp + 1e-8), torch.ones_like(tn))
+
+    balanced_accs = torch.where(
+        has_pos & has_neg,
+        (tpr + tnr) / 2.0,
+        torch.where(has_pos, tpr, torch.where(has_neg, tnr, torch.ones_like(tpr)))
+    )
     
     metrics = {
         "mean_balanced_acc": balanced_accs.mean().item(),

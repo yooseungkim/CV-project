@@ -45,30 +45,31 @@ def str_or_bool(v):
 
 def calculate_orthogonality_loss(attn_weights):
     """
-    attn_weights: Tensor of shape (B, num_concepts, H, W)
-    Computes pairwise cosine similarity between attention maps and penalizes overlap.
+    Redesigned Orthogonality Loss (Preventing Attention Collapse).
+    Computes pairwise cosine similarity matrix of parent group attention maps
+    and penalizes deviation from the Identity matrix using Mean Squared Error (MSE).
+    
+    attn_weights: Tensor of shape (B, num_groups, H, W) representing mean parent group attention maps.
     """
-    B, num_concepts, H, W = attn_weights.shape
-    if num_concepts <= 1:
+    B, num_groups, H, W = attn_weights.shape
+    if num_groups <= 1:
         return torch.tensor(0.0, device=attn_weights.device)
         
-    # Flatten spatial dimensions
-    attn_flat = attn_weights.view(B, num_concepts, -1)
+    # Flatten spatial dimensions: (B, num_groups, H * W)
+    attn_flat = attn_weights.view(B, num_groups, -1)
     
-    # L2 normalize attention maps over spatial dimension to compute cosine similarity
+    # L2 normalize over the spatial dimension to compute stable Cosine Similarity
     attn_norm = attn_flat / (torch.norm(attn_flat, p=2, dim=-1, keepdim=True) + 1e-8)
     
-    # Compute pairwise dot product matrix (cosine similarity): (B, num_concepts, num_concepts)
+    # Compute pairwise Cosine Similarity matrix: (B, num_groups, num_groups)
     sim_matrix = torch.bmm(attn_norm, attn_norm.transpose(1, 2))
     
-    # Sum up off-diagonal elements
-    diag_sum = sim_matrix.diagonal(dim1=1, dim2=2).sum(dim=1)
-    total_sum = sim_matrix.sum(dim=(1, 2))
-    off_diag_sum = total_sum - diag_sum
+    # Define target Identity matrix I_G: (B, num_groups, num_groups)
+    identity = torch.eye(num_groups, device=attn_weights.device).unsqueeze(0).expand(B, -1, -1)
     
-    # Normalize by the number of off-diagonal pairs
-    loss_ortho = off_diag_sum / (num_concepts * (num_concepts - 1))
-    return loss_ortho.mean()
+    # Minimize MSE(S, I) to push off-diagonal elements to 0 while keeping diagonals at 1
+    loss_ortho = torch.mean((sim_matrix - identity) ** 2)
+    return loss_ortho
 
 def calculate_pos_weights(dataset, num_concepts_supervised):
     """Calculates the ratio of negative to positive samples for each concept to balance BCE loss."""
@@ -185,14 +186,24 @@ class SigmoidFocalLoss(nn.Module):
         return loss
 
 class GroupCrossEntropyLoss(nn.Module):
-    def __init__(self, groups_info: list[tuple[int, int]]):
-        """Robust Group-level Softmax Cross Entropy Loss.
-        Penalizes prediction errors within mutually exclusive attribute categories,
-        and dynamically filters out missing annotations using sum-masking.
+    def __init__(self, groups_info: list[tuple[int, int]], lambda_ce: float = 0.1, loss_type: str = 'bce', focal_alpha = None, focal_gamma: float = 2.0):
+        """Robust Group-level Softmax Cross Entropy Loss with Loss Scale Balancing.
+        Penalizes prediction errors within mutually exclusive attribute categories (Softmax),
+        balanced by lambda_ce against independent multi-label concept categories (Sigmoid).
+        Supports both BCE and Sigmoid Focal Loss for the Sigmoid/1D fallback categories.
+        
         groups_info: list of (start_idx, num_feats)
+        lambda_ce: scaling hyperparameter for mutually exclusive cross entropy loss.
+        loss_type: loss type for Sigmoid fallback nodes ('bce' or 'focal').
+        focal_alpha: alpha weighting factor for Focal Loss (float, torch.Tensor, or None).
+        focal_gamma: focus exponent gamma for Focal Loss.
         """
         super().__init__()
         self.groups_info = groups_info
+        self.lambda_ce = lambda_ce
+        self.loss_type = loss_type.lower()
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
         
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         import torch.nn.functional as F
@@ -204,24 +215,44 @@ class GroupCrossEntropyLoss(nn.Module):
             group_targets = targets[:, start_idx : start_idx + num_feats]
             
             if num_feats > 1:
-                # Calculate softmax cross entropy for categorical mutually exclusive groups
-                log_probs = torch.log_softmax(group_logits, dim=-1)
-                
-                # Check for missing targets (annotations missing for this bird part group)
+                # 1. Softmax group (Mutually Exclusive Cross Entropy Loss)
                 target_sum = group_targets.sum(dim=-1, keepdim=True)
-                group_targets_normalized = group_targets / (target_sum + 1e-8)
+                # Secure target normalization to form a probability distribution (Soft Target)
+                group_targets_normalized = group_targets / torch.clamp(target_sum, min=1e-8)
                 
-                group_loss = -(group_targets_normalized * log_probs).sum(dim=-1)
+                # Apply PyTorch's native cross_entropy supporting Soft Targets
+                group_loss = F.cross_entropy(group_logits, group_targets_normalized, reduction='none')
                 
                 # Mask out samples that do not have annotations for this group
                 mask = (target_sum.squeeze(-1) > 0.0).float()
                 if mask.sum() > 0:
-                    loss += (group_loss * mask).sum() / (mask.sum() + 1e-8)
+                    # Apply loss scale balancing multiplier (lambda_ce) to prevent gradient starvation
+                    loss += self.lambda_ce * (group_loss * mask).sum() / (mask.sum() + 1e-8)
                     active_groups += 1
             else:
-                # 1D binary fallback
-                loss += F.binary_cross_entropy_with_logits(group_logits.squeeze(-1), group_targets.squeeze(-1))
-                active_groups += 1
+                # 2. Sigmoid / BCE / 1D fallback group (independent binary node)
+                if self.loss_type == 'focal':
+                    # Calculate focal loss for this individual node
+                    probs = torch.sigmoid(group_logits)
+                    bce_loss = F.binary_cross_entropy_with_logits(group_logits, group_targets, reduction='none')
+                    p_t = probs * group_targets + (1 - probs) * (1 - group_targets)
+                    focal_loss = ((1 - p_t) ** self.focal_gamma) * bce_loss
+                    
+                    if self.focal_alpha is not None:
+                        # Extract alpha value for this specific concept dimension
+                        if isinstance(self.focal_alpha, torch.Tensor):
+                            # self.focal_alpha has shape (num_concepts,)
+                            alpha_t = self.focal_alpha[start_idx] * group_targets + (1 - self.focal_alpha[start_idx]) * (1 - group_targets)
+                        else:
+                            alpha_t = self.focal_alpha * group_targets + (1 - self.focal_alpha) * (1 - group_targets)
+                        focal_loss = alpha_t * focal_loss
+                        
+                    loss += focal_loss.mean()
+                    active_groups += 1
+                else:
+                    # Standard BCE Loss fallback
+                    loss += F.binary_cross_entropy_with_logits(group_logits.squeeze(-1), group_targets.squeeze(-1))
+                    active_groups += 1
                 
         return loss / (active_groups + 1e-8)
 
@@ -339,6 +370,7 @@ def parse_args():
     if "focal_alpha" in opt_cfg: flat_defaults["focal_alpha"] = opt_cfg["focal_alpha"]
     if "focal_gamma" in opt_cfg: flat_defaults["focal_gamma"] = opt_cfg["focal_gamma"]
     if "ortho_lambda" in opt_cfg: flat_defaults["ortho_lambda"] = opt_cfg["ortho_lambda"]
+    if "lambda_ce" in opt_cfg: flat_defaults["lambda_ce"] = opt_cfg["lambda_ce"]
     
     # early stopping patience
     es_cfg = config_data.get("early_stopping", {})
@@ -374,6 +406,7 @@ def parse_args():
     parser.add_argument('--phase2_patience', type=int, default=flat_defaults.get('phase2_patience', None), help="Early stopping patience for Phase 2")
     parser.add_argument('--phase1_monitor', type=str, default=flat_defaults.get('phase1_monitor', 'val_concept_loss'), help="Early stopping monitor for Phase 1")
     parser.add_argument('--phase2_monitor', type=str, default=flat_defaults.get('phase2_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 2")
+    parser.add_argument('--lambda_ce', type=float, default=flat_defaults.get('lambda_ce', 0.1), help="Scaling factor for Softmax Cross-Entropy loss to balance gradient scale against Focal/BCE loss")
     parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce'], help="Concept loss function type")
     parser.add_argument('--focal_alpha', type=str_or_float, default=flat_defaults.get('focal_alpha', 'dynamic'), help="Alpha parameter for Focal Loss (float or 'dynamic')")
     parser.add_argument('--focal_gamma', type=float, default=flat_defaults.get('focal_gamma', 2.0), help="Gamma parameter for Focal Loss")
@@ -970,8 +1003,27 @@ def main():
 
     # 3. Loss & Optimizer Setup
     if concept_groups_info is not None:
-        tqdm.write(f"  🎯 Concept Loss: Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups)")
-        concept_criterion = GroupCrossEntropyLoss(concept_groups_info)
+        # Determine alpha value for Focal Loss if chosen as fallback
+        focal_alpha = None
+        if args.concept_loss_type == 'focal':
+            if isinstance(args.focal_alpha, str) and args.focal_alpha.lower() == 'dynamic':
+                pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised)
+                focal_alpha = pos_weights / (1.0 + pos_weights)
+                focal_alpha = focal_alpha.to(device)
+            elif args.focal_alpha is not None and args.focal_alpha != 'dynamic':
+                focal_alpha = float(args.focal_alpha)
+                
+        tqdm.write(
+            f"  🎯 Concept Loss: Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups, "
+            f"lambda_ce={args.lambda_ce}, fallback_loss={args.concept_loss_type})"
+        )
+        concept_criterion = GroupCrossEntropyLoss(
+            groups_info=concept_groups_info,
+            lambda_ce=args.lambda_ce,
+            loss_type=args.concept_loss_type,
+            focal_alpha=focal_alpha,
+            focal_gamma=args.focal_gamma
+        )
     elif args.concept_loss_type == 'focal':
         if isinstance(args.focal_alpha, str) and args.focal_alpha.lower() == 'dynamic':
             # Dynamically compute per-concept alpha: alpha = pos_weight / (1 + pos_weight)
@@ -1023,7 +1075,6 @@ def main():
             
             class_weight = torch.tensor(weights, dtype=torch.float32, device=device)
             target_criterion = nn.CrossEntropyLoss(weight=class_weight)
-            tqdm.write(f"  ⚖️  Class weights (inv-freq): {[f'{w:.2f}' for w in weights]}")
         else:
             target_criterion = nn.CrossEntropyLoss()
         

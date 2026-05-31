@@ -18,7 +18,8 @@ dataset:
   csv_path: "data/CUB_200_2011/images.txt"
   image_dir: "data/CUB_200_2011/images"
   concept_config_path: "data/CUB_200_2011/concept_config.json"
-  use_concept_groups: false  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
+  # use_concept_groups: false  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
+  use_concept_groups: ["has_bill_shape", "has_bill_length", "has_eye_color"]
 
 # 3. Core Training Hyperparameters
 training:
@@ -26,7 +27,7 @@ training:
   phase2_epochs: 50
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
-  l1_lambda: 0.01  # L1 Lasso Regularization for Phase 2 classifier head
+  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
   latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   save_dir: "checkpoints"
@@ -42,7 +43,7 @@ optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
-  phase2_lr: 0.001  # Larger LR for latent representation learning in Phase 2
+  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
   weight_decay: 0.05
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio

@@ -41,6 +41,17 @@ CONCEPT_GROUPS: list[dict] = []
 TARGET_CLASSES: list[str] = []
 NUM_CONCEPTS: int = 0
 NUM_CLASSES: int = 1
+USE_CONCEPT_GROUPS = True
+
+def is_group_exclusive(group_name: str) -> bool:
+    """Helper to check if a specific concept group is mutually exclusive (Softmax).
+    In hybrid mode, only specified groups use Softmax, while others use Sigmoid.
+    """
+    if isinstance(USE_CONCEPT_GROUPS, bool):
+        return USE_CONCEPT_GROUPS
+    if isinstance(USE_CONCEPT_GROUPS, set):
+        return group_name in USE_CONCEPT_GROUPS
+    return True
 
 TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -198,11 +209,12 @@ def repredict_with_adjusted_concepts(*component_values):
             norm_val = max(0.0, min(1.0, norm_val))
             concept_probs_list[group["flat_indices"][0]] = norm_val
         else:
-            # Categorical dropdown: val is a string representing the selected class
-            # One-hot encode
-            selected_cls = str(val)
+            # Categorical: val can be a list of strings (CheckboxGroup / Multi-select Dropdown) or a single string
+            selected_classes = val if isinstance(val, list) else [val]
+            selected_classes = {str(c) for c in selected_classes}
+            
             for cls_idx, cls_str in zip(group["flat_indices"], group["classes"]):
-                if cls_str == selected_cls:
+                if cls_str in selected_classes:
                     concept_probs_list[cls_idx] = 1.0
                 else:
                     concept_probs_list[cls_idx] = 0.0
@@ -380,13 +392,28 @@ def build_app() -> gr.Blocks:
                                     elem_classes="compact-comp"
                                 )
                             else:
-                                comp = gr.Dropdown(
-                                    choices=group["classes"],
-                                    value=group["classes"][0],
-                                    label=group["name"],
-                                    interactive=True,
-                                    elem_classes="compact-comp"
-                                )
+                                # Categorical Concept Component
+                                # Since it is categorical and not simply one-hot (can be all zeros due to occlusion),
+                                # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
+                                choices = group["classes"] + ["Not Visible / Occluded"]
+                                default_val = "Not Visible / Occluded"
+                                if len(choices) <= 4:
+                                    comp = gr.Radio(
+                                        choices=choices,
+                                        value=default_val,
+                                        label=group["name"],
+                                        interactive=True,
+                                        elem_classes="compact-comp"
+                                    )
+                                else:
+                                    comp = gr.Dropdown(
+                                        choices=choices,
+                                        value=default_val,
+                                        label=group["name"],
+                                        multiselect=False,
+                                        interactive=True,
+                                        elem_classes="compact-comp"
+                                    )
                             group_name_to_comp[group["name"]] = comp
                             
                     with gr.Column():
@@ -404,13 +431,28 @@ def build_app() -> gr.Blocks:
                                     elem_classes="compact-comp"
                                 )
                             else:
-                                comp = gr.Dropdown(
-                                    choices=group["classes"],
-                                    value=group["classes"][0],
-                                    label=group["name"],
-                                    interactive=True,
-                                    elem_classes="compact-comp"
-                                )
+                                # Categorical Concept Component
+                                # Since it is categorical and not simply one-hot (can be all zeros due to occlusion),
+                                # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
+                                choices = group["classes"] + ["Not Visible / Occluded"]
+                                default_val = "Not Visible / Occluded"
+                                if len(choices) <= 4:
+                                    comp = gr.Radio(
+                                        choices=choices,
+                                        value=default_val,
+                                        label=group["name"],
+                                        interactive=True,
+                                        elem_classes="compact-comp"
+                                    )
+                                else:
+                                    comp = gr.Dropdown(
+                                        choices=choices,
+                                        value=default_val,
+                                        label=group["name"],
+                                        multiselect=False,
+                                        interactive=True,
+                                        elem_classes="compact-comp"
+                                    )
                             group_name_to_comp[group["name"]] = comp
                 
                 # Reconstruct concept_components in the exact order of CONCEPT_GROUPS
@@ -452,10 +494,18 @@ def build_app() -> gr.Blocks:
                         scaled_val = round(scaled_val, 4)
                     component_updates.append(gr.update(value=scaled_val))
                 else:
-                    # Find highest probability index
+                    # Categorical concept: select the highest probability class if above threshold,
+                    # otherwise fallback to "Not Visible / Occluded" (all zeros)
                     probs = [concept_vals[idx] for idx in group["flat_indices"]]
                     max_idx = np.argmax(probs)
-                    selected_cls = group["classes"][max_idx]
+                    max_prob = probs[max_idx]
+                    
+                    # Threshold of 0.5 (confidence threshold for probability)
+                    if max_prob <= 0.5:
+                        selected_cls = "Not Visible / Occluded"
+                    else:
+                        selected_cls = group["classes"][max_idx]
+                    
                     component_updates.append(gr.update(value=selected_cls))
 
             return (pred_text, concept_vals, gallery, *component_updates)
@@ -690,18 +740,25 @@ def main():
         print("🔮 Command line override: Disabling concept grouping.")
 
     # Build concept_groups_info for dynamic softmax activation integration
+    global USE_CONCEPT_GROUPS
     concept_groups_info = None
     if use_concept_groups:
         target_groups = None
         if isinstance(use_concept_groups, str):
             if use_concept_groups.lower() == 'true':
                 target_groups = None
+                USE_CONCEPT_GROUPS = True
             elif use_concept_groups.lower() == 'false':
                 use_concept_groups = False
+                USE_CONCEPT_GROUPS = False
             else:
                 target_groups = {name.strip() for name in use_concept_groups.split(',')}
+                USE_CONCEPT_GROUPS = target_groups
         elif isinstance(use_concept_groups, list):
             target_groups = {str(name).strip() for name in use_concept_groups}
+            USE_CONCEPT_GROUPS = target_groups
+        else:
+            USE_CONCEPT_GROUPS = use_concept_groups
             
         if use_concept_groups:
             concept_groups_info = []
@@ -722,6 +779,7 @@ def main():
     
     if not use_concept_groups or concept_groups_info is None:
         concept_groups_info = None
+        USE_CONCEPT_GROUPS = False
         print("🔮 Group-level Softmax Activation is DISABLED (Sigmoid activation fallback active).")
 
     # 3. Initialize model with correct parameters
