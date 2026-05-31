@@ -397,7 +397,7 @@ def build_app() -> gr.Blocks:
                                 # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
                                 choices = group["classes"] + ["Not Visible / Occluded"]
                                 default_val = "Not Visible / Occluded"
-                                if len(choices) <= 4:
+                                if len(group["classes"]) <= 4:
                                     comp = gr.Radio(
                                         choices=choices,
                                         value=default_val,
@@ -436,7 +436,7 @@ def build_app() -> gr.Blocks:
                                 # we use gr.Radio or gr.Dropdown with single selection, and include "Not Visible / Occluded"
                                 choices = group["classes"] + ["Not Visible / Occluded"]
                                 default_val = "Not Visible / Occluded"
-                                if len(choices) <= 4:
+                                if len(group["classes"]) <= 4:
                                     comp = gr.Radio(
                                         choices=choices,
                                         value=default_val,

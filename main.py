@@ -378,11 +378,15 @@ def parse_args():
     es_cfg = config_data.get("early_stopping", {})
     if "phase1_patience" in es_cfg: flat_defaults["phase1_patience"] = es_cfg["phase1_patience"]
     if "phase2_patience" in es_cfg: flat_defaults["phase2_patience"] = es_cfg["phase2_patience"]
+    if "phase3_patience" in es_cfg: flat_defaults["phase3_patience"] = es_cfg["phase3_patience"]
     if "phase1_monitor" in es_cfg: flat_defaults["phase1_monitor"] = es_cfg["phase1_monitor"]
     if "phase2_monitor" in es_cfg: flat_defaults["phase2_monitor"] = es_cfg["phase2_monitor"]
+    if "phase3_monitor" in es_cfg: flat_defaults["phase3_monitor"] = es_cfg["phase3_monitor"]
     
     # training parameters
     if "l1_lambda" in tr_cfg: flat_defaults["l1_lambda"] = tr_cfg["l1_lambda"]
+    if "phase3_epochs" in tr_cfg: flat_defaults["phase3_epochs"] = tr_cfg["phase3_epochs"]
+    if "phase3_lr" in opt_cfg: flat_defaults["phase3_lr"] = opt_cfg["phase3_lr"]
     
     # Stage 2: Create full parser with dynamic defaults
     parser = argparse.ArgumentParser(description="Train a Modular CBM")
@@ -404,10 +408,14 @@ def parse_args():
     parser.add_argument('--phase2_epochs', type=int, default=flat_defaults.get('phase2_epochs', None), help="Number of epochs for Phase 2 (Target Learning)")
     parser.add_argument('--phase1_lr', type=float, default=flat_defaults.get('phase1_lr', None), help="Learning rate for Phase 1 concept head")
     parser.add_argument('--phase2_lr', type=float, default=flat_defaults.get('phase2_lr', None), help="Learning rate for Phase 2 latent head and classifier")
+    parser.add_argument('--phase3_lr', type=float, default=flat_defaults.get('phase3_lr', 1e-5), help="Learning rate for Phase 3 joint fine-tuning")
     parser.add_argument('--phase1_patience', type=int, default=flat_defaults.get('phase1_patience', None), help="Early stopping patience for Phase 1")
     parser.add_argument('--phase2_patience', type=int, default=flat_defaults.get('phase2_patience', None), help="Early stopping patience for Phase 2")
+    parser.add_argument('--phase3_patience', type=int, default=flat_defaults.get('phase3_patience', 5), help="Early stopping patience for Phase 3")
     parser.add_argument('--phase1_monitor', type=str, default=flat_defaults.get('phase1_monitor', 'val_concept_loss'), help="Early stopping monitor for Phase 1")
     parser.add_argument('--phase2_monitor', type=str, default=flat_defaults.get('phase2_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 2")
+    parser.add_argument('--phase3_monitor', type=str, default=flat_defaults.get('phase3_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 3")
+    parser.add_argument('--phase3_epochs', type=int, default=flat_defaults.get('phase3_epochs', 5), help="Number of epochs for Phase 3 (Joint Parameter Tuning)")
     parser.add_argument('--lambda_ce', type=float, default=flat_defaults.get('lambda_ce', 0.1), help="Scaling factor for Softmax Cross-Entropy loss to balance gradient scale against Focal/BCE loss")
     parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce'], help="Concept loss function type")
     parser.add_argument('--focal_alpha', type=str_or_float, default=flat_defaults.get('focal_alpha', 'dynamic'), help="Alpha parameter for Focal Loss (float or 'dynamic')")
@@ -865,11 +873,181 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             }
             wandb.log(log_dict)
 
+def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
+    tqdm.write(f"\n{'-'*60}")
+    tqdm.write("  🎬 Phase 3: Joint Parameter Tuning (Full Architecture End-to-End)")
+    tqdm.write(f"{'-'*60}")
+    
+    # 1. Unfreeze everything (LoRA adapters in backbone, all attention & classification layers)
+    model.unfreeze_backbone()
+    model.unfreeze_supervised_attention()
+    model.unfreeze_latent_attention()
+    model.unfreeze_classifier()
+    
+    opt_cfg = config_data.get("optimizer", {})
+    opt_type = opt_cfg.get("type", "adam").lower()
+    weight_decay = opt_cfg.get("weight_decay", 0.0)
+    
+    # Use very small learning rate for joint tuning
+    phase3_lr = args.phase3_lr if args.phase3_lr is not None else 1e-5
+    phase3_epochs = args.phase3_epochs
+    
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    tqdm.write(f"  🧠 Trainable parameters in Phase 3: {len(trainable_params)}")
+    
+    if opt_type == "adamw":
+        optimizer = optim.AdamW(trainable_params, lr=phase3_lr, weight_decay=weight_decay)
+    elif opt_type == "sgd":
+        momentum = opt_cfg.get("momentum", 0.9)
+        optimizer = optim.SGD(trainable_params, lr=phase3_lr, weight_decay=weight_decay, momentum=momentum)
+    else:
+        optimizer = optim.Adam(trainable_params, lr=phase3_lr, weight_decay=weight_decay)
+        
+    sched_cfg = config_data.get("scheduler", {})
+    sched_type = sched_cfg.get("type", "none").lower()
+    scheduler = None
+    
+    if sched_type == "cosine":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase3_epochs, eta_min=sched_cfg.get("eta_min", 1e-6))
+    elif sched_type == "step":
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=sched_cfg.get("step_size", 10), gamma=sched_cfg.get("gamma", 0.1))
+        
+    es_cfg = config_data.get("early_stopping", {})
+    es_handler = None
+    if es_cfg.get("enabled", False):
+        phase3_monitor = args.phase3_monitor if getattr(args, "phase3_monitor", None) is not None else "val_target_loss"
+        phase3_patience = args.phase3_patience if args.phase3_patience is not None else 5
+        min_delta = es_cfg.get("min_delta", 0.0)
+        es_handler = EarlyStopping(patience=phase3_patience, min_delta=min_delta, monitor=phase3_monitor)
+        tqdm.write(f"  🛑 Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}")
+        
+    for epoch in range(phase3_epochs):
+        model.train()
+        total_loss_joint = 0.0
+        total_loss_t = 0.0
+        total_loss_c = 0.0
+        total_acc_t = 0.0
+        
+        train_pbar = tqdm(train_loader, desc=f"  P3 Epoch {epoch+1}/{phase3_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
+        for images, concepts, targets in train_pbar:
+            images = images.to(device)
+            concepts = concepts.to(device)
+            targets = targets.to(device)
+            
+            optimizer.zero_grad()
+            
+            # Joint forward pass returning features for orthogonality regularization
+            import torch.nn.functional as F
+            class_logits, concept_logits, _, supervised_features, latent_features = model(images, return_features=True)
+            
+            # 1. Target Loss
+            if num_classes == 1:
+                loss_t = target_criterion(class_logits, targets)
+            else:
+                loss_t = target_criterion(class_logits, targets.view(-1).long())
+                
+            # 2. Concept Loss (on supervised concept predictions)
+            supervised_logits = concept_logits[:, :num_concepts_supervised]
+            loss_c = concept_criterion(supervised_logits, concepts)
+            
+            # 3. Latent Regularization Losses
+            loss_latent_ortho = torch.tensor(0.0, device=device)
+            loss_latent_l1 = torch.tensor(0.0, device=device)
+            
+            concept_probs = model.concept_activation(concept_logits)
+            
+            if model.num_latent_concepts > 0 and latent_features is not None:
+                # Cosine similarity-based Orthogonal Projection Loss
+                explicit_norm = F.normalize(supervised_features, p=2, dim=-1)
+                latent_norm = F.normalize(latent_features, p=2, dim=-1)
+                cos_sim = torch.bmm(latent_norm, explicit_norm.transpose(1, 2))
+                loss_latent_ortho = (cos_sim ** 2).mean()
+                
+                # L1 latent activation sparsity loss
+                latent_activations = concept_probs[:, num_concepts_supervised:]
+                loss_latent_l1 = latent_activations.abs().mean()
+                
+            # Joint Loss aggregation: Target Loss + Scaled Concept Loss + Latent Orthogonality + Latent L1 Sparsity
+            total_loss = loss_t + (args.lambda_c * loss_c) + (args.lambda_latent_ortho * loss_latent_ortho) + (args.lambda_latent_l1 * loss_latent_l1)
+            
+            # L1 Lasso Regularization on classifier_head parameters
+            l1_lambda = getattr(args, "l1_lambda", 0.0)
+            if l1_lambda > 0:
+                l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
+                total_loss = total_loss + l1_lambda * l1_norm
+                
+            total_loss.backward()
+            optimizer.step()
+            
+            total_loss_joint += total_loss.item()
+            total_loss_t += loss_t.item()
+            total_loss_c += loss_c.item()
+            total_acc_t += calculate_accuracy(class_logits.detach(), targets)
+            train_pbar.set_postfix(JL=f"{total_loss.item():.4f}", TL=f"{loss_t.item():.4f}", CL=f"{loss_c.item():.4f}")
+            
+        avg_loss_joint = total_loss_joint / len(train_loader)
+        avg_loss_t = total_loss_t / len(train_loader)
+        avg_loss_c = total_loss_c / len(train_loader)
+        avg_acc_t = total_acc_t / len(train_loader)
+        
+        model.eval()
+        val_loss_t = 0.0
+        val_acc_t = 0.0
+        
+        with torch.no_grad():
+            for val_images, _, val_targets in val_loader:
+                val_images = val_images.to(device)
+                val_targets = val_targets.to(device)
+                
+                v_class_logits, _, _ = model(val_images)
+                
+                if num_classes == 1:
+                    v_loss_t = target_criterion(v_class_logits, val_targets)
+                else:
+                    v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
+                    
+                val_loss_t += v_loss_t.item()
+                val_acc_t += calculate_accuracy(v_class_logits, val_targets)
+                
+        avg_val_loss_t = val_loss_t / len(val_loader)
+        avg_val_acc_t = val_acc_t / len(val_loader)
+        
+        tqdm.write(f"[Phase 3] Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {avg_val_acc_t * 100:.2f}%")
+        
+        if scheduler is not None:
+            scheduler.step()
+            
+        if es_handler is not None:
+            monitor_target = es_handler.monitor.lower()
+            if monitor_target == "val_target_loss" or monitor_target == "val_loss":
+                monitor_score = avg_val_loss_t
+            elif monitor_target == "val_accuracy" or monitor_target == "val_acc":
+                monitor_score = avg_val_acc_t
+            else:
+                monitor_score = avg_val_loss_t
+                
+            es_handler(monitor_score, model)
+            if es_handler.early_stop:
+                tqdm.write(f"  🛑 Early stopping Phase 3 at Epoch {epoch + 1}. Restoring best Phase 3 weights.")
+                model.load_state_dict(es_handler.best_weights)
+                break
+                
+        if args.use_wandb:
+            import wandb
+            log_dict = {
+                "phase3_epoch": epoch + 1,
+                "train/joint_loss": avg_loss_joint,
+                "train/joint_target_loss": avg_loss_t,
+                "train/joint_concept_loss": avg_loss_c,
+                "val/joint_target_loss": avg_val_loss_t,
+                "val/joint_accuracy": avg_val_acc_t
+            }
+            wandb.log(log_dict)
+
 def main():
     args, config_data = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Create timestamp and run_name early for consistent naming
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{args.backbone_name}-cbm-{timestamp}"
 
@@ -1148,6 +1326,23 @@ def main():
         resolved_config=resolved_config,
         num_classes=num_classes
     )
+    
+    # Phase 3: Joint Parameter Tuning
+    if getattr(args, "phase3_epochs", 5) > 0:
+        train_phase3(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            target_criterion=target_criterion,
+            concept_criterion=concept_criterion,
+            device=device,
+            args=args,
+            config_data=config_data,
+            run_name=run_name,
+            num_concepts_supervised=num_concepts_supervised,
+            resolved_config=resolved_config,
+            num_classes=num_classes
+        )
 
     # Save Model Weights
     mode = "frozen_backbone" if args.freeze_backbone else "full"
