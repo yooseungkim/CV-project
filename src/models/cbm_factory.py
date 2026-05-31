@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import timm
 import open_clip
 import math
@@ -7,40 +8,61 @@ from typing import Optional, List, Tuple
 
 class ConceptAttentionLayer(nn.Module):
     def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
-        """Concept-specific Spatial Attention Layer for CNN (ResNet) backbones.
-        Each concept learns its own unique 1x1 conv mapping to spatial location and individual feature projection.
+        """Concept-specific Spatial Cosine Attention Layer for CNN (ResNet) backbones.
+        Replaces dot-product attention with L2-normalized cosine attention to suppress
+        high-norm border-patch outliers produced by DINOv2 on tightly cropped images.
+        Each concept learns its own unique 1x1 conv mapping to spatial location and
+        individual feature projection.
         """
         super().__init__()
         self.num_concepts = num_concepts
         self.feature_dim = feature_dim
         
-        # 1x1 Conv to produce spatial attention logits for each concept
+        # 1x1 Conv to produce per-concept spatial query vectors
         self.attention_conv = nn.Conv2d(feature_dim, num_concepts, kernel_size=1)
         
         # Concept-specific weight projections: [num_concepts, feature_dim]
         self.concept_proj = nn.Parameter(torch.randn(num_concepts, feature_dim))
         self.concept_bias = nn.Parameter(torch.zeros(num_concepts))
+        
+        # Learnable temperature for cosine similarity scaling (init=1 -> no-op at start)
+        self.temperature = nn.Parameter(torch.ones(1))
 
     def forward(self, features: torch.Tensor):
         # features: [B, C, H, W]
         B, C, H, W = features.shape
         
-        # 1. Spatial Attention Map generation
+        # 1. Compute per-concept spatial attention via Cosine Attention
+        # Produce raw logit maps and L2-normalize along the channel dimension
         attn_logits = self.attention_conv(features)  # [B, num_concepts, H, W]
-        
-        # Softmax over spatial dimensions (H, W)
-        attn_weights = torch.softmax(attn_logits.view(B, self.num_concepts, -1), dim=-1).view(B, self.num_concepts, H, W)
-        
-        # 2. Weighted Sum of features: [B, num_concepts, H*W] x [B, H*W, C] -> [B, num_concepts, C]
+        # L2-normalize feature patches along channel dim to remove magnitude bias
         features_flat = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        attn_flat = attn_weights.view(B, self.num_concepts, -1)  # [B, num_concepts, H*W]
+        features_norm = F.normalize(features_flat, p=2, dim=-1)           # [B, H*W, C]
+        # L2-normalize the attention conv weights (used as per-concept queries)
+        attn_queries = self.attention_conv.weight.squeeze(-1).squeeze(-1)  # [num_concepts, C]
+        attn_queries_norm = F.normalize(attn_queries, p=2, dim=-1)         # [num_concepts, C]
+        # Cosine similarity: [B, num_concepts, H*W]
+        cosine_logits = torch.bmm(
+            attn_queries_norm.unsqueeze(0).expand(B, -1, -1),  # [B, num_concepts, C]
+            features_norm.transpose(1, 2)                       # [B, C, H*W]
+        ) / self.temperature.clamp(min=1e-4)                   # scale by learnable T
         
-        weighted_features = torch.bmm(attn_flat, features_flat)  # [B, num_concepts, C]
+        # Softmax over spatial dimension to get attention weights
+        attn_weights = torch.softmax(cosine_logits, dim=-1)               # [B, num_concepts, H*W]
+        attn_weights_2d = attn_weights.view(B, self.num_concepts, H, W)   # [B, num_concepts, H, W]
         
-        # 3. Concept Logits prediction
-        concept_logits = (weighted_features * self.concept_proj.unsqueeze(0)).sum(dim=-1) + self.concept_bias.unsqueeze(0)  # [B, num_concepts]
+        # 2. Weighted Sum: [B, num_concepts, H*W] x [B, H*W, C] -> [B, num_concepts, C]
+        weighted_features = torch.bmm(attn_weights, features_norm)  # [B, num_concepts, C]
         
-        return concept_logits, attn_weights, weighted_features
+        # 3. Concept Logits via cosine similarity with learnable concept projections
+        concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)  # [num_concepts, C]
+        concept_logits = (
+            (weighted_features * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
+            / self.temperature.clamp(min=1e-4)
+            + self.concept_bias.unsqueeze(0)
+        )  # [B, num_concepts]
+        
+        return concept_logits, attn_weights_2d, weighted_features
 
 
 class GroupSoftmaxActivation(nn.Module):
@@ -156,8 +178,16 @@ class ViTBackboneWrapper(nn.Module):
 
 class ViTCrossAttentionLayer(nn.Module):
     def __init__(self, embed_dim: int, num_concepts: int, num_heads: int = 4):
-        """Concept-specific Multihead Cross-Attention Layer for ViT backbones.
-        Uses learnable concept queries to surgically aggregate patch tokens and predicts concept presence.
+        """Concept-specific Cross-Attention Layer for ViT backbones with Cosine Attention.
+        Replaces standard scaled dot-product attention with L2-normalized cosine attention
+        to suppress the high-norm border-patch outliers that DINOv2 produces on tightly
+        cropped images ("Vision Transformers Need Registers", ICLR 2024).
+
+        Architecture:
+          - Learnable concept queries (Q) are L2-normalized.
+          - DINOv2 patch tokens projected to keys (K) are L2-normalized.
+          - Scores = (Q_norm @ K_norm.T) / temperature  -> softmax -> weighted sum of values (V).
+          - Concept logits = cosine(attn_out, concept_proj) / temperature + bias.
         """
         super().__init__()
         self.num_concepts = num_concepts
@@ -166,39 +196,61 @@ class ViTCrossAttentionLayer(nn.Module):
         # Learnable concept queries: [1, num_concepts, embed_dim]
         self.concept_queries = nn.Parameter(torch.randn(1, num_concepts, embed_dim))
         
-        # Cross-Attention module: Query is concept_queries, Key/Value is patch tokens
-        self.cross_attention = nn.MultiheadAttention(embed_dim, num_heads=num_heads, batch_first=True)
+        # Explicit Q / K / V projections (replacing nn.MultiheadAttention)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         
         # Concept-specific projections & biases: [num_concepts, embed_dim]
         self.concept_proj = nn.Parameter(torch.randn(num_concepts, embed_dim))
         self.concept_bias = nn.Parameter(torch.zeros(num_concepts))
         
-        # Surgical initialization of bias to prevent Focal Loss logit explosion (RetinaNet Prior pi=0.01)
+        # Learnable temperature for cosine similarity scaling (init=1 -> no-op at start)
+        self.temperature = nn.Parameter(torch.ones(1))
+        
+        # Surgical initialization: bias prevents Focal Loss logit explosion (RetinaNet Prior pi=0.01)
         pi = 0.01
         bias_init = -math.log((1 - pi) / pi)
         nn.init.constant_(self.concept_bias, bias_init)
+        # Xavier uniform for projection layers
+        for linear in (self.q_proj, self.k_proj, self.v_proj, self.out_proj):
+            nn.init.xavier_uniform_(linear.weight)
 
     def forward(self, features: torch.Tensor):
-        # features: patch tokens of shape [B, 196, embed_dim]
-        B = features.shape[0]
+        # features: patch tokens [B, N_patches, embed_dim] (e.g. N=196 for 14x14 grid)
+        B, N, D = features.shape
         
-        # Expand concept queries to batch size
-        queries = self.concept_queries.expand(B, -1, -1)  # [B, num_concepts, embed_dim]
+        # --- Project queries, keys, values ---
+        queries = self.concept_queries.expand(B, -1, -1)  # [B, num_concepts, D]
+        Q = self.q_proj(queries)    # [B, num_concepts, D]
+        K = self.k_proj(features)   # [B, N, D]
+        V = self.v_proj(features)   # [B, N, D]
         
-        # Perform cross-attention
-        # Output shape: [B, num_concepts, embed_dim], Attention weights shape: [B, num_concepts, 196]
-        attn_out, attn_weights = self.cross_attention(
-            query=queries,
-            key=features,
-            value=features
-        )
+        # --- Cosine Attention: L2-normalize Q and K along the feature dimension ---
+        Q_norm = F.normalize(Q, p=2, dim=-1)  # [B, num_concepts, D]
+        K_norm = F.normalize(K, p=2, dim=-1)  # [B, N, D]
         
-        # Predict concept logits
-        concept_logits = (attn_out * self.concept_proj.unsqueeze(0)).sum(dim=-1) + self.concept_bias.unsqueeze(0)  # [B, num_concepts]
+        # Cosine similarity scores: [B, num_concepts, N]
+        attn_scores = torch.bmm(Q_norm, K_norm.transpose(1, 2)) / self.temperature.clamp(min=1e-4)
         
-        # Reshape 1D spatial attention weights [B, num_concepts, 196] to 2D [B, num_concepts, 14, 14]
-        # 196 patch tokens correspond to a 14x14 grid
-        H_attn = int(math.sqrt(attn_weights.shape[-1]))
+        # Softmax over patch dimension to get normalized attention weights
+        attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, num_concepts, N]
+        
+        # Weighted sum of values: [B, num_concepts, D]
+        attn_out = self.out_proj(torch.bmm(attn_weights, V))  # [B, num_concepts, D]
+        
+        # --- Concept logits via cosine similarity with learnable concept projections ---
+        concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)  # [num_concepts, D]
+        attn_out_norm = F.normalize(attn_out, p=2, dim=-1)               # [B, num_concepts, D]
+        concept_logits = (
+            (attn_out_norm * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
+            / self.temperature.clamp(min=1e-4)
+            + self.concept_bias.unsqueeze(0)
+        )  # [B, num_concepts]
+        
+        # Reshape attention weights: [B, num_concepts, N] -> [B, num_concepts, H_attn, W_attn]
+        H_attn = int(math.sqrt(N))
         W_attn = H_attn
         attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, W_attn)
         

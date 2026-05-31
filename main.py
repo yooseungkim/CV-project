@@ -1195,6 +1195,35 @@ def main():
                 state_dict = loaded_checkpoint['state_dict']
             else:
                 state_dict = loaded_checkpoint
+
+            # ── State-dict migration: old MHA → new Cosine Attention keys ───────
+            def _migrate_state_dict(sd: dict) -> dict:
+                """Remap legacy nn.MultiheadAttention keys to new cosine-attention layout."""
+                migrated = {}
+                for k, v in sd.items():
+                    if ".cross_attention.in_proj_weight" in k:
+                        prefix = k.replace(".cross_attention.in_proj_weight", "")
+                        D = v.shape[0] // 3
+                        migrated[f"{prefix}.q_proj.weight"] = v[:D].clone()
+                        migrated[f"{prefix}.k_proj.weight"] = v[D:2*D].clone()
+                        migrated[f"{prefix}.v_proj.weight"] = v[2*D:].clone()
+                    elif ".cross_attention.in_proj_bias" in k:
+                        pass  # new projections have bias=False; skip
+                    elif ".cross_attention.out_proj.weight" in k:
+                        new_k = k.replace(".cross_attention.out_proj.weight", ".out_proj.weight")
+                        migrated[new_k] = v
+                    elif ".cross_attention.out_proj.bias" in k:
+                        pass  # new out_proj has no bias; skip
+                    else:
+                        migrated[k] = v
+                return migrated
+
+            old_mha_keys = {k for k in state_dict if ".cross_attention." in k}
+            if old_mha_keys:
+                tqdm.write(f"  ⚠️  Detected {len(old_mha_keys)} legacy MHA key(s). Migrating to cosine-attention layout…")
+                state_dict = _migrate_state_dict(state_dict)
+                tqdm.write("  ✅  State-dict migration complete.")
+
             try:
                 model.load_state_dict(state_dict, strict=True)
                 tqdm.write("  ✅ Weights loaded successfully (strict match).")

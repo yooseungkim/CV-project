@@ -795,7 +795,51 @@ def main():
         concept_groups_info=concept_groups_info
     )
 
-    MODEL.load_state_dict(state_dict)
+    # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────
+    # Checkpoints trained before the Cosine Attention refactor contain
+    # nn.MultiheadAttention sub-keys (cross_attention.in_proj_weight, …).
+    # We remap them to the new explicit q_proj/k_proj/v_proj/out_proj layout
+    # so that old checkpoints can still be loaded into the updated architecture.
+    def _migrate_state_dict(sd: dict) -> dict:
+        """Remap legacy MHA keys to cosine-attention keys (in-place copy)."""
+        migrated = {}
+        for k, v in sd.items():
+            # Pattern: <prefix>.cross_attention.<suffix> → handled below
+            if ".cross_attention.in_proj_weight" in k:
+                prefix = k.replace(".cross_attention.in_proj_weight", "")
+                D = v.shape[0] // 3
+                # nn.MHA packs Q/K/V into a single in_proj_weight [3D, D]
+                migrated[f"{prefix}.q_proj.weight"] = v[:D].clone()
+                migrated[f"{prefix}.k_proj.weight"] = v[D:2*D].clone()
+                migrated[f"{prefix}.v_proj.weight"] = v[2*D:].clone()
+                print(f"  🔄 Migrated in_proj_weight → q/k/v_proj.weight  ({prefix})")
+            elif ".cross_attention.in_proj_bias" in k:
+                # Bias is not used in the new projections (bias=False); skip.
+                print(f"  ⏭️  Skipped in_proj_bias (new proj layers have no bias): {k}")
+            elif ".cross_attention.out_proj.weight" in k:
+                new_k = k.replace(".cross_attention.out_proj.weight", ".out_proj.weight")
+                migrated[new_k] = v
+                print(f"  🔄 Migrated out_proj.weight: {k} → {new_k}")
+            elif ".cross_attention.out_proj.bias" in k:
+                # out_proj bias not present in new arch; skip.
+                print(f"  ⏭️  Skipped out_proj.bias (new out_proj has no bias): {k}")
+            else:
+                migrated[k] = v
+        return migrated
+
+    old_keys = {k for k in state_dict if ".cross_attention." in k}
+    if old_keys:
+        print(f"⚠️  Checkpoint contains {len(old_keys)} legacy MHA key(s). Running migration…")
+        state_dict = _migrate_state_dict(state_dict)
+        print("✅  State-dict migration complete.")
+
+    # Load with strict=False so that new parameters (temperature, …) that are
+    # absent from old checkpoints are left at their default initialization.
+    missing, unexpected = MODEL.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"ℹ️  New parameters not found in checkpoint (initialized from scratch): {missing}")
+    if unexpected:
+        print(f"⚠️  Unexpected keys ignored during loading: {unexpected}")
     MODEL.to(DEVICE)
     MODEL.eval()
 
