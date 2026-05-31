@@ -438,6 +438,7 @@ def parse_args():
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
+    parser.add_argument('--use_group_broadcasting', type=str2bool, default=flat_defaults.get('use_group_broadcasting', False), help="Use GroupToConceptAttention: group queries → independent BCE classifiers based on concept_config (fixes TPR/TNR collapse from Group Softmax)")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
@@ -1175,6 +1176,50 @@ def main():
     # 2. Model Initialization
     tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")
     tqdm.write(f"  🧬 Concepts - Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
+
+    # 2a. Build group_mapping for GroupToConceptAttention (if requested)
+    group_mapping = None
+    num_groups    = None
+    if args.use_group_broadcasting:
+        concept_info_list = None
+        if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+            concept_info_list = train_dataset.concept_features_info
+        elif args.concept_config_path and os.path.exists(args.concept_config_path):
+            try:
+                import json
+                with open(args.concept_config_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                concept_info_list = []
+                total_dims = 0
+                for name, info in cfg.items():
+                    ctype = info.get("type", "numerical")
+                    if ctype == "categorical":
+                        num_feats = len(info.get("classes", []))
+                    else:
+                        num_feats = 1
+                    concept_info_list.append({
+                        "name": name,
+                        "num_feats": num_feats
+                    })
+            except Exception as e:
+                tqdm.write(f"  ⚠️ Error loading concept config path in main.py: {e}")
+        
+        if concept_info_list is not None:
+            group_mapping = []
+            for group_idx, info in enumerate(concept_info_list):
+                num_in_group = info["num_feats"]
+                group_mapping.extend([group_idx] * num_in_group)
+            num_groups = len(concept_info_list)
+            assert len(group_mapping) == num_concepts_supervised, (
+                f"group_mapping length {len(group_mapping)} != num_supervised_concepts {num_concepts_supervised}"
+                f" (Please check if your concept config JSON matches the supervised concepts dataset)"
+            )
+            # When using group broadcasting, disable Group Softmax (it conflicts with independent BCE)
+            concept_groups_info = None
+            tqdm.write(f"  📡 Group Broadcasting: {num_groups} anatomical groups → {num_concepts_supervised} independent BCE classifiers (Group Softmax disabled).")
+        else:
+            tqdm.write("  ⚠️  use_group_broadcasting=True but concept config information could not be resolved. Falling back to standard attention.")
+
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
@@ -1185,7 +1230,10 @@ def main():
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         concept_groups_info=concept_groups_info,
-        use_cosine_attention=args.use_cosine_attention
+        use_cosine_attention=args.use_cosine_attention,
+        use_group_broadcasting=args.use_group_broadcasting,
+        num_groups=num_groups,
+        group_mapping=group_mapping
     )
     
     if args.freeze_backbone:
@@ -1246,7 +1294,11 @@ def main():
     model.to(device)
 
     # 3. Loss & Optimizer Setup
-    if concept_groups_info is not None:
+    if getattr(args, 'use_group_broadcasting', False):
+        pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised).to(device)
+        tqdm.write(f"  🎯 Concept Loss: BCEWithLogitsLoss (Group Broadcasting mode) with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
+        concept_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
+    elif concept_groups_info is not None:
         # Determine alpha value for Focal Loss if chosen as fallback
         focal_alpha = None
         if args.concept_loss_type == 'focal':

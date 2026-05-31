@@ -263,6 +263,116 @@ class ViTCrossAttentionLayer(nn.Module):
         return concept_logits, attn_weights_2d, attn_out
 
 
+class GroupToConceptAttention(nn.Module):
+    """Attention Broadcasting: Spatial Localization (28 groups) → Semantic Classification (312 concepts).
+
+    Architecture (3-step pipeline):
+      Step 1 — Spatial Localization:
+        28 learnable group queries attend to DINOv2 patch tokens via Cosine Attention.
+        Output: group_features [B, 28, embed_dim]
+
+      Step 2 — Attention Broadcasting:
+        group_features are index-selected via `group_mapping` (int array of length 312,
+        each value in [0..27]) to produce concept_features [B, 312, embed_dim].
+        Concepts sharing the same anatomical part share the same spatial feature —
+        but each has its own independent classifier below.
+
+      Step 3 — Independent Classification:
+        Each of the 312 concepts has its own Linear(embed_dim → 1) with a dedicated bias.
+        Outputs raw logits suitable for BCEWithLogitsLoss (no sigmoid/softmax applied here).
+
+    This design separates "where to look" (group attention) from "what is present"
+    (per-concept binary classifiers), fixing both TPR Collapse (multi-label) and
+    TNR Collapse (occlusion / all-zero GT) caused by Group Softmax.
+    """
+
+    def __init__(self, embed_dim: int, num_groups: int, num_concepts: int,
+                 group_mapping: List[int]):
+        """
+        Args:
+            embed_dim:     DINOv2 patch token dimension (e.g. 768).
+            num_groups:    Number of anatomical groups (28 for CUB).
+            num_concepts:  Total supervised concepts (312 for CUB).
+            group_mapping: List of length `num_concepts` mapping each concept → group index.
+        """
+        super().__init__()
+        self.num_groups   = num_groups
+        self.num_concepts = num_concepts
+        assert len(group_mapping) == num_concepts, (
+            f"group_mapping length {len(group_mapping)} must equal num_concepts {num_concepts}"
+        )
+
+        # Register group_mapping as a buffer so it moves with .to(device) and is saved in state_dict
+        self.register_buffer('group_mapping', torch.tensor(group_mapping, dtype=torch.long))
+
+        # ── Step 1: 28 Group Queries (Spatial Localization) ─────────────────────
+        # Learnable group queries: [1, num_groups, embed_dim]
+        self.group_queries = nn.Parameter(torch.randn(1, num_groups, embed_dim))
+        nn.init.trunc_normal_(self.group_queries, std=0.02)
+
+        # Learnable temperature for cosine similarity (init=1 → no-op, learned during training)
+        self.temperature = nn.Parameter(torch.ones(1))
+
+        # Value projection for the attention output
+        self.v_proj   = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        nn.init.xavier_uniform_(self.v_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+
+        # ── Step 3: 312 Independent Binary Classifiers ──────────────────────────
+        # Batched as a single weight matrix [num_concepts, embed_dim] + bias [num_concepts]
+        # Equivalent to 312 separate Linear(embed_dim, 1) layers but computed in one bmm.
+        self.concept_weight = nn.Parameter(torch.randn(num_concepts, embed_dim))
+        self.concept_bias   = nn.Parameter(torch.zeros(num_concepts))
+        nn.init.xavier_uniform_(self.concept_weight.unsqueeze(0))  # treat as [1, C, D]
+
+        # Surgical prior initialization: bias = log((1-pi)/pi) for pi=0.01
+        # Prevents Focal Loss / BCE logit explosion at the start of training.
+        pi = 0.01
+        nn.init.constant_(self.concept_bias, -math.log((1 - pi) / pi))
+
+    def forward(self, patch_tokens: torch.Tensor):
+        """
+        Args:
+            patch_tokens: DINOv2 patch features [B, N_patches, embed_dim]
+        Returns:
+            concept_logits:    [B, num_concepts]   — raw BCE logits, no activation applied
+            attn_weights_2d:   [B, num_groups, H, H] — group-level spatial attention maps
+            concept_features:  [B, num_concepts, embed_dim] — broadcasted concept features
+        """
+        B, N, D = patch_tokens.shape
+
+        # ── Step 1: Cosine Attention over patch tokens ────────────────────────────
+        # L2-normalize group queries and patch keys to remove magnitude bias
+        Q = F.normalize(self.group_queries.expand(B, -1, -1), p=2, dim=-1)  # [B, 28, D]
+        K = F.normalize(patch_tokens, p=2, dim=-1)                           # [B, N, D]
+
+        # Cosine similarity scores, scaled by learnable temperature
+        attn_scores = torch.bmm(Q, K.transpose(1, 2)) / self.temperature.clamp(min=1e-4)  # [B, 28, N]
+        attn_weights = torch.softmax(attn_scores, dim=-1)                                   # [B, 28, N]
+
+        # Aggregate values: weighted sum of projected patch tokens
+        V = self.v_proj(patch_tokens)                             # [B, N, D]
+        group_features = self.out_proj(torch.bmm(attn_weights, V))  # [B, 28, D]
+
+        # Reshape attention maps to 2D grid for visualization
+        H_attn = int(math.sqrt(N))
+        attn_weights_2d = attn_weights.view(B, self.num_groups, H_attn, H_attn)  # [B, 28, H, H]
+
+        # ── Step 2: Attention Broadcasting (28 groups → 312 concepts) ─────────────
+        # group_mapping: [312] — index_select along the group dimension
+        concept_features = group_features[:, self.group_mapping, :]  # [B, 312, D]
+
+        # ── Step 3: Independent Binary Classification ─────────────────────────────
+        # Batched dot-product: [B, 312, D] · [312, D] → [B, 312] (einsum for clarity)
+        concept_logits = (
+            torch.einsum('bcd,cd->bc', concept_features, self.concept_weight)
+            + self.concept_bias.unsqueeze(0)
+        )  # [B, 312]
+
+        return concept_logits, attn_weights_2d, concept_features
+
+
 class UniversalFlexibleCBM(nn.Module):
     def __init__(
         self,
@@ -276,7 +386,11 @@ class UniversalFlexibleCBM(nn.Module):
         lora_r: int = 8,
         lora_alpha: float = 16.0,
         concept_groups_info: Optional[List[Tuple[int, int]]] = None,
-        use_cosine_attention: bool = False
+        use_cosine_attention: bool = False,
+        # ── Group Broadcasting Architecture ──────────────────────────────────
+        use_group_broadcasting: bool = False,
+        num_groups: int = 28,
+        group_mapping: Optional[List[int]] = None,  # required when use_group_broadcasting=True
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -286,6 +400,16 @@ class UniversalFlexibleCBM(nn.Module):
         self.num_concepts = num_supervised_concepts + num_latent_concepts
         self.num_classes = num_classes
         self.lora_active = False
+        self.use_group_broadcasting = use_group_broadcasting
+
+        if use_group_broadcasting:
+            if group_mapping is None:
+                raise ValueError("`group_mapping` must be provided when `use_group_broadcasting=True`.")
+            if len(group_mapping) != num_supervised_concepts:
+                raise ValueError(
+                    f"`group_mapping` length ({len(group_mapping)}) must equal "
+                    f"`num_supervised_concepts` ({num_supervised_concepts})."
+                )
 
         # 1. Initialize Backbone based on architecture
         if self.backbone_name.startswith('resnet'):
@@ -360,15 +484,25 @@ class UniversalFlexibleCBM(nn.Module):
             # Extract embed_dim from the Vit model
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
             print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
-            
-            # Layer Construction for ViT
-            attn_mode = "Cosine" if use_cosine_attention else "Standard MultiheadAttention"
-            print(f"🛠️ Attention Mode: {attn_mode} (use_cosine_attention={use_cosine_attention})")
-            self.supervised_attention = ViTCrossAttentionLayer(
-                embed_dim=embed_dim,
-                num_concepts=num_supervised_concepts,
-                use_cosine_attention=use_cosine_attention
-            )
+
+            if use_group_broadcasting:
+                # ── Group Broadcasting Architecture ──────────────────────────
+                print(f"🛠️ Attention Mode: GroupToConceptAttention ({num_groups} groups → {num_supervised_concepts} concepts)")
+                self.supervised_attention = GroupToConceptAttention(
+                    embed_dim=embed_dim,
+                    num_groups=num_groups,
+                    num_concepts=num_supervised_concepts,
+                    group_mapping=group_mapping
+                )
+            else:
+                # ── Standard per-concept Attention ───────────────────────────
+                attn_mode = "Cosine" if use_cosine_attention else "Standard MultiheadAttention"
+                print(f"🛠️ Attention Mode: {attn_mode} (use_cosine_attention={use_cosine_attention})")
+                self.supervised_attention = ViTCrossAttentionLayer(
+                    embed_dim=embed_dim,
+                    num_concepts=num_supervised_concepts,
+                    use_cosine_attention=use_cosine_attention
+                )
             if self.num_latent_concepts > 0:
                 self.latent_attention = ViTCrossAttentionLayer(
                     embed_dim=embed_dim,
@@ -379,7 +513,13 @@ class UniversalFlexibleCBM(nn.Module):
             raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")
 
         # Common CBM classification/activation layers
-        if concept_groups_info is not None:
+        if use_group_broadcasting:
+            # GroupToConceptAttention outputs raw BCE logits — no activation needed at bottleneck.
+            # Sigmoid is applied implicitly inside BCEWithLogitsLoss during training.
+            # For inference / visualization we use sigmoid explicitly.
+            self.concept_activation = nn.Sigmoid()
+            print("🛠️ Dual-Backbone Factory: Group Broadcasting mode — BCEWithLogitsLoss compatible (Sigmoid activation for inference).")
+        elif concept_groups_info is not None:
             self.concept_activation = GroupSoftmaxActivation(concept_groups_info)
             print(f"🛠️ Dual-Backbone Factory: Activated Mutual Exclusive Group Softmax over {len(concept_groups_info)} groups.")
         else:

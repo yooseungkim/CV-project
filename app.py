@@ -566,6 +566,10 @@ def parse_app_args():
         help="Disable mutually exclusive concept grouping (defaults to auto-detecting from checkpoint)"
     )
     parser.add_argument(
+        '--use_group_broadcasting', action='store_true', default=False,
+        help="Use GroupToConceptAttention layout (group queries → independent BCE classifiers based on concept_config)"
+    )
+    parser.add_argument(
         '--lora_r', type=int, default=8
     )
     parser.add_argument(
@@ -697,6 +701,7 @@ def main():
     backbone_type = args.backbone_type
     use_concept_groups = True
     use_cosine_attention = getattr(args, 'use_cosine_attention', False)
+    use_group_broadcasting = getattr(args, 'use_group_broadcasting', False)
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -706,12 +711,14 @@ def main():
             lora_alpha = checkpoint_args.get('lora_alpha', 16.0)
         if 'use_cosine_attention' in checkpoint_args:
             use_cosine_attention = checkpoint_args['use_cosine_attention']
+        if 'use_group_broadcasting' in checkpoint_args:
+            use_group_broadcasting = checkpoint_args['use_group_broadcasting']
         if 'backbone_name' in checkpoint_args:
             backbone_name = checkpoint_args['backbone_name']
             backbone_type = checkpoint_args.get('backbone_type', 'timm')
         if 'use_concept_groups' in checkpoint_args:
             use_concept_groups = checkpoint_args['use_concept_groups']
-        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}")
+        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
@@ -722,12 +729,14 @@ def main():
             lora_alpha = bb_cfg.get('lora_alpha', 16.0)
         if 'use_cosine_attention' in bb_cfg:
             use_cosine_attention = bb_cfg['use_cosine_attention']
+        if 'use_group_broadcasting' in bb_cfg:
+            use_group_broadcasting = bb_cfg['use_group_broadcasting']
         if 'backbone_name' in bb_cfg:
             backbone_name = bb_cfg['backbone_name']
             backbone_type = bb_cfg.get('backbone_type', 'timm')
         if 'use_concept_groups' in ds_cfg:
             use_concept_groups = ds_cfg['use_concept_groups']
-        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}")
+        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -738,11 +747,15 @@ def main():
         has_mha_keys    = any(".cross_attention." in k for k in state_dict.keys())
         if has_cosine_keys and not has_mha_keys:
             use_cosine_attention = True
+        # Detect group broadcasting
+        has_group_queries = any("supervised_attention.group_queries" in k for k in state_dict.keys())
+        if has_group_queries:
+            use_group_broadcasting = True
         # Dynamic inference of ViT shape based on weight keys
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True")
+        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
 
     # Command line argument override
     if getattr(args, 'no_grouping', False):
@@ -792,6 +805,22 @@ def main():
         USE_CONCEPT_GROUPS = False
         print("🔮 Group-level Softmax Activation is DISABLED (Sigmoid activation fallback active).")
 
+    # 2b. Build group_mapping for GroupToConceptAttention (if requested)
+    group_mapping = None
+    num_groups    = len(CONCEPT_GROUPS)
+    if use_group_broadcasting:
+        group_mapping = []
+        for group_idx, group in enumerate(CONCEPT_GROUPS):
+            num_in_group = len(group["flat_indices"])
+            group_mapping.extend([group_idx] * num_in_group)
+        assert len(group_mapping) == NUM_CONCEPTS, (
+            f"group_mapping length {len(group_mapping)} != NUM_CONCEPTS {NUM_CONCEPTS}"
+        )
+        # When using group broadcasting, disable Group Softmax (which conflicts with independent BCE)
+        concept_groups_info = None
+        USE_CONCEPT_GROUPS = False
+        print(f"🔮 Group Broadcasting: {num_groups} anatomical groups → {NUM_CONCEPTS} independent BCE classifiers (Group Softmax disabled).")
+
     # 3. Initialize model with correct parameters
     MODEL = UniversalFlexibleCBM(
         backbone_type=backbone_type,
@@ -803,7 +832,10 @@ def main():
         lora_r=lora_r,
         lora_alpha=lora_alpha,
         concept_groups_info=concept_groups_info,
-        use_cosine_attention=use_cosine_attention
+        use_cosine_attention=use_cosine_attention,
+        use_group_broadcasting=use_group_broadcasting,
+        num_groups=num_groups,
+        group_mapping=group_mapping
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

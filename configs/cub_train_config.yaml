@@ -12,6 +12,7 @@ backbone:
   lora_r: 16             # LoRA rank dimension
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
+  use_group_broadcasting: false  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
 
 # 2. Dataset Setup
 dataset:
