@@ -371,6 +371,8 @@ def parse_args():
     if "focal_gamma" in opt_cfg: flat_defaults["focal_gamma"] = opt_cfg["focal_gamma"]
     if "ortho_lambda" in opt_cfg: flat_defaults["ortho_lambda"] = opt_cfg["ortho_lambda"]
     if "lambda_ce" in opt_cfg: flat_defaults["lambda_ce"] = opt_cfg["lambda_ce"]
+    if "lambda_latent_ortho" in opt_cfg: flat_defaults["lambda_latent_ortho"] = opt_cfg["lambda_latent_ortho"]
+    if "lambda_latent_l1" in opt_cfg: flat_defaults["lambda_latent_l1"] = opt_cfg["lambda_latent_l1"]
     
     # early stopping patience
     es_cfg = config_data.get("early_stopping", {})
@@ -412,6 +414,8 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=flat_defaults.get('focal_gamma', 2.0), help="Gamma parameter for Focal Loss")
     parser.add_argument('--ortho_lambda', type=float, default=flat_defaults.get('ortho_lambda', 0.05), help="Orthogonality regularization loss multiplier for attention map separation")
     parser.add_argument('--l1_lambda', type=float, default=flat_defaults.get('l1_lambda', 0.0), help="L1 Lasso regularization multiplier for Phase 2 classifier")
+    parser.add_argument('--lambda_latent_ortho', type=float, default=flat_defaults.get('lambda_latent_ortho', 0.1), help="Orthogonal latent projection loss weight")
+    parser.add_argument('--lambda_latent_l1', type=float, default=flat_defaults.get('lambda_latent_l1', 0.01), help="L1 latent activation sparsity loss weight")
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))
     parser.add_argument('--lr', type=float, default=flat_defaults.get('lr', 1e-3))
     parser.add_argument('--lambda_c', type=float, default=flat_defaults.get('lambda_c', 1.0))
@@ -745,19 +749,21 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             images = images.to(device)
             targets = targets.to(device)
             
+            import torch.nn.functional as F
             # 이전 단계에서 학습된 수퍼바이즈드 컨셉 예측값을 그래프 연산 분리하여 추출
             with torch.no_grad():
                 features = model.backbone(images)
-                supervised_logits, _ = model.supervised_attention(features)
+                supervised_logits, _, supervised_features = model.supervised_attention(features)
                 
             optimizer.zero_grad()
             
             # 레이턴트 컨셉은 그래디언트를 흘려주어야 하므로 no_grad 밖에서 계산
             if model.num_latent_concepts > 0:
-                latent_logits, _ = model.latent_attention(features)
+                latent_logits, _, latent_features = model.latent_attention(features)
                 concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
             else:
                 concept_logits = supervised_logits
+                latent_features = None
                 
             concept_probs = model.concept_activation(concept_logits)
             concept_probs_dropout = model.dropout(concept_probs)
@@ -767,6 +773,28 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 loss_t = target_criterion(class_logits, targets)
             else:
                 loss_t = target_criterion(class_logits, targets.view(-1).long())
+                
+            # CBM Latent concept regularization terms
+            loss_latent_ortho = torch.tensor(0.0, device=device)
+            loss_latent_l1 = torch.tensor(0.0, device=device)
+            
+            if model.num_latent_concepts > 0 and latent_features is not None:
+                # 1. Cosine similarity-based Orthogonal Projection Loss
+                # Normalize features along dimension C: shape [B, S, C] and [B, L, C]
+                explicit_norm = F.normalize(supervised_features, p=2, dim=-1)
+                latent_norm = F.normalize(latent_features, p=2, dim=-1)
+                
+                # Compute batch cosine similarity matrix: [B, L, S]
+                cos_sim = torch.bmm(latent_norm, explicit_norm.transpose(1, 2))
+                loss_latent_ortho = (cos_sim ** 2).mean()
+                
+                # 2. L1 sparsity regularization on latent concept activations
+                # Latent activations are the last self.num_latent_concepts columns of concept_probs
+                latent_activations = concept_probs[:, num_concepts_supervised:]  # [B, L]
+                loss_latent_l1 = latent_activations.abs().mean()
+                
+                # Aggregate losses
+                loss_t = loss_t + (args.lambda_latent_ortho * loss_latent_ortho) + (args.lambda_latent_l1 * loss_latent_l1)
                 
             # L1 Lasso Regularization on classifier_head parameters to select high-information concepts
             l1_lambda = getattr(args, "l1_lambda", 0.0)

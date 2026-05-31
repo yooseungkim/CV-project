@@ -40,7 +40,7 @@ class ConceptAttentionLayer(nn.Module):
         # 3. Concept Logits prediction
         concept_logits = (weighted_features * self.concept_proj.unsqueeze(0)).sum(dim=-1) + self.concept_bias.unsqueeze(0)  # [B, num_concepts]
         
-        return concept_logits, attn_weights
+        return concept_logits, attn_weights, weighted_features
 
 
 class GroupSoftmaxActivation(nn.Module):
@@ -202,7 +202,7 @@ class ViTCrossAttentionLayer(nn.Module):
         W_attn = H_attn
         attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, W_attn)
         
-        return concept_logits, attn_weights_2d
+        return concept_logits, attn_weights_2d, attn_out
 
 
 class UniversalFlexibleCBM(nn.Module):
@@ -351,22 +351,23 @@ class UniversalFlexibleCBM(nn.Module):
             
         return C, H, W
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, return_features: bool = False):
         # Input tensor shape x: [B, 3, H, W]
         features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, 196, embed_dim] (ViT)
         if isinstance(features, tuple):
             features = features[0]
             
         # Attention-based concept projection
-        supervised_logits, supervised_attn = self.supervised_attention(features)
+        supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
         
         if self.num_latent_concepts > 0:
-            latent_logits, latent_attn = self.latent_attention(features)
+            latent_logits, latent_attn, latent_features = self.latent_attention(features)
             concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
             attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
         else:
             concept_logits = supervised_logits
             attn_weights = supervised_attn
+            latent_features = None
         
         # Concept activation (Phase 1 baseline or Group Softmax)
         concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
@@ -377,6 +378,8 @@ class UniversalFlexibleCBM(nn.Module):
         # Final classification target output logits
         class_logits = self.classifier_head(concept_probs_dropout)  # [B, num_classes]
         
+        if return_features:
+            return class_logits, concept_logits, attn_weights, supervised_features, latent_features
         return class_logits, concept_logits, attn_weights
 
     def freeze_backbone(self):
