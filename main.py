@@ -135,7 +135,7 @@ def parse_args():
     parser.add_argument('--phase1_patience', type=int, default=flat_defaults.get('phase1_patience', None), help="Early stopping patience for Phase 1")
     parser.add_argument('--phase2_patience', type=int, default=flat_defaults.get('phase2_patience', None), help="Early stopping patience for Phase 2")
     parser.add_argument('--phase3_patience', type=int, default=flat_defaults.get('phase3_patience', 5), help="Early stopping patience for Phase 3")
-    parser.add_argument('--phase1_monitor', type=str, default=flat_defaults.get('phase1_monitor', 'val_concept_loss'), help="Early stopping monitor for Phase 1")
+    parser.add_argument('--phase1_monitor', type=str, default=flat_defaults.get('phase1_monitor', 'val_concept_balanced_acc'), help="Early stopping monitor for Phase 1")
     parser.add_argument('--phase2_monitor', type=str, default=flat_defaults.get('phase2_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 2")
     parser.add_argument('--phase3_monitor', type=str, default=flat_defaults.get('phase3_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 3")
     parser.add_argument('--phase3_epochs', type=int, default=flat_defaults.get('phase3_epochs', 5), help="Number of epochs for Phase 3 (Joint Parameter Tuning)")
