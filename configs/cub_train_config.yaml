@@ -5,9 +5,12 @@
 # 1. Vision Backbone Settings
 backbone:
   backbone_type: "timm"
-  backbone_name: "vit_base_patch16_224"
+  backbone_name: "vit_base_patch14_dinov2"
   freeze_backbone: false
   freeze_head: false
+  use_lora: true          # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
+  lora_r: 16             # LoRA rank dimension
+  lora_alpha: 16.0        # LoRA scaling factor alpha
 
 # 2. Dataset Setup
 dataset:
@@ -22,12 +25,12 @@ training:
   phase2_epochs: 50
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
-  l1_lambda: 0.00001  # L1 Lasso Regularization for Phase 2 classifier head
+  l1_lambda: 0.01  # L1 Lasso Regularization for Phase 2 classifier head
   latent_concepts: 5  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   save_dir: "checkpoints"
   resume_checkpoint: null
-  use_wandb: false  # Disable by default for local execution, set to true to monitor via wandb
+  use_wandb: true  # Disable by default for local execution, set to true to monitor via wandb
   num_workers: 16
   pin_memory: true
   cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
@@ -38,13 +41,13 @@ optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
-  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
+  phase2_lr: 0.001  # Larger LR for latent representation learning in Phase 2
   weight_decay: 0.05
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
-  focal_alpha: 0.85
+  focal_alpha: 0.95
   focal_gamma: 2.0  # Focal loss focus exponent gamma
-  ortho_lambda: 0.00  # Orthogonality loss coefficient to force attention map separation
+  ortho_lambda: 0.005  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
   type: "cosine_with_warmup" # [핵심] ViT는 초반 Warm-up 없이 학습하면 발산합니다

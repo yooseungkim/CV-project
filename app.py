@@ -114,7 +114,7 @@ def run_inference(image: Image.Image):
     MODEL.eval()
     with torch.no_grad():
         class_logits, concept_logits, attn_weights = MODEL(img_tensor)
-        concept_probs = torch.sigmoid(concept_logits)  # [1, num_concepts]
+        concept_probs = MODEL.concept_activation(concept_logits)  # [1, num_concepts]
 
     # Prediction result
     if NUM_CLASSES == 1:
@@ -508,6 +508,16 @@ def parse_app_args():
         help="Number of latent concepts (automatically detected from checkpoint if not specified)"
     )
     parser.add_argument(
+        '--use_lora', action='store_true', default=False,
+        help="Enable LoRA adapters for ViT backbone"
+    )
+    parser.add_argument(
+        '--lora_r', type=int, default=8
+    )
+    parser.add_argument(
+        '--lora_alpha', type=float, default=16.0
+    )
+    parser.add_argument(
         '--port', type=int, default=7860,
         help="Port to serve the Gradio app on"
     )
@@ -625,13 +635,63 @@ def main():
     else:
         print(f"⚠️ Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
 
+    # Auto-detect LoRA configuration & backbone settings from checkpoint metadata or weight keys
+    use_lora = getattr(args, 'use_lora', False)
+    lora_r = getattr(args, 'lora_r', 8)
+    lora_alpha = getattr(args, 'lora_alpha', 16.0)
+    backbone_name = args.backbone_name
+    backbone_type = args.backbone_type
+    
+    if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
+        checkpoint_args = loaded_checkpoint['args']
+        if 'use_lora' in checkpoint_args:
+            use_lora = checkpoint_args['use_lora']
+            lora_r = checkpoint_args.get('lora_r', 8)
+            lora_alpha = checkpoint_args.get('lora_alpha', 16.0)
+        if 'backbone_name' in checkpoint_args:
+            backbone_name = checkpoint_args['backbone_name']
+            backbone_type = checkpoint_args.get('backbone_type', 'timm')
+        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}")
+    elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
+        checkpoint_cfg = loaded_checkpoint['config']
+        bb_cfg = checkpoint_cfg.get('backbone', {})
+        if 'use_lora' in bb_cfg:
+            use_lora = bb_cfg['use_lora']
+            lora_r = bb_cfg.get('lora_r', 8)
+            lora_alpha = bb_cfg.get('lora_alpha', 16.0)
+        if 'backbone_name' in bb_cfg:
+            backbone_name = bb_cfg['backbone_name']
+            backbone_type = bb_cfg.get('backbone_type', 'timm')
+        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}")
+    else:
+        # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
+        has_lora_keys = any("lora_" in key for key in state_dict.keys())
+        if has_lora_keys:
+            use_lora = True
+        # Dynamic inference of ViT shape based on weight keys
+        is_vit_keys = any("blocks." in key for key in state_dict.keys())
+        if is_vit_keys:
+            backbone_name = "vit_base_patch16_224"
+        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}")
+
+    # Build concept_groups_info for dynamic softmax activation integration
+    concept_groups_info = []
+    for group in CONCEPT_GROUPS:
+        start = group["flat_indices"][0]
+        num = len(group["flat_indices"])
+        concept_groups_info.append((start, num))
+
     # 3. Initialize model with correct parameters
     MODEL = UniversalFlexibleCBM(
-        backbone_type=args.backbone_type,
-        backbone_name=args.backbone_name,
+        backbone_type=backbone_type,
+        backbone_name=backbone_name,
         num_supervised_concepts=NUM_CONCEPTS,
         num_classes=NUM_CLASSES,
-        num_latent_concepts=latent_concepts
+        num_latent_concepts=latent_concepts,
+        use_lora=use_lora,
+        lora_r=lora_r,
+        lora_alpha=lora_alpha,
+        concept_groups_info=concept_groups_info
     )
 
     MODEL.load_state_dict(state_dict)

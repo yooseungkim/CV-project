@@ -3,6 +3,7 @@ import torch.nn as nn
 import timm
 import open_clip
 import math
+from typing import Optional, List, Tuple
 
 class ConceptAttentionLayer(nn.Module):
     def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
@@ -42,6 +43,92 @@ class ConceptAttentionLayer(nn.Module):
         return concept_logits, attn_weights
 
 
+class GroupSoftmaxActivation(nn.Module):
+    def __init__(self, groups_info: List[Tuple[int, int]]):
+        """Dynamic Group-level Softmax Activation for mutually exclusive conceptual attributes.
+        Applies softmax within multi-class concept groups to enforce probability sum bounds to exactly 1.0,
+        while falling back to standard sigmoid for numerical/binary single-dimension features.
+        Any dimensions beyond the configured groups (e.g., latent concepts) are automatically
+        activated using standard Sigmoid to preserve downstream dimensionality integrity.
+        groups_info: List of (start_idx, num_feats) representing attribute groupings.
+        """
+        super().__init__()
+        self.groups_info = groups_info
+        # Calculate the total number of supervised concepts covered by the groups
+        self.total_group_feats = sum(num_feats for _, num_feats in groups_info) if groups_info else 0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: [B, total_concepts] (supervised + latent)
+        outputs = []
+        for start_idx, num_feats in self.groups_info:
+            group_logits = x[:, start_idx : start_idx + num_feats]
+            if num_feats > 1:
+                # Mutually exclusive attribute groups
+                group_probs = torch.softmax(group_logits, dim=-1)
+            else:
+                # Binary/numerical fallback
+                group_probs = torch.sigmoid(group_logits)
+            outputs.append(group_probs)
+            
+        # If there are latent or remaining concepts beyond the defined groups, apply sigmoid fallback
+        if x.shape[1] > self.total_group_feats:
+            remaining_logits = x[:, self.total_group_feats:]
+            remaining_probs = torch.sigmoid(remaining_logits)
+            outputs.append(remaining_probs)
+            
+        return torch.cat(outputs, dim=1)
+
+
+class LoRALinear(nn.Module):
+    def __init__(self, original_linear: nn.Linear, r: int = 8, lora_alpha: float = 16.0, lora_dropout: float = 0.05):
+        """Low-Rank Adaptation (LoRA) linear wrapper module.
+        Freezes the original_linear projection layer and adds parallel learnable rank-r adapters.
+        """
+        super().__init__()
+        self.original_linear = original_linear
+        self.r = r
+        self.lora_alpha = lora_alpha
+        self.scaling = lora_alpha / r
+        
+        # Original projection layer parameters are strictly frozen
+        for param in self.original_linear.parameters():
+            param.requires_grad = False
+            
+        in_features = original_linear.in_features
+        out_features = original_linear.out_features
+        
+        # Trainable low-rank adapter weights
+        self.lora_A = nn.Parameter(torch.zeros(r, in_features))
+        self.lora_B = nn.Parameter(torch.zeros(out_features, r))
+        self.lora_dropout = nn.Dropout(p=lora_dropout)
+        
+        # Initialize A to uniform kaiming and B to zero so that the initial output mismatch is exactly 0
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_output = self.original_linear(x)
+        lora_output = (self.lora_dropout(x) @ self.lora_A.t()) @ self.lora_B.t()
+        return original_output + lora_output * self.scaling
+
+
+def inject_lora_to_vit(model: nn.Module, r: int = 8, lora_alpha: float = 16.0) -> list:
+    """Recursively replaces standard nn.Linear layers inside vit blocks' qkv attention with LoRALinear modules."""
+    injected_modules = []
+    
+    # Traverse named modules to find and surgical replace attention projections
+    for name, module in model.named_modules():
+        if name.endswith('.attn'):
+            if hasattr(module, 'qkv') and isinstance(module.qkv, nn.Linear):
+                original_qkv = module.qkv
+                lora_qkv = LoRALinear(original_qkv, r=r, lora_alpha=lora_alpha)
+                module.qkv = lora_qkv
+                injected_modules.append(lora_qkv)
+                
+    print(f"🛠️ LoRA Injector: Successfully injected LoRA (r={r}, alpha={lora_alpha}) into {len(injected_modules)} ViT attention blocks.")
+    return injected_modules
+
+
 class ViTBackboneWrapper(nn.Module):
     def __init__(self, vit_model):
         """Wrapper for Vision Transformer to dynamically extract patch tokens while ignoring the CLS token.
@@ -51,11 +138,19 @@ class ViTBackboneWrapper(nn.Module):
         self.vit = vit_model
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Extract features (CLS token + patch tokens): [B, 197, 768]
+        # Extract features (CLS token + patch tokens)
         feats = self.vit.forward_features(x)
         if isinstance(feats, tuple):
             feats = feats[0]
-        # Ignore the CLS token at index 0 and return only 196 patch tokens: [B, 196, 768]
+            
+        # Assert type and shape safety to prevent silencing subtle shape bugs or non-standard timm outputs
+        assert isinstance(feats, torch.Tensor), f"Expected backbone features to be a torch.Tensor, but got {type(feats)}"
+        assert len(feats.shape) == 3, (
+            f"Expected 3D patch token tensor [B, N_tokens, C] from ViT backbone, but got shape {feats.shape}. "
+            "Ensure global pooling is disabled in timm and your model returns sequence-level features."
+        )
+        
+        # Ignore the CLS token at index 0 and return only patch tokens: [B, N_tokens - 1, C]
         return feats[:, 1:]
 
 
@@ -118,7 +213,11 @@ class UniversalFlexibleCBM(nn.Module):
         num_supervised_concepts: int,
         num_classes: int,
         num_latent_concepts: int = 0,
-        pretrained: bool = True
+        pretrained: bool = True,
+        use_lora: bool = False,
+        lora_r: int = 8,
+        lora_alpha: float = 16.0,
+        concept_groups_info: Optional[List[Tuple[int, int]]] = None
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -127,6 +226,7 @@ class UniversalFlexibleCBM(nn.Module):
         self.num_latent_concepts = num_latent_concepts
         self.num_concepts = num_supervised_concepts + num_latent_concepts
         self.num_classes = num_classes
+        self.lora_active = False
 
         # 1. Initialize Backbone based on architecture
         if self.backbone_name.startswith('resnet'):
@@ -179,14 +279,28 @@ class UniversalFlexibleCBM(nn.Module):
                     num_concepts=num_latent_concepts
                 )
                 
-        elif self.backbone_name.startswith('vit'):
-            # Load ViT backbone
-            vit_model = timm.create_model(backbone_name, pretrained=pretrained)
+        elif self.backbone_name.startswith('vit') or 'dinov2' in self.backbone_name:
+            # Check timm registry to provide clear diagnostic error if naming convention is unsupported
+            if not timm.is_model(backbone_name):
+                available_dinov2 = [m for m in timm.list_models('*dinov2*')]
+                raise ValueError(
+                    f"Model '{backbone_name}' not found in timm registry. "
+                    f"Available DINOv2 models in local timm registry: {available_dinov2}"
+                )
+                
+            # Load ViT / DINOv2 backbone with positional embedding interpolation enabled (dynamic_img_size=True)
+            # This cleanly supports 224x224 input without hardcoded image sizing or silencing TypeErrors.
+            vit_model = timm.create_model(backbone_name, pretrained=pretrained, dynamic_img_size=True)
             self.backbone = ViTBackboneWrapper(vit_model)
+            
+            # Apply LoRA 어댑터 주입 if requested
+            self.lora_active = use_lora
+            if use_lora:
+                inject_lora_to_vit(self.backbone, r=lora_r, lora_alpha=lora_alpha)
             
             # Extract embed_dim from the Vit model
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
-            print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim})")
+            print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
             
             # Layer Construction for ViT (using Multihead Cross-Attention)
             self.supervised_attention = ViTCrossAttentionLayer(
@@ -201,8 +315,14 @@ class UniversalFlexibleCBM(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")
 
-        # Common CBM classification layers
-        self.concept_activation = nn.Sigmoid()
+        # Common CBM classification/activation layers
+        if concept_groups_info is not None:
+            self.concept_activation = GroupSoftmaxActivation(concept_groups_info)
+            print(f"🛠️ Dual-Backbone Factory: Activated Mutual Exclusive Group Softmax over {len(concept_groups_info)} groups.")
+        else:
+            self.concept_activation = nn.Sigmoid()
+            print("🛠️ Dual-Backbone Factory: Activated Standard Flat Sigmoid Activation.")
+            
         self.dropout = nn.Dropout(p=0.2)
         self.classifier_head = nn.Linear(self.num_concepts, num_classes)
 
@@ -248,7 +368,7 @@ class UniversalFlexibleCBM(nn.Module):
             concept_logits = supervised_logits
             attn_weights = supervised_attn
         
-        # Concept activation (Phase 1 baseline)
+        # Concept activation (Phase 1 baseline or Group Softmax)
         concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
         
         # Apply dropout to regularize concept predictions
@@ -265,9 +385,20 @@ class UniversalFlexibleCBM(nn.Module):
             param.requires_grad = False
 
     def unfreeze_backbone(self):
-        """Unfreezes the vision backbone parameters."""
-        for param in self.backbone.parameters():
-            param.requires_grad = True
+        """Unfreezes the vision backbone parameters.
+        If LoRA is active, unfreezes ONLY the LoRA adapter parameters to preserve ImageNet weights.
+        """
+        if getattr(self, 'lora_active', False):
+            for name, param in self.backbone.named_parameters():
+                if 'lora_' in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+            print("🔓 LoRA Unfreeze: Activated only LoRA adapter parameters for training.")
+        else:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            print("🔓 Full Unfreeze: Activated all backbone parameters for training.")
 
     def freeze_classifier(self):
         """Freezes the classifier head parameters."""

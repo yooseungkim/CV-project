@@ -175,6 +175,47 @@ class SigmoidFocalLoss(nn.Module):
             return loss.sum()
         return loss
 
+class GroupCrossEntropyLoss(nn.Module):
+    def __init__(self, groups_info: list[tuple[int, int]]):
+        """Robust Group-level Softmax Cross Entropy Loss.
+        Penalizes prediction errors within mutually exclusive attribute categories,
+        and dynamically filters out missing annotations using sum-masking.
+        groups_info: list of (start_idx, num_feats)
+        """
+        super().__init__()
+        self.groups_info = groups_info
+        
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        import torch.nn.functional as F
+        loss = 0.0
+        active_groups = 0
+        
+        for start_idx, num_feats in self.groups_info:
+            group_logits = logits[:, start_idx : start_idx + num_feats]
+            group_targets = targets[:, start_idx : start_idx + num_feats]
+            
+            if num_feats > 1:
+                # Calculate softmax cross entropy for categorical mutually exclusive groups
+                log_probs = torch.log_softmax(group_logits, dim=-1)
+                
+                # Check for missing targets (annotations missing for this bird part group)
+                target_sum = group_targets.sum(dim=-1, keepdim=True)
+                group_targets_normalized = group_targets / (target_sum + 1e-8)
+                
+                group_loss = -(group_targets_normalized * log_probs).sum(dim=-1)
+                
+                # Mask out samples that do not have annotations for this group
+                mask = (target_sum.squeeze(-1) > 0.0).float()
+                if mask.sum() > 0:
+                    loss += (group_loss * mask).sum() / (mask.sum() + 1e-8)
+                    active_groups += 1
+            else:
+                # 1D binary fallback
+                loss += F.binary_cross_entropy_with_logits(group_logits.squeeze(-1), group_targets.squeeze(-1))
+                active_groups += 1
+                
+        return loss / (active_groups + 1e-8)
+
 class EarlyStopping:
     def __init__(self, patience: int = 5, min_delta: float = 0.0, monitor: str = "val_loss"):
         self.patience = patience
@@ -249,6 +290,9 @@ def parse_args():
     if "backbone_name" in bb_cfg: flat_defaults["backbone_name"] = bb_cfg["backbone_name"]
     if "freeze_backbone" in bb_cfg: flat_defaults["freeze_backbone"] = bb_cfg["freeze_backbone"]
     if "freeze_head" in bb_cfg: flat_defaults["freeze_head"] = bb_cfg["freeze_head"]
+    if "use_lora" in bb_cfg: flat_defaults["use_lora"] = bb_cfg["use_lora"]
+    if "lora_r" in bb_cfg: flat_defaults["lora_r"] = bb_cfg["lora_r"]
+    if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -333,6 +377,9 @@ def parse_args():
     parser.add_argument('--pin_memory', type=str2bool, default=flat_defaults.get('pin_memory', True))
     parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
+    parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
+    parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
+    parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
@@ -821,6 +868,16 @@ def main():
         pin_memory=args.pin_memory
     )
 
+    # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax
+    concept_groups_info = None
+    if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+        concept_groups_info = []
+        for info in train_dataset.concept_features_info:
+            start = info["start_idx"]
+            num = info["num_feats"]
+            concept_groups_info.append((start, num))
+        tqdm.write(f"  📂 Group-level Softmax Activation: Configured {len(concept_groups_info)} mutually exclusive groups.")
+
     # 2. Model Initialization
     tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")
     tqdm.write(f"  🧬 Concepts - Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
@@ -829,7 +886,11 @@ def main():
         backbone_name=args.backbone_name,
         num_supervised_concepts=num_concepts_supervised,
         num_classes=num_classes,
-        num_latent_concepts=args.latent_concepts
+        num_latent_concepts=args.latent_concepts,
+        use_lora=args.use_lora,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        concept_groups_info=concept_groups_info
     )
     
     if args.freeze_backbone:
@@ -861,7 +922,10 @@ def main():
     model.to(device)
 
     # 3. Loss & Optimizer Setup
-    if args.concept_loss_type == 'focal':
+    if concept_groups_info is not None:
+        tqdm.write(f"  🎯 Concept Loss: Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups)")
+        concept_criterion = GroupCrossEntropyLoss(concept_groups_info)
+    elif args.concept_loss_type == 'focal':
         if isinstance(args.focal_alpha, str) and args.focal_alpha.lower() == 'dynamic':
             # Dynamically compute per-concept alpha: alpha = pos_weight / (1 + pos_weight)
             pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised)
