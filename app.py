@@ -512,6 +512,10 @@ def parse_app_args():
         help="Enable LoRA adapters for ViT backbone"
     )
     parser.add_argument(
+        '--no_grouping', action='store_true', default=False,
+        help="Disable mutually exclusive concept grouping (defaults to auto-detecting from checkpoint)"
+    )
+    parser.add_argument(
         '--lora_r', type=int, default=8
     )
     parser.add_argument(
@@ -641,6 +645,7 @@ def main():
     lora_alpha = getattr(args, 'lora_alpha', 16.0)
     backbone_name = args.backbone_name
     backbone_type = args.backbone_type
+    use_concept_groups = True
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -651,10 +656,13 @@ def main():
         if 'backbone_name' in checkpoint_args:
             backbone_name = checkpoint_args['backbone_name']
             backbone_type = checkpoint_args.get('backbone_type', 'timm')
-        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}")
+        if 'use_concept_groups' in checkpoint_args:
+            use_concept_groups = checkpoint_args['use_concept_groups']
+        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
+        ds_cfg = checkpoint_cfg.get('dataset', {})
         if 'use_lora' in bb_cfg:
             use_lora = bb_cfg['use_lora']
             lora_r = bb_cfg.get('lora_r', 8)
@@ -662,7 +670,9 @@ def main():
         if 'backbone_name' in bb_cfg:
             backbone_name = bb_cfg['backbone_name']
             backbone_type = bb_cfg.get('backbone_type', 'timm')
-        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}")
+        if 'use_concept_groups' in ds_cfg:
+            use_concept_groups = ds_cfg['use_concept_groups']
+        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -672,14 +682,47 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}")
+        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_concept_groups=True")
+
+    # Command line argument override
+    if getattr(args, 'no_grouping', False):
+        use_concept_groups = False
+        print("🔮 Command line override: Disabling concept grouping.")
 
     # Build concept_groups_info for dynamic softmax activation integration
-    concept_groups_info = []
-    for group in CONCEPT_GROUPS:
-        start = group["flat_indices"][0]
-        num = len(group["flat_indices"])
-        concept_groups_info.append((start, num))
+    concept_groups_info = None
+    if use_concept_groups:
+        target_groups = None
+        if isinstance(use_concept_groups, str):
+            if use_concept_groups.lower() == 'true':
+                target_groups = None
+            elif use_concept_groups.lower() == 'false':
+                use_concept_groups = False
+            else:
+                target_groups = {name.strip() for name in use_concept_groups.split(',')}
+        elif isinstance(use_concept_groups, list):
+            target_groups = {str(name).strip() for name in use_concept_groups}
+            
+        if use_concept_groups:
+            concept_groups_info = []
+            grouped_count = 0
+            for group in CONCEPT_GROUPS:
+                start = group["flat_indices"][0]
+                num = len(group["flat_indices"])
+                name = group["name"]
+                if target_groups is not None and name not in target_groups:
+                    # Treat each class as an individual sigmoid category (group of size 1)
+                    for i in range(num):
+                        concept_groups_info.append((start + i, 1))
+                else:
+                    concept_groups_info.append((start, num))
+                    if num > 1:
+                        grouped_count += 1
+            print(f"🔮 Configured Group-level Softmax over {grouped_count} mutually exclusive groups out of {len(CONCEPT_GROUPS)} total categories.")
+    
+    if not use_concept_groups or concept_groups_info is None:
+        concept_groups_info = None
+        print("🔮 Group-level Softmax Activation is DISABLED (Sigmoid activation fallback active).")
 
     # 3. Initialize model with correct parameters
     MODEL = UniversalFlexibleCBM(

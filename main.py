@@ -33,6 +33,15 @@ def str_or_float(v):
         return float(v)
     except ValueError:
         return str(v)
+def str_or_bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        return v
 
 def calculate_orthogonality_loss(attn_weights):
     """
@@ -300,6 +309,7 @@ def parse_args():
     if "csv_path" in ds_cfg: flat_defaults["csv_path"] = ds_cfg["csv_path"]
     if "image_dir" in ds_cfg: flat_defaults["image_dir"] = ds_cfg["image_dir"]
     if "concept_config_path" in ds_cfg: flat_defaults["concept_config_path"] = ds_cfg["concept_config_path"]
+    if "use_concept_groups" in ds_cfg: flat_defaults["use_concept_groups"] = ds_cfg["use_concept_groups"]
     
     # training
     tr_cfg = config_data.get("training", {})
@@ -377,6 +387,7 @@ def parse_args():
     parser.add_argument('--pin_memory', type=str2bool, default=flat_defaults.get('pin_memory', True))
     parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
+    parser.add_argument('--use_concept_groups', type=str_or_bool, default=flat_defaults.get('use_concept_groups', True), help="Toggle Group-level Softmax and GroupCrossEntropyLoss (True/False, or comma-separated list of concept names to group)")
     parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
@@ -399,9 +410,23 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     # Extract concept grouping indices from dataset for group-level orthogonality loss
     concept_groups_indices = None
     train_dataset = train_loader.dataset
-    if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+    if args.use_concept_groups and hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+        target_groups = None
+        if isinstance(args.use_concept_groups, str):
+            if args.use_concept_groups.lower() == 'true':
+                target_groups = None
+            elif args.use_concept_groups.lower() == 'false':
+                target_groups = set()
+            else:
+                target_groups = {name.strip() for name in args.use_concept_groups.split(',')}
+        elif isinstance(args.use_concept_groups, list):
+            target_groups = {str(name).strip() for name in args.use_concept_groups}
+            
         concept_groups_indices = []
         for info in train_dataset.concept_features_info:
+            name = info["name"]
+            if target_groups is not None and name not in target_groups:
+                continue
             start = info["start_idx"]
             num = info["num_feats"]
             indices = [idx for idx in range(start, start + num) if idx < num_concepts_supervised]
@@ -870,13 +895,35 @@ def main():
 
     # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax
     concept_groups_info = None
-    if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+    if args.use_concept_groups and hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+        target_groups = None
+        if isinstance(args.use_concept_groups, str):
+            if args.use_concept_groups.lower() == 'true':
+                target_groups = None
+            elif args.use_concept_groups.lower() == 'false':
+                target_groups = set()
+            else:
+                target_groups = {name.strip() for name in args.use_concept_groups.split(',')}
+        elif isinstance(args.use_concept_groups, list):
+            target_groups = {str(name).strip() for name in args.use_concept_groups}
+            
         concept_groups_info = []
+        grouped_count = 0
         for info in train_dataset.concept_features_info:
             start = info["start_idx"]
             num = info["num_feats"]
-            concept_groups_info.append((start, num))
-        tqdm.write(f"  📂 Group-level Softmax Activation: Configured {len(concept_groups_info)} mutually exclusive groups.")
+            name = info["name"]
+            if target_groups is not None and name not in target_groups:
+                # Treat as individual sigmoids (group of size 1)
+                for i in range(num):
+                    concept_groups_info.append((start + i, 1))
+            else:
+                concept_groups_info.append((start, num))
+                if num > 1:
+                    grouped_count += 1
+        tqdm.write(f"  📂 Group-level Softmax Activation: Configured {grouped_count} mutually exclusive groups out of {len(train_dataset.concept_features_info)} total categories.")
+    else:
+        tqdm.write("  📂 Group-level Softmax Activation: DISABLED (Sigmoid activation fallback active).")
 
     # 2. Model Initialization
     tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")

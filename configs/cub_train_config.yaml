@@ -18,6 +18,7 @@ dataset:
   csv_path: "data/CUB_200_2011/images.txt"
   image_dir: "data/CUB_200_2011/images"
   concept_config_path: "data/CUB_200_2011/concept_config.json"
+  use_concept_groups: false  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
 
 # 3. Core Training Hyperparameters
 training:
@@ -47,7 +48,7 @@ optimizer:
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
   focal_alpha: 0.95
   focal_gamma: 2.0  # Focal loss focus exponent gamma
-  ortho_lambda: 0.005  # Orthogonality loss coefficient to force attention map separation
+  ortho_lambda: 0.0  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
   type: "cosine_with_warmup" # [핵심] ViT는 초반 Warm-up 없이 학습하면 발산합니다
