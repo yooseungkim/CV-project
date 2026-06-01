@@ -527,34 +527,42 @@ def main():
     
     # 4. Sequential Training Phases
     # Phase 1: Concept Learning
-    train_phase1(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        concept_criterion=concept_criterion,
-        device=device,
-        args=args,
-        config_data=config_data,
-        run_name=run_name,
-        num_concepts_supervised=num_concepts_supervised,
-        resolved_config=resolved_config,
-        concept_groups_info=concept_groups_info
-    )
-    
+    phase1_epochs = args.phase1_epochs if args.phase1_epochs is not None else args.epochs
+    if phase1_epochs > 0:
+        train_phase1(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            concept_criterion=concept_criterion,
+            device=device,
+            args=args,
+            config_data=config_data,
+            run_name=run_name,
+            num_concepts_supervised=num_concepts_supervised,
+            resolved_config=resolved_config,
+            concept_groups_info=concept_groups_info
+        )
+    else:
+        tqdm.write("  Skipping Phase 1: phase1_epochs is 0.")
+        
     # Phase 2: Target Learning
-    train_phase2(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        target_criterion=target_criterion,
-        device=device,
-        args=args,
-        config_data=config_data,
-        run_name=run_name,
-        num_concepts_supervised=num_concepts_supervised,
-        resolved_config=resolved_config,
-        num_classes=num_classes
-    )
+    phase2_epochs = args.phase2_epochs if args.phase2_epochs is not None else args.epochs
+    if phase2_epochs > 0:
+        train_phase2(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            target_criterion=target_criterion,
+            device=device,
+            args=args,
+            config_data=config_data,
+            run_name=run_name,
+            num_concepts_supervised=num_concepts_supervised,
+            resolved_config=resolved_config,
+            num_classes=num_classes
+        )
+    else:
+        tqdm.write("  Skipping Phase 2: phase2_epochs is 0.")
     
     # Phase 3: Joint Parameter Tuning
     if getattr(args, "phase3_epochs", 5) > 0:

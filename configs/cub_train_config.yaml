@@ -42,10 +42,10 @@ training:
   
   # 🛠️ Scheduled Sampling (Noise Injection) for Phase 2 Classifier training
   # Prevents co-adaptation and shortcut learning to prediction noise.
-  phase2_scheduled_sampling: false
+  phase2_scheduled_sampling: true
   scheduled_sampling_prob: 0.3
   scheduled_sampling_epsilon: 0.05
-  latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
+  latent_concepts: 20  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   use_dynamic_threshold: true  # Dynamic validation thresholding optimization
   save_dir: "checkpoints"
@@ -66,7 +66,7 @@ optimizer:
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
   focal_alpha: 0.95
-  focal_gamma: 2.0  # Focal loss focus exponent gamma
+  focal_gamma: 2.5  # Focal loss focus exponent gamma
   ortho_lambda: 0.05  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:

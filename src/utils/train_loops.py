@@ -656,8 +656,94 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             
             optimizer.zero_grad()
             
-            # Joint forward pass returning features for orthogonality regularization
-            class_logits, concept_logits, _, supervised_features, latent_features = model(images, return_features=True)
+            # Manual forward pass to support Scheduled Sampling end-to-end in Phase 3
+            features = model.backbone(images)
+            if isinstance(features, tuple):
+                features = features[0]
+                
+            if model.backbone_name.startswith('resnet'):
+                supervised_logits, supervised_attn, supervised_features = model.supervised_attention(features)
+                
+                # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
+                if getattr(args, "phase2_scheduled_sampling", False):
+                    supervised_logits = inject_concept_noise(
+                        pred_logits=supervised_logits,
+                        gt_labels=concepts[:, :num_concepts_supervised],
+                        replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                        epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                    )
+                    
+                if model.num_latent_concepts > 0:
+                    latent_logits, latent_attn, latent_features = model.latent_attention(features)
+                    concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                    attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+                else:
+                    concept_logits = supervised_logits
+                    attn_weights = supervised_attn
+                    latent_features = None
+            else:
+                # ViT / DINOv2 backbones
+                if model.use_group_broadcasting:
+                    # GroupToConceptAttention
+                    concept_logits, attn_weights, concept_features = model.supervised_attention(features)
+                    supervised_features = concept_features
+                    
+                    # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
+                    if getattr(args, "phase2_scheduled_sampling", False):
+                        concept_logits = inject_concept_noise(
+                            pred_logits=concept_logits,
+                            gt_labels=concepts[:, :num_concepts_supervised],
+                            replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                            epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                        )
+                    latent_features = None
+                else:
+                    # PatchWiseMLPConceptHead
+                    supervised_logits, supervised_max_indices = model.supervised_attention(features)
+                    
+                    # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
+                    if getattr(args, "phase2_scheduled_sampling", False):
+                        supervised_logits = inject_concept_noise(
+                            pred_logits=supervised_logits,
+                            gt_labels=concepts[:, :num_concepts_supervised],
+                            replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                            epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                        )
+                        
+                    # Reconstruct spatial maps and gathered features
+                    B_size = supervised_max_indices.size(0)
+                    N_patches = features.size(1)
+                    H_attn = int(N_patches ** 0.5)
+                    sparse_maps = torch.zeros(B_size, num_concepts_supervised, N_patches, device=device)
+                    sparse_maps.scatter_(2, supervised_max_indices.unsqueeze(-1), 1.0)
+                    sparse_maps = sparse_maps.view(B_size, num_concepts_supervised, H_attn, H_attn)
+                    from torchvision.transforms.functional import gaussian_blur
+                    supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                    
+                    gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+                    supervised_features = torch.gather(features, dim=1, index=gather_indices)
+                    
+                    if model.num_latent_concepts > 0:
+                        latent_logits, latent_max_indices = model.latent_attention(features)
+                        
+                        sparse_latent_maps = torch.zeros(B_size, model.num_latent_concepts, N_patches, device=device)
+                        sparse_latent_maps.scatter_(2, latent_max_indices.unsqueeze(-1), 1.0)
+                        sparse_latent_maps = sparse_latent_maps.view(B_size, model.num_latent_concepts, H_attn, H_attn)
+                        latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                        
+                        gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
+                        latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                        
+                        concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                        attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+                    else:
+                        concept_logits = supervised_logits
+                        attn_weights = supervised_attn
+                        latent_features = None
+                        
+            # Pass concept_logits through dropout and classifier head (end-to-end gradients intact)
+            concept_logits_dropout = model.dropout(concept_logits)
+            class_logits = model.classifier_head(concept_logits_dropout)
             
             # 1. Target Loss
             if num_classes == 1:
@@ -667,7 +753,12 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 
             # 2. Concept Loss (on supervised concept predictions)
             supervised_logits = concept_logits[:, :num_concepts_supervised]
-            loss_c = concept_criterion(supervised_logits, concepts)
+            
+            # Apply label smoothing if configured to maintain logit range consistency
+            smooth_epsilon = getattr(args, "phase1_label_smoothing", 0.05)
+            smoothed_concepts = apply_label_smoothing(concepts, epsilon=smooth_epsilon)
+            
+            loss_c = concept_criterion(supervised_logits, smoothed_concepts)
             
             # 3. Latent Regularization Losses
             loss_latent_ortho = torch.tensor(0.0, device=device)

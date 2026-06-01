@@ -82,7 +82,7 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     
     # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
-        all_concept_logits, 
+        all_concept_logits[:, :model.num_supervised_concepts], 
         all_gt_concepts, 
         concept_groups_info=concept_groups_info,
         threshold=model.concept_thresholds.cpu()
