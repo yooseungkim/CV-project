@@ -295,9 +295,15 @@ def repredict_with_adjusted_concepts(*component_values):
         [concept_probs_list], dtype=torch.float32, device=DEVICE
     )
 
+    # Translate user-adjusted concept probabilities in [0, 1] to raw logit space
+    # z = log(p / (1 - p))
+    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
+    p_clipped = torch.clamp(concept_probs, min=0.05, max=0.95)
+    concept_logits = torch.log(p_clipped / (1.0 - p_clipped))
+
     MODEL.eval()
     with torch.no_grad():
-        class_logits = MODEL.classifier_head(concept_probs)
+        class_logits = MODEL.classifier_head(concept_logits)
 
     if NUM_CLASSES == 1:
         prob = torch.sigmoid(class_logits).item()
@@ -643,6 +649,49 @@ def main():
     global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES
 
     args = parse_app_args()
+
+    # Load checkpoint first to inspect dimensions and metadata for dynamic concept filtering
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if os.path.exists(args.checkpoint):
+        try:
+            loaded_checkpoint = torch.load(args.checkpoint, map_location=DEVICE)
+            if isinstance(loaded_checkpoint, dict) and "state_dict" in loaded_checkpoint:
+                state_dict = loaded_checkpoint["state_dict"]
+            else:
+                state_dict = loaded_checkpoint
+                
+            use_filtered = False
+            if isinstance(loaded_checkpoint, dict):
+                if loaded_checkpoint.get("args", {}).get("filter_rare_concepts", False):
+                    use_filtered = True
+                elif loaded_checkpoint.get("config", {}).get("dataset", {}).get("filter_rare_concepts", False):
+                    use_filtered = True
+                    
+            if not use_filtered and "classifier_head.weight" in state_dict:
+                checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
+                # Let's count how many concepts the original concept config has
+                if os.path.exists(args.concept_config_path):
+                    with open(args.concept_config_path, 'r', encoding='utf-8') as f:
+                        orig_cfg = json.load(f)
+                    orig_dims = 0
+                    for n, inf in orig_cfg.items():
+                        if inf.get("type") == "categorical":
+                            orig_dims += len(inf.get("classes", []))
+                        else:
+                            orig_dims += 1
+                    if checkpoint_dims < orig_dims:
+                        use_filtered = True
+                        print(f"🕵️ Dimension mismatch detected: Checkpoint has {checkpoint_dims} dimensions, but original config has {orig_dims}. Attempting to use filtered config.")
+                        
+            if use_filtered:
+                filtered_path = args.concept_config_path.replace(".json", "_filtered.json")
+                if os.path.exists(filtered_path):
+                    print(f"🔄 Automatically redirecting concept config to: {filtered_path}")
+                    args.concept_config_path = filtered_path
+                else:
+                    print(f"⚠️ Warning: Checkpoint indicates rare concept filtering, but filtered config was not found at: {filtered_path}")
+        except Exception as e:
+            print(f"⚠️ Pre-loading checkpoint failed to auto-detect filtering settings: {e}")
 
     # 1. Load concept config
     if not os.path.exists(args.concept_config_path):

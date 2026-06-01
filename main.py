@@ -63,6 +63,7 @@ def parse_args():
     if "image_dir" in ds_cfg: flat_defaults["image_dir"] = ds_cfg["image_dir"]
     if "concept_config_path" in ds_cfg: flat_defaults["concept_config_path"] = ds_cfg["concept_config_path"]
     if "use_concept_groups" in ds_cfg: flat_defaults["use_concept_groups"] = ds_cfg["use_concept_groups"]
+    if "filter_rare_concepts" in ds_cfg: flat_defaults["filter_rare_concepts"] = ds_cfg["filter_rare_concepts"]
     
     # training
     tr_cfg = config_data.get("training", {})
@@ -83,6 +84,10 @@ def parse_args():
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
+    if "phase2_scheduled_sampling" in tr_cfg: flat_defaults["phase2_scheduled_sampling"] = tr_cfg["phase2_scheduled_sampling"]
+    if "scheduled_sampling_prob" in tr_cfg: flat_defaults["scheduled_sampling_prob"] = tr_cfg["scheduled_sampling_prob"]
+    if "scheduled_sampling_epsilon" in tr_cfg: flat_defaults["scheduled_sampling_epsilon"] = tr_cfg["scheduled_sampling_epsilon"]
+    if "phase1_label_smoothing" in tr_cfg: flat_defaults["phase1_label_smoothing"] = tr_cfg["phase1_label_smoothing"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -131,6 +136,11 @@ def parse_args():
     parser.add_argument('--phase2_epochs', type=int, default=flat_defaults.get('phase2_epochs', None), help="Number of epochs for Phase 2 (Target Learning)")
     parser.add_argument('--phase1_lr', type=float, default=flat_defaults.get('phase1_lr', None), help="Learning rate for Phase 1 concept head")
     parser.add_argument('--phase2_lr', type=float, default=flat_defaults.get('phase2_lr', None), help="Learning rate for Phase 2 latent head and classifier")
+    parser.add_argument('--phase2_dropout', type=float, default=flat_defaults.get('phase2_dropout', None), help="Dropout probability for Phase 2 (Target Learning)")
+    parser.add_argument('--phase2_scheduled_sampling', type=str2bool, default=flat_defaults.get('phase2_scheduled_sampling', False), help="Enable Scheduled Sampling (Noise Injection) for Phase 2 Classifier training")
+    parser.add_argument('--scheduled_sampling_prob', type=float, default=flat_defaults.get('scheduled_sampling_prob', 0.3), help="Probability to replace prediction with GT during Phase 2 scheduled sampling")
+    parser.add_argument('--scheduled_sampling_epsilon', type=float, default=flat_defaults.get('scheduled_sampling_epsilon', 0.05), help="Epsilon value for soft GT probabilities in Phase 2 scheduled sampling")
+    parser.add_argument('--phase1_label_smoothing', type=float, default=flat_defaults.get('phase1_label_smoothing', 0.05), help="Epsilon parameter for Phase 1 concept target label smoothing (0.0 to disable)")
     parser.add_argument('--phase3_lr', type=float, default=flat_defaults.get('phase3_lr', 1e-5), help="Learning rate for Phase 3 joint fine-tuning")
     parser.add_argument('--phase1_patience', type=int, default=flat_defaults.get('phase1_patience', None), help="Early stopping patience for Phase 1")
     parser.add_argument('--phase2_patience', type=int, default=flat_defaults.get('phase2_patience', None), help="Early stopping patience for Phase 2")
@@ -156,6 +166,7 @@ def parse_args():
     parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_concept_groups', type=str_or_bool, default=flat_defaults.get('use_concept_groups', True), help="Toggle Group-level Softmax and GroupCrossEntropyLoss (True/False, or comma-separated list of concept names to group)")
+    parser.add_argument('--filter_rare_concepts', type=str2bool, default=flat_defaults.get('filter_rare_concepts', False), help="Filter out concepts with occurrence frequency < 1%%")
     parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
@@ -202,6 +213,8 @@ def main():
 
     if args.concept_config_path:
         dataset_config["concept_config_path"] = args.concept_config_path
+
+    dataset_config["filter_rare_concepts"] = getattr(args, "filter_rare_concepts", False)
 
     # Apply CLI overrides if present
     if args.concept_cols:
@@ -253,14 +266,16 @@ def main():
         batch_size=args.batch_size, 
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=args.pin_memory
+        pin_memory=args.pin_memory,
+        persistent_workers=(num_workers > 0)
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size, 
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=args.pin_memory
+        pin_memory=args.pin_memory,
+        persistent_workers=(num_workers > 0)
     )
 
     # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax

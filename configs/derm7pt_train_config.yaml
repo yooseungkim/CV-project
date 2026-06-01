@@ -32,6 +32,16 @@ training:
   batch_size: 64  # Optimized for derm7pt split sizes
   lambda_c: 0.1  # Scale factor for concept loss
   l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  
+  # 🧪 Label Smoothing for Phase 1 Concept training
+  # Restricts logit magnitudes to prevent overconfidence and align with TTI.
+  phase1_label_smoothing: 0.05
+  
+  # 🛠️ Scheduled Sampling (Noise Injection) for Phase 2 Classifier training
+  # Prevents co-adaptation and shortcut learning to prediction noise.
+  phase2_scheduled_sampling: false
+  scheduled_sampling_prob: 0.3
+  scheduled_sampling_epsilon: 0.05
   latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 20  # 20 unique diagnoses in derm7pt
   use_dynamic_threshold: true  # Dynamic validation thresholding optimization
@@ -62,7 +72,7 @@ scheduler:
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true
-  phase1_monitor: "val_concept_loss"
+  phase1_monitor: "val_concept_balanced_acc"
   phase1_patience: 5
   phase2_monitor: "val_target_loss"
   phase2_patience: 7

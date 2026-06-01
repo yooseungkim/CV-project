@@ -736,14 +736,11 @@ class UniversalFlexibleCBM(nn.Module):
                 attn_weights = supervised_attn
                 latent_features = None
                 
-        # Concept activation (Phase 1 baseline or Group Softmax)
-        concept_probs = self.concept_activation(concept_logits)  # [B, num_concepts]
+        # Apply dropout to regularize concept predictions (in logit space)
+        concept_logits_dropout = self.dropout(concept_logits)
         
-        # Apply dropout to regularize concept predictions
-        concept_probs_dropout = self.dropout(concept_probs)
-        
-        # Final classification target output logits
-        class_logits = self.classifier_head(concept_probs_dropout)  # [B, num_classes]
+        # Final classification target output logits (Inverse Sigmoid / Logit Intervention SOTA design)
+        class_logits = self.classifier_head(concept_logits_dropout)  # [B, num_classes]
         
         if return_features:
             return class_logits, concept_logits, attn_weights, supervised_features, latent_features

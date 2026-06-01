@@ -10,6 +10,36 @@ from src.utils.visualization import generate_concept_heatmaps
 from src.utils.losses import calculate_orthogonality_loss
 from src.utils.helpers import EarlyStopping
 
+def inject_concept_noise(pred_logits, gt_labels, replace_prob=0.3, epsilon=0.05):
+    """
+    pred_logits: Phase 1 output logits (Batch, Num_Concepts)
+    gt_labels: Ground Truth labels (Batch, Num_Concepts)
+    replace_prob: Probability to replace prediction with GT
+    """
+    batch_size, num_concepts = pred_logits.shape
+    
+    # 1. Convert GT labels to Soft Logits
+    # gt_labels >= 0.5 checks both float and integer 0/1 formats safely
+    soft_gt_prob = torch.where(gt_labels >= 0.5, 1.0 - epsilon, epsilon)
+    gt_logits = torch.log(soft_gt_prob / (1.0 - soft_gt_prob))
+    
+    # 2. Generate random mask for Scheduled Sampling
+    mask = torch.rand((batch_size, num_concepts), device=pred_logits.device) < replace_prob
+    
+    # 3. Mix predicted logits and GT logits
+    mixed_logits = torch.where(mask, gt_logits, pred_logits)
+    
+    return mixed_logits
+
+def apply_label_smoothing(hard_labels, epsilon=0.05):
+    """
+    hard_labels: [Batch, Num_Concepts] containing 0 or 1
+    epsilon: smoothing strength (e.g. 0.05 maps 0 to 0.05 and 1 to 0.95)
+    """
+    if epsilon <= 0.0:
+        return hard_labels
+    return torch.where(hard_labels >= 0.5, 1.0 - epsilon, epsilon)
+
 def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, concept_groups_info=None):
     tqdm.write(f"\n{'-'*60}")
     tqdm.write("  🎬 Phase 1: Concept Learning (Backbone & Concept Head)")
@@ -100,14 +130,18 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         
         train_pbar = tqdm(train_loader, desc=f"  P1 Epoch {epoch+1}/{phase1_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
         for images, concepts, _ in train_pbar:
-            images = images.to(device)
-            concepts = concepts.to(device)
+            images = images.to(device, non_blocking=True)
+            concepts = concepts.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             _, concept_logits, attn_weights = model(images)
             
+            # Apply label smoothing if configured
+            smooth_epsilon = getattr(args, "phase1_label_smoothing", 0.05)
+            smoothed_concepts = apply_label_smoothing(concepts, epsilon=smooth_epsilon)
+            
             # Use raw logits with BCEWithLogitsLoss
-            loss_c = concept_criterion(concept_logits[:, :num_concepts_supervised], concepts)
+            loss_c = concept_criterion(concept_logits[:, :num_concepts_supervised], smoothed_concepts)
             
             # Compute spatial orthogonality loss for the supervised concept attention maps
             if getattr(args, "ortho_lambda", 0.0) > 0.0:
@@ -150,13 +184,17 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         
         with torch.no_grad():
             for val_images, val_concepts, _ in val_loader:
-                val_images = val_images.to(device)
-                val_concepts = val_concepts.to(device)
+                val_images = val_images.to(device, non_blocking=True)
+                val_concepts = val_concepts.to(device, non_blocking=True)
                 
                 _, v_concept_logits, v_attn_weights = model(val_images)
                 
+                # Apply label smoothing if configured
+                smooth_epsilon = getattr(args, "phase1_label_smoothing", 0.05)
+                v_smoothed_concepts = apply_label_smoothing(val_concepts, epsilon=smooth_epsilon)
+                
                 # BCEWithLogitsLoss with raw logits
-                v_loss_c = concept_criterion(v_concept_logits[:, :num_concepts_supervised], val_concepts)
+                v_loss_c = concept_criterion(v_concept_logits[:, :num_concepts_supervised], v_smoothed_concepts)
                 
                 if getattr(args, "ortho_lambda", 0.0) > 0.0:
                     v_supervised_attn = v_attn_weights[:, :num_concepts_supervised]
@@ -205,7 +243,17 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         
         # struggling concepts는 마지막 epoch이거나 조기종료일 때만 출력하여 로그 노이즈 최소화
         is_last_epoch = (epoch == phase1_epochs - 1)
-        es_handler(avg_val_loss_c, model)
+        
+        # Select correct monitoring metric score dynamically
+        monitor_metric = es_handler.monitor.lower()
+        if "loss" in monitor_metric:
+            monitor_score = avg_val_loss_c
+        elif "acc" in monitor_metric or "accuracy" in monitor_metric:
+            monitor_score = avg_val_acc_c
+        else:
+            monitor_score = avg_val_loss_c
+            
+        es_handler(monitor_score, model)
         
         # Compute individual balanced accuracies for struggling concepts and logging
         if all_val_probs:
@@ -266,8 +314,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     
     with torch.no_grad():
         for val_images, val_concepts, _ in val_loader:
-            val_images = val_images.to(device)
-            val_concepts = val_concepts.to(device)
+            val_images = val_images.to(device, non_blocking=True)
+            val_concepts = val_concepts.to(device, non_blocking=True)
             
             _, val_concept_logits, _ = model(val_images)
             
@@ -345,6 +393,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
     for param in model.classifier_head.parameters():
         param.requires_grad = True
         
+    # 💧 Phase 2용 드롭아웃 설정 (사용자 요청: dropout 약하게 적용)
+    original_dropout_p = getattr(model.dropout, 'p', 0.2)
+    phase2_dropout_p = getattr(args, "phase2_dropout", None)
+    if phase2_dropout_p is None:
+        phase2_dropout_p = config_data.get("training", {}).get("phase2_dropout", 0.05)
+
+    if hasattr(model, 'dropout'):
+        model.dropout.p = phase2_dropout_p
+        tqdm.write(f"  💧 Adjusted dropout probability for Phase 2: {original_dropout_p} -> {model.dropout.p}")
+        
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
     weight_decay = opt_cfg.get("weight_decay", 0.0)
@@ -387,9 +445,10 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         total_acc_t = 0.0
         
         train_pbar = tqdm(train_loader, desc=f"  P2 Epoch {epoch+1}/{phase2_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
-        for images, _, targets in train_pbar:
-            images = images.to(device)
-            targets = targets.to(device)
+        for images, concepts, targets in train_pbar:
+            images = images.to(device, non_blocking=True)
+            concepts = concepts.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
             
             # 이전 단계에서 학습된 수퍼바이즈드 컨셉 예측값을 그래프 연산 분리하여 추출
             with torch.no_grad():
@@ -400,6 +459,15 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                     supervised_features = torch.gather(features, dim=1, index=gather_indices)
                 else:
                     supervised_logits, _, supervised_features = model.supervised_attention(features)
+                    
+            # Apply scheduled sampling (concept noise injection) if enabled
+            if getattr(args, "phase2_scheduled_sampling", False):
+                supervised_logits = inject_concept_noise(
+                    pred_logits=supervised_logits,
+                    gt_labels=concepts[:, :num_concepts_supervised],
+                    replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                    epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                )
                 
             optimizer.zero_grad()
             
@@ -417,8 +485,8 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 latent_features = None
                 
             concept_probs = model.concept_activation(concept_logits)
-            concept_probs_dropout = model.dropout(concept_probs)
-            class_logits = model.classifier_head(concept_probs_dropout)
+            concept_logits_dropout = model.dropout(concept_logits)
+            class_logits = model.classifier_head(concept_logits_dropout)
             
             if num_classes == 1:
                 loss_t = target_criterion(class_logits, targets)
@@ -467,8 +535,8 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         
         with torch.no_grad():
             for val_images, _, val_targets in val_loader:
-                val_images = val_images.to(device)
-                val_targets = val_targets.to(device)
+                val_images = val_images.to(device, non_blocking=True)
+                val_targets = val_targets.to(device, non_blocking=True)
                 
                 v_class_logits, _, _ = model(val_images)
                 
@@ -513,6 +581,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 "val/accuracy": avg_val_acc_t
             }
             wandb.log(log_dict)
+
+    # 💧 Phase 2 종료 후 드롭아웃 원복
+    if hasattr(model, 'dropout'):
+        model.dropout.p = original_dropout_p
+        tqdm.write(f"  💧 Restored dropout probability after Phase 2: {model.dropout.p}")
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{'-'*60}")
@@ -577,9 +650,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         
         train_pbar = tqdm(train_loader, desc=f"  P3 Epoch {epoch+1}/{phase3_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
         for images, concepts, targets in train_pbar:
-            images = images.to(device)
-            concepts = concepts.to(device)
-            targets = targets.to(device)
+            images = images.to(device, non_blocking=True)
+            concepts = concepts.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             
@@ -642,8 +715,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         
         with torch.no_grad():
             for val_images, _, val_targets in val_loader:
-                val_images = val_images.to(device)
-                val_targets = val_targets.to(device)
+                val_images = val_images.to(device, non_blocking=True)
+                val_targets = val_targets.to(device, non_blocking=True)
                 
                 v_class_logits, _, _ = model(val_images)
                 

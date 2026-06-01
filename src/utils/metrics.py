@@ -1,18 +1,23 @@
 import torch
 
-def calculate_accuracy(outputs: torch.Tensor, targets: torch.Tensor) -> float:
-    """Calculates accuracy for target classes. Supports binary and multi-class."""
+def calculate_accuracy(outputs: torch.Tensor, targets: torch.Tensor, topk: int = 3) -> float:
+    """Calculates Top-K accuracy for target classes. Supports binary and multi-class."""
     if outputs.dim() == 1 or outputs.shape[-1] == 1:
         # Binary classification
         preds = (outputs > 0.0).float() # Assuming outputs are logits
         targets_flat = targets.view_as(preds)
+        correct = (preds == targets_flat).float().sum()
+        return (correct / targets.size(0)).item()
     else:
         # Multi-class classification
-        preds = torch.argmax(outputs, dim=1)
-        targets_flat = targets.view_as(preds)
-    
-    correct = (preds == targets_flat).float().sum()
-    return (correct / targets.size(0)).item()
+        num_classes = outputs.shape[-1]
+        k = min(topk, num_classes)
+        targets_flat = targets.view(-1).long()
+        _, pred = outputs.topk(k, dim=1, largest=True, sorted=True)
+        pred = pred.t() # Shape: [k, B]
+        correct = pred.eq(targets_flat.view(1, -1).expand_as(pred))
+        correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+        return (correct_k / targets.size(0)).item()
 
 def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: torch.Tensor) -> float:
     """Calculates average binary accuracy across all concepts.

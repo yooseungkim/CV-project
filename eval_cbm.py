@@ -88,26 +88,27 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
         threshold=model.concept_thresholds.cpu()
     )
     
-    return topk_accs, concept_metrics, all_concept_probs, all_gt_concepts, all_gt_targets
+    # Return all_concept_logits instead of all_concept_probs to enable Inverse Sigmoid Intervention
+    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
 
 
-def run_tti_group_level(model, concept_probs, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
-    """Simulates group-level TTI by correcting attributes group-by-group."""
+def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
+    """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
-    num_samples = concept_probs.shape[0]
+    num_samples = concept_logits.shape[0]
     num_groups = len(concept_groups)
     
     # Pre-allocate array to store accuracy at each step
     group_tti_accuracies = []
     
-    # Calculate initial predictions (K=0 interventions)
-    # Class logits from predicted probs directly (without dropout)
-    init_logits = model.classifier_head(concept_probs.to(device))
+    # Calculate initial predictions (K=0 interventions) using predicted logits directly
+    init_logits = model.classifier_head(concept_logits.to(device))
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     group_tti_accuracies.append((0, init_topk))
     
-    # For each test sample, we want to sequentially correct anatomical groups
-    # based on the model's MAE prediction error on that sample.
+    # Compute concept probs for sorting erroneous groups
+    concept_probs = model.concept_activation(concept_logits.to(device)).cpu()
+    
     # 1. Compute per-sample prediction error for each group
     sample_group_errors = []
     for i in range(num_samples):
@@ -123,23 +124,26 @@ def run_tti_group_level(model, concept_probs, gt_concepts, gt_targets, concept_g
         sorted_groups = [g_idx for g_idx, _ in sorted(group_errors, key=lambda x: x[1], reverse=True)]
         sample_group_errors.append(sorted_groups)
         
-    # 2. Simulate TTI step-by-step for K from 1 to num_groups
-    # Create a copy of the predicted concept probabilities that we will mutate
-    probs_mutated = concept_probs.clone()
+    # Translate GT concepts (probabilities in [0, 1]) to logit space (z = log(p / (1 - p)))
+    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
+    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    
+    # Create a copy of the predicted concept logits that we will mutate
+    logits_mutated = concept_logits.clone()
     
     pbar = tqdm(range(1, num_groups + 1), desc="Simulating Group TTI")
     for K in pbar:
-        # Correct the top K most erroneous groups for each sample
+        # Correct the top K most erroneous groups for each sample in logit space
         for i in range(num_samples):
-            # The K-th group to correct is at index K-1 in the sorted list
             g_to_correct = sample_group_errors[i][K - 1]
             indices = concept_groups[g_to_correct]["flat_indices"]
-            # Overwrite with ground truth
-            probs_mutated[i, indices] = gt_concepts[i, indices]
+            # Overwrite with translated GT logits
+            logits_mutated[i, indices] = gt_logits[i, indices]
             
-        # Predict class targets using the updated concept probabilities
+        # Predict class targets using the updated concept logits
         with torch.no_grad():
-            updated_logits = model.classifier_head(probs_mutated.to(device))
+            updated_logits = model.classifier_head(logits_mutated.to(device))
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         group_tti_accuracies.append((K, updated_topk))
@@ -148,17 +152,20 @@ def run_tti_group_level(model, concept_probs, gt_concepts, gt_targets, concept_g
     return group_tti_accuracies
 
 
-def run_tti_concept_level(model, concept_probs, gt_concepts, gt_targets, latent_concepts, device):
-    """Simulates individual concept-level TTI by correcting the top-K most erroneous concepts."""
+def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, latent_concepts, device):
+    """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
     num_samples, num_supervised = gt_concepts.shape
     
     concept_tti_accuracies = []
     
     # Init (K=0)
-    init_logits = model.classifier_head(concept_probs.to(device))
+    init_logits = model.classifier_head(concept_logits.to(device))
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     concept_tti_accuracies.append((0, init_topk))
+    
+    # Compute concept probs for sorting erroneous concepts
+    concept_probs = model.concept_activation(concept_logits.to(device)).cpu()
     
     # Calculate prediction error for each individual concept per sample
     sample_concept_errors = []
@@ -167,21 +174,26 @@ def run_tti_concept_level(model, concept_probs, gt_concepts, gt_targets, latent_
         sorted_indices = torch.argsort(errors, descending=True).tolist()
         sample_concept_errors.append(sorted_indices)
         
+    # Translate GT concepts (probabilities in [0, 1]) to logit space
+    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
+    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    
     # Evaluate at specific intervention percentages (0%, 10%, 20%, ..., 100% of concepts)
     percentages = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-    probs_mutated = concept_probs.clone()
+    logits_mutated = concept_logits.clone()
     
     last_k = 0
     for pct in percentages:
         target_k = int((pct / 100.0) * num_supervised)
         
-        # Intervene on the next slice of top erroneous concepts
+        # Intervene on the next slice of top erroneous concepts in logit space
         for i in range(num_samples):
             indices_to_correct = sample_concept_errors[i][last_k:target_k]
-            probs_mutated[i, indices_to_correct] = gt_concepts[i, indices_to_correct]
+            logits_mutated[i, indices_to_correct] = gt_logits[i, indices_to_correct]
             
         with torch.no_grad():
-            updated_logits = model.classifier_head(probs_mutated.to(device))
+            updated_logits = model.classifier_head(logits_mutated.to(device))
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         concept_tti_accuracies.append((pct, updated_topk))
@@ -218,13 +230,17 @@ def main():
     use_cosine_attention = checkpoint_args.get('use_cosine_attention', False)
     latent_concepts = checkpoint_args.get('latent_concepts', 0)
     num_classes = checkpoint_args.get('num_classes', 200)
+    filter_rare_concepts = checkpoint_args.get('filter_rare_concepts', False)
+    if not filter_rare_concepts:
+        filter_rare_concepts = checkpoint_config.get('dataset', {}).get('filter_rare_concepts', False)
     
     tqdm.write(f"  📦 Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
     tqdm.write(f"     ├─ use_lora: {use_lora} (r={lora_r}, alpha={lora_alpha})")
     tqdm.write(f"     ├─ latent_concepts: {latent_concepts}")
-    tqdm.write(f"     └─ use_group_broadcasting: {use_group_broadcasting}")
+    tqdm.write(f"     ├─ use_group_broadcasting: {use_group_broadcasting}")
+    tqdm.write(f"     └─ filter_rare_concepts: {filter_rare_concepts}")
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
     if dataset_name == 'derm7pt':
@@ -237,9 +253,15 @@ def main():
         csv_path = checkpoint_args.get('csv_path', 'data/CUB_200_2011/images.txt')
         image_dir = checkpoint_args.get('image_dir', 'data/CUB_200_2011/images')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/CUB_200_2011/concept_config.json')
+        if filter_rare_concepts:
+            filtered_path = concept_config_path.replace(".json", "_filtered.json")
+            if os.path.exists(filtered_path):
+                concept_config_path = filtered_path
+                tqdm.write(f"     ℹ️ Redirected concept_config to: {concept_config_path}")
         
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
+    dataset_config["filter_rare_concepts"] = filter_rare_concepts
     
     # Load test split
     test_dataset = dataset_class(
@@ -323,7 +345,7 @@ def main():
     tqdm.write(f"============================================================")
     
     # 5. Run standard evaluation
-    topk_accs, concept_metrics, concept_probs, gt_concepts, gt_targets = run_evaluation(
+    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
         model, 
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
@@ -347,7 +369,7 @@ def main():
     
     group_tti_results = run_tti_group_level(
         model, 
-        concept_probs, 
+        concept_logits, 
         gt_concepts, 
         gt_targets, 
         concept_groups, 
@@ -386,7 +408,7 @@ def main():
     
     concept_tti_results = run_tti_concept_level(
         model, 
-        concept_probs, 
+        concept_logits, 
         gt_concepts, 
         gt_targets, 
         latent_concepts, 

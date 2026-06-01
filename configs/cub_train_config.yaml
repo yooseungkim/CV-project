@@ -13,7 +13,7 @@ backbone:
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
   use_group_broadcasting: false  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
-  use_dino_mask: true     # Use DINOv2 self-attention silhouette foreground masking
+  use_dino_mask: false     # Use DINOv2 self-attention silhouette foreground masking
   dino_mask_threshold: 0.35
 
 # 2. Dataset Setup
@@ -22,16 +22,29 @@ dataset:
   csv_path: "data/CUB_200_2011/images.txt"
   image_dir: "data/CUB_200_2011/images"
   concept_config_path: "data/CUB_200_2011/concept_config.json"
-  # use_concept_groups: false  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
-  use_concept_groups: ["has_bill_shape", "has_bill_length", "has_eye_color"]
+  # use_concept_groups: true  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
+  use_concept_groups: ["has_bill_shape", "has_bill_length", "has_eye_color", "has_leg_color"]
+  filter_rare_concepts: true  # Automatically filter out sparse concepts whose global occurrence frequency is < 1%
 
 # 3. Core Training Hyperparameters
 training:
   phase1_epochs: 30
   phase2_epochs: 50
+  phase3_epochs: 10
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
   l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  phase2_dropout: 0.1  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
+  
+  # 🧪 Label Smoothing for Phase 1 Concept training
+  # Restricts logit magnitudes to prevent overconfidence and align with TTI.
+  phase1_label_smoothing: 0.05
+  
+  # 🛠️ Scheduled Sampling (Noise Injection) for Phase 2 Classifier training
+  # Prevents co-adaptation and shortcut learning to prediction noise.
+  phase2_scheduled_sampling: false
+  scheduled_sampling_prob: 0.3
+  scheduled_sampling_epsilon: 0.05
   latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200  # 200 unique bird species
   use_dynamic_threshold: true  # Dynamic validation thresholding optimization
@@ -48,7 +61,7 @@ optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
-  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
+  phase2_lr: 0.0005  # Larger LR for latent representation learning in Phase 2
   weight_decay: 0.05
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
@@ -57,14 +70,17 @@ optimizer:
   ortho_lambda: 0.05  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
-  type: "cosine_with_warmup" # [핵심] ViT는 초반 Warm-up 없이 학습하면 발산합니다
-  warmup_epochs: 5
-  eta_min: 0.000001
+  phase1_type: "cosine_with_warmup" 
+  phase1_warmup_epochs: 5
+  phase1_eta_min: 0.000001
+  phase2_type: "reduce_on_plateau"  # [추가] Phase 2는 널뛰기를 잡기 위해 Plateau 스케줄러 도입
+  phase2_patience: 3
+  phase2_factor: 0.5
 
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true
-  phase1_monitor: "val_concept_loss"
+  phase1_monitor: "val_concept_balanced_acc"
   phase1_patience: 5
   phase2_monitor: "val_target_loss"
   phase2_patience: 10  # Longer patience for Phase 2 target learning

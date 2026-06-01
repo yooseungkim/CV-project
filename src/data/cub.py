@@ -15,7 +15,8 @@ class CUB2011Dataset(BaseDataset):
             "concepts": [],
             "target_col": 'class_id',
             "default_csv_path": 'data/CUB_200_2011/images.txt',
-            "default_image_dir": 'data/CUB_200_2011/images'
+            "default_image_dir": 'data/CUB_200_2011/images',
+            "filter_rare_concepts": False
         }
 
     def __init__(
@@ -43,6 +44,7 @@ class CUB2011Dataset(BaseDataset):
 
         # Initialize config
         self.config = config or self.get_default_config()
+        self.filter_rare_concepts = self.config.get("filter_rare_concepts", False)
         
         # Determine paths
         resolved_csv = csv_path or self.config.get("default_csv_path") or "data/CUB_200_2011/images.txt"
@@ -112,6 +114,16 @@ class CUB2011Dataset(BaseDataset):
                 import numpy as np
                 self.concept_matrix = np.zeros((11788, 312))
 
+            # Filter rare concepts (< 1% global frequency) if enabled
+            if self.filter_rare_concepts:
+                import numpy as np
+                freqs = np.mean(self.concept_matrix, axis=0)
+                self.valid_indices = np.where(freqs >= 0.01)[0]
+                print(f"Filtering concepts with frequency < 1%: keeping {len(self.valid_indices)} out of 312 concepts.")
+                self.concept_matrix = self.concept_matrix[:, self.valid_indices]
+            else:
+                self.valid_indices = None
+
         # 4. Load concept configuration for dynamic formatting
         concept_config_path = self.config.get("concept_config_path")
         self.concept_config = None
@@ -123,41 +135,79 @@ class CUB2011Dataset(BaseDataset):
                 self.concept_config = json.load(f)
             print(f"Loaded structured concept configuration file from: {concept_config_path}")
             
-            self.concept_cols = list(self.concept_config.keys())
+            # If the config file is already filtered, we bypass filtering on config loading
+            # but we still keep self.concept_matrix sliced using self.valid_indices.
+            is_already_filtered = "filtered" in os.path.basename(concept_config_path)
+            
             self.concept_features_info = []
             self.concepts_flat = []
-            total_dims = 0
+            new_total_dims = 0
+            original_idx = 0
+            
+            # Reconstruct filtered concept configuration dictionary
+            filtered_config = {}
             
             for name, info in self.concept_config.items():
                 ctype = info.get("type", "numerical")
                 if ctype == "categorical":
                     classes = info.get("classes", [])
-                    num_feats = len(classes)
-                    self.concept_features_info.append({
-                        "name": name,
-                        "type": "categorical",
-                        "classes": classes,
-                        "start_idx": total_dims,
-                        "num_feats": num_feats
-                    })
+                    
+                    # Find which classes are valid
+                    valid_classes_in_group = []
                     for cls_val in classes:
-                        self.concepts_flat.append(f"{name}_{cls_val}")
-                    total_dims += num_feats
+                        if is_already_filtered or self.valid_indices is None or original_idx in self.valid_indices:
+                            valid_classes_in_group.append(cls_val)
+                        original_idx += 1
+                        
+                    if len(valid_classes_in_group) > 0:
+                        num_feats = len(valid_classes_in_group)
+                        self.concept_features_info.append({
+                            "name": name,
+                            "type": "categorical",
+                            "classes": valid_classes_in_group,
+                            "start_idx": new_total_dims,
+                            "num_feats": num_feats
+                        })
+                        for cls_val in valid_classes_in_group:
+                            self.concepts_flat.append(f"{name}_{cls_val}")
+                        new_total_dims += num_feats
+                        
+                        filtered_config[name] = {
+                            "type": "categorical",
+                            "classes": valid_classes_in_group
+                        }
                 else:
-                    self.concept_features_info.append({
-                        "name": name,
-                        "type": "numerical",
-                        "min": float(info.get("min", 0.0)),
-                        "max": float(info.get("max", 1.0)),
-                        "start_idx": total_dims,
-                        "num_feats": 1
-                    })
-                    self.concepts_flat.append(name)
-                    total_dims += 1
+                    # Numerical group
+                    is_valid = (is_already_filtered or self.valid_indices is None or original_idx in self.valid_indices)
+                    if is_valid:
+                        self.concept_features_info.append({
+                            "name": name,
+                            "type": "numerical",
+                            "min": float(info.get("min", 0.0)),
+                            "max": float(info.get("max", 1.0)),
+                            "start_idx": new_total_dims,
+                            "num_feats": 1
+                        })
+                        self.concepts_flat.append(name)
+                        new_total_dims += 1
+                        
+                        filtered_config[name] = info.copy()
+                    original_idx += 1
             
-            self.config["num_concepts"] = total_dims
+            self.concept_cols = [info["name"] for info in self.concept_features_info]
+            self.config["num_concepts"] = new_total_dims
             self.config["concepts"] = self.concept_cols
             self.config["concepts_flat"] = self.concepts_flat
+
+            # Save the filtered concept config to disk for Gradio and eval compatibility
+            if self.filter_rare_concepts and not self.dummy_mode and not is_already_filtered:
+                filtered_path = concept_config_path.replace(".json", "_filtered.json")
+                try:
+                    with open(filtered_path, 'w', encoding='utf-8') as f:
+                        json.dump(filtered_config, f, indent=2, ensure_ascii=False)
+                    print(f"🎉 Saved filtered concept configuration to: {filtered_path}")
+                except Exception as e:
+                    print(f"Warning: Failed to save filtered concept configuration to {filtered_path}: {e}")
         else:
             self.config["num_concepts"] = self.config.get("num_concepts", 312)
             self.concept_cols = [f"Attribute_{i}" for i in range(1, 313)]
