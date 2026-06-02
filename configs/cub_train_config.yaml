@@ -34,7 +34,7 @@ training:
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
   l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
-  phase2_dropout: 0.1  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
+  phase2_dropout: 0.5  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
@@ -67,7 +67,7 @@ optimizer:
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
   focal_alpha: 0.95
   focal_gamma: 2.5  # Focal loss focus exponent gamma
-  ortho_lambda: 0.05  # Orthogonality loss coefficient to force attention map separation
+  ortho_lambda: 0.0  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
   phase1_type: "cosine_with_warmup" 

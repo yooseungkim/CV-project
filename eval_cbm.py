@@ -202,6 +202,50 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, latent
     return concept_tti_accuracies
 
 
+def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, logit_margin=0.0):
+    """Simulates TTI by correcting concept groups predicted as "Not Visible / Occluded" or within a logit margin of optimal dynamic thresholds."""
+    model.eval()
+    num_samples = concept_logits.shape[0]
+    num_groups = len(concept_groups)
+    
+    # Get optimal validation thresholds in logit space
+    thresh_tensor = model.concept_thresholds.cpu()
+    
+    # Translate GT concepts (probabilities in [0, 1]) to logit space
+    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    
+    # Create a copy of predicted concept logits
+    logits_mutated = concept_logits.clone()
+    
+    corrected_counts = []
+    for i in range(num_samples):
+        corrected_count = 0
+        for group in concept_groups:
+            indices = group["flat_indices"]
+            # Extract predicted logits for this group
+            group_logits = concept_logits[i, indices]
+            max_logit = torch.max(group_logits).item()
+            
+            # Group threshold (mean of optimal thresholds for this group)
+            g_threshold = thresh_tensor[indices].mean().item()
+            
+            # Check if predicted logit is below threshold + logit margin
+            if max_logit <= (g_threshold + logit_margin):
+                # Correct this group
+                logits_mutated[i, indices] = gt_logits[i, indices]
+                corrected_count += 1
+        corrected_counts.append(corrected_count)
+        
+    # Predict target classes using mutated logits
+    with torch.no_grad():
+        updated_logits = model.classifier_head(logits_mutated.to(device))
+        updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
+        
+    avg_corrected = np.mean(corrected_counts)
+    return updated_topk, avg_corrected
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -437,6 +481,49 @@ def main():
         row += "|"
         print(row)
     print(border_concept)
+    
+    # 8. Run "Not Visible / Occluded" Only TTI under different logit margins
+    print("\n============================================================")
+    print("  Searching for the optimal logit margin to achieve ~2-3 corrected groups...")
+    print("============================================================")
+    
+    logit_margin_candidates = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0]
+    print("| Logit Margin | Top-1 Accuracy | Top-3 Accuracy | Avg Groups Corrected |")
+    print("| :----------: | :------------: | :------------: | :------------------: |")
+    for margin in logit_margin_candidates:
+        unconf_topk, avg_corrected = run_tti_unconfident_only(
+            model, 
+            concept_logits, 
+            gt_concepts, 
+            gt_targets, 
+            concept_groups, 
+            latent_concepts, 
+            device,
+            logit_margin=margin
+        )
+        print(f"| {margin:>12.2f} | {unconf_topk.get(1, 0.0)*100:>12.2f}% | {unconf_topk.get(3, 0.0)*100:>12.2f}% | {avg_corrected:>20.2f} / 28 |")
+    print("============================================================\n")
+    
+    # 9. Evaluate Chosen Sweet-Spot Logit Margin (0.30)
+    print("============================================================")
+    print("  Running Unconfident-Only TTI with Selected Logit Margin (0.30)...")
+    print("============================================================")
+    unconf_topk, avg_corrected = run_tti_unconfident_only(
+        model, 
+        concept_logits, 
+        gt_concepts, 
+        gt_targets, 
+        concept_groups, 
+        latent_concepts, 
+        device,
+        logit_margin=0.30
+    )
+    print(f"  Unconfident-Only (Margin 0.30) Top-1 Accuracy : {unconf_topk.get(1, 0.0)*100:.2f}%")
+    if 3 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-3 Accuracy : {unconf_topk[3]*100:.2f}%")
+    if 5 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-5 Accuracy : {unconf_topk[5]*100:.2f}%")
+    if 10 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-10 Accuracy: {unconf_topk[10]*100:.2f}%")
+    print(f"  Avg Groups Corrected per Sample               : {avg_corrected:.2f} / 28")
+    print("============================================================\n")
     
     # Summary of accomplishments with Top-K metrics
     print(f"\n============================================================")

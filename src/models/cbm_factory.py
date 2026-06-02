@@ -487,15 +487,22 @@ class PatchWiseMLPConceptHead(nn.Module):
         bias_init = -math.log((1 - pi) / pi)
         nn.init.constant_(self.mlp[-1].bias, bias_init)
 
-    def forward(self, patch_features: torch.Tensor):
+    def forward(self, patch_features: torch.Tensor, k: int = 3, return_weights: bool = False):
         # patch_features: [B, N_patches, feature_dim]
         # MLP maps [B, N_patches, feature_dim] -> [B, N_patches, num_concepts]
         logits_per_patch = self.mlp(patch_features)
         
-        # Global Max Pooling over spatial dimension (N_patches)
-        concept_logits, max_indices = torch.max(logits_per_patch, dim=1)
+        # Top-K Pooling over spatial dimension (N_patches)
+        # logits_per_patch shape: [B, N_patches, num_concepts]
+        topk_logits, topk_indices = torch.topk(logits_per_patch, k=k, dim=1)
         
-        return concept_logits, max_indices
+        # Softmax-weighted pooling to prevent downward bias in logits
+        weights = torch.softmax(topk_logits, dim=1) # [B, k, num_concepts]
+        concept_logits = torch.sum(topk_logits * weights, dim=1) # [B, num_concepts]
+        
+        if return_weights:
+            return concept_logits, topk_indices, weights
+        return concept_logits, topk_indices
 
 
 class UniversalFlexibleCBM(nn.Module):
@@ -699,35 +706,61 @@ class UniversalFlexibleCBM(nn.Module):
                 latent_features = None
         else:
             # ViT / DINOv2 uses PatchWiseMLPConceptHead
-            supervised_logits, supervised_max_indices = self.supervised_attention(features)
+            k_val = 3
+            supervised_logits, supervised_topk_indices, supervised_weights = self.supervised_attention(features, k=k_val, return_weights=True)
             
-            # Convert supervised_max_indices [B, num_supervised_concepts] to sparse/smoothed dynamically-sized maps
-            B = supervised_max_indices.size(0)
+            # Convert supervised_topk_indices [B, k, num_supervised_concepts] to sparse/smoothed dynamically-sized maps
+            B = supervised_topk_indices.size(0)
             N_patches = features.size(1) # e.g. 256 or 196
             H_attn = int(math.sqrt(N_patches))
-            device = supervised_max_indices.device
+            device = supervised_topk_indices.device
+            D = features.size(-1)
+            
+            # Reshape topk indices from [B, k, num_supervised_concepts] to [B, num_supervised_concepts, k] for scatter
+            indices_transposed = supervised_topk_indices.permute(0, 2, 1) # [B, num_supervised_concepts, k]
+            weights_transposed = supervised_weights.permute(0, 2, 1) # [B, num_supervised_concepts, k]
             
             sparse_maps = torch.zeros(B, self.num_supervised_concepts, N_patches, device=device)
-            sparse_maps.scatter_(2, supervised_max_indices.unsqueeze(-1), 1.0)
+            # Scatter dynamic softmax weights to each top-k patch position
+            sparse_maps.scatter_(2, indices_transposed, weights_transposed)
             sparse_maps = sparse_maps.view(B, self.num_supervised_concepts, H_attn, H_attn)
             
             from torchvision.transforms.functional import gaussian_blur
             supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
             
-            # Mimic supervised features as gathered maximum patch tokens for compatibility
-            gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-            supervised_features = torch.gather(features, dim=1, index=gather_indices)
+            # Memory-Efficient Top-k Gathering along dim=1 (N_patches) using flattened indices [B, C * k]
+            flat_indices = indices_transposed.reshape(B, self.num_supervised_concepts * k_val)
+            gathered_flat = torch.gather(
+                features,
+                dim=1,
+                index=flat_indices.unsqueeze(-1).expand(-1, -1, D)
+            ) # [B, C * k, D]
+            
+            # Reshape gathered features back to [B, num_supervised_concepts, k, D]
+            gathered_features = gathered_flat.view(B, self.num_supervised_concepts, k_val, D)
+            
+            # Softmax-Weighted average over the top-k dimension
+            supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2) # [B, num_supervised_concepts, D]
             
             if self.num_latent_concepts > 0:
-                latent_logits, latent_max_indices = self.latent_attention(features)
+                latent_logits, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
+                
+                latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
+                latent_weights_transposed = latent_weights.permute(0, 2, 1)
                 
                 sparse_latent_maps = torch.zeros(B, self.num_latent_concepts, N_patches, device=device)
-                sparse_latent_maps.scatter_(2, latent_max_indices.unsqueeze(-1), 1.0)
+                sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
                 sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
                 latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
                 
-                gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-                latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                latent_flat_indices = latent_indices_transposed.reshape(B, self.num_latent_concepts * k_val)
+                latent_gathered_flat = torch.gather(
+                    features,
+                    dim=1,
+                    index=latent_flat_indices.unsqueeze(-1).expand(-1, -1, D)
+                )
+                latent_gathered_features = latent_gathered_flat.view(B, self.num_latent_concepts, k_val, D)
+                latent_features = torch.sum(latent_gathered_features * latent_weights_transposed.unsqueeze(-1), dim=2)
                 
                 concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
                 attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)

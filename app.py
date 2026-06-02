@@ -246,64 +246,90 @@ def run_inference(image: Image.Image):
     use_mask = False
     threshold = 0.35
     
-    if hasattr(MODEL, "backbone") and hasattr(MODEL.backbone, "vit"):
-        attn = getattr(MODEL.backbone.vit.blocks[-1].attn, "last_attn_weights", None)
-        use_mask = getattr(MODEL.backbone, "use_dino_mask", False)
-        threshold = getattr(MODEL.backbone, "mask_threshold", 0.35)
-        
     seg_pil = generate_segmentation_overlay(img_np, attn, use_mask, threshold)
 
-    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np
+    concept_logits_list = concept_logits.squeeze(0).cpu().tolist()
+
+    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np, concept_logits_list
 
 
-def repredict_with_adjusted_concepts(*component_values):
+def repredict_with_adjusted_concepts(original_logits, *component_values):
     """
     Re-run only the classifier head with user-adjusted concept values.
     This is the human-in-the-loop intervention point.
+    If the user has not modified a concept group, it preserves the original predicted logits.
     """
     if MODEL is None:
         return "No model loaded."
 
-    # Reconstruct flat concept tensor in [0, 1]
-    concept_probs_list = [0.0] * NUM_CONCEPTS
-    
-    for i, group in enumerate(CONCEPT_GROUPS):
-        val = component_values[i]
-        if group["type"] == "numerical":
-            # Scale down from [min, max] to [0, 1]
-            min_val = group["min"]
-            max_val = group["max"]
-            norm_val = (float(val) - min_val) / (max_val - min_val + 1e-8)
-            norm_val = max(0.0, min(1.0, norm_val))
-            concept_probs_list[group["flat_indices"][0]] = norm_val
-        else:
-            # Categorical: val can be a list of strings (CheckboxGroup / Multi-select Dropdown) or a single string
-            selected_classes = val if isinstance(val, list) else [val]
-            selected_classes = {str(c) for c in selected_classes}
-            
-            for cls_idx, cls_str in zip(group["flat_indices"], group["classes"]):
-                if cls_str in selected_classes:
-                    concept_probs_list[cls_idx] = 1.0
-                else:
-                    concept_probs_list[cls_idx] = 0.0
+    # If original_logits is not populated (e.g. user clicked re-predict without running inference first)
+    if not original_logits:
+        # Fallback to default raw logits corresponding to probability 0.5 (logit 0.0)
+        original_logits = [0.0] * (NUM_CONCEPTS + (getattr(MODEL, "num_latent_concepts", 0) or 0))
 
-    # If the model has latent concepts, pad them with zeros for classification
-    if MODEL is not None and getattr(MODEL, "num_latent_concepts", 0) > 0:
-        concept_probs_list.extend([0.0] * MODEL.num_latent_concepts)
-
-    concept_probs = torch.tensor(
-        [concept_probs_list], dtype=torch.float32, device=DEVICE
+    # Reconstruct concept logits by preserving original soft predicted values unless explicitly modified by user
+    logits_mutated = torch.tensor(
+        [original_logits], dtype=torch.float32, device=DEVICE
     )
 
-    # Translate user-adjusted concept probabilities in [0, 1] to raw logit space
-    # z = log(p / (1 - p))
-    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
-    p_clipped = torch.clamp(concept_probs, min=0.05, max=0.95)
-    concept_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    for i, group in enumerate(CONCEPT_GROUPS):
+        val = component_values[i]
+        flat_indices = group["flat_indices"]
 
+        if group["type"] == "numerical":
+            c_idx = flat_indices[0]
+            # Original predicted probability and value
+            orig_logit = original_logits[c_idx]
+            orig_prob = 1.0 / (1.0 + math.exp(-orig_logit))
+            orig_val = group["min"] + (group["max"] - group["min"]) * orig_prob
+            
+            # Check if slider value matches predicted value
+            if abs(float(val) - orig_val) > 1e-4:
+                # User intervened! Override with slider value
+                norm_val = (float(val) - group["min"]) / (group["max"] - group["min"] + 1e-8)
+                norm_val = max(0.05, min(0.95, norm_val))
+                logits_mutated[0, c_idx] = math.log(norm_val / (1.0 - norm_val))
+        else:
+            # Categorical concept (Dropdown / Radio)
+            # Find the original predicted probability distribution for this group
+            group_logits = [original_logits[idx] for idx in flat_indices]
+            
+            # Check if group is exclusive
+            is_exclusive = is_group_exclusive(group["name"])
+            if is_exclusive and len(flat_indices) > 1:
+                # Softmax
+                exp_logits = [math.exp(l) for l in group_logits]
+                sum_exp = sum(exp_logits)
+                group_probs = [el / (sum_exp + 1e-8) for el in exp_logits]
+            else:
+                # Sigmoid fallback
+                group_probs = [1.0 / (1.0 + math.exp(-l)) for l in group_logits]
+                
+            max_idx = np.argmax(group_probs)
+            max_prob = group_probs[max_idx]
+            
+            # Determine what the original UI display value was
+            if max_prob <= 0.5:
+                orig_selected_cls = "Not Visible / Occluded"
+            else:
+                orig_selected_cls = group["classes"][max_idx]
+                
+            # If the user changed the choice, we intervene and override!
+            if val != orig_selected_cls:
+                selected_classes = val if isinstance(val, list) else [val]
+                selected_classes = {str(c) for c in selected_classes}
+                
+                for cls_idx, cls_str in zip(flat_indices, group["classes"]):
+                    if cls_str in selected_classes:
+                        p = 0.95
+                    else:
+                        p = 0.05
+                    logits_mutated[0, cls_idx] = math.log(p / (1.0 - p))
+
+    # Evaluate using the mutated concept logits
     MODEL.eval()
     with torch.no_grad():
-        class_logits = MODEL.classifier_head(concept_logits)
+        class_logits = MODEL.classifier_head(logits_mutated)
 
     if NUM_CLASSES == 1:
         prob = torch.sigmoid(class_logits).item()
@@ -468,6 +494,7 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=3, elem_classes="concept-slider-group"):
                 group_name_to_comp = {}
+                group_name_to_accordion = {}
                 num_cols = 3
                 cols_groups = [CONCEPT_GROUPS[i::num_cols] for i in range(num_cols)]
                 
@@ -475,43 +502,49 @@ def build_app() -> gr.Blocks:
                     for col_idx in range(num_cols):
                         with gr.Column():
                             for group in cols_groups[col_idx]:
-                                if group["type"] == "numerical":
-                                    is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
-                                    step = 1.0 if is_int else 0.01
-                                    comp = gr.Slider(
-                                        minimum=group["min"],
-                                        maximum=group["max"],
-                                        step=step,
-                                        value=(group["min"] + group["max"]) / 2,
-                                        label=group["name"],
-                                        interactive=True,
-                                        elem_classes="compact-comp"
-                                    )
-                                else:
-                                    # Categorical Concept Component
-                                    choices = group["classes"] + ["Not Visible / Occluded"]
-                                    default_val = "Not Visible / Occluded"
-                                    if len(group["classes"]) <= 3:
-                                        comp = gr.Radio(
-                                            choices=choices,
-                                            value=default_val,
+                                with gr.Accordion(label=group["name"], open=False) as accordion:
+                                    if group["type"] == "numerical":
+                                        is_int = (group["min"].is_integer() and group["max"].is_integer() and (group["max"] - group["min"]) > 2.0)
+                                        step = 1.0 if is_int else 0.01
+                                        comp = gr.Slider(
+                                            minimum=group["min"],
+                                            maximum=group["max"],
+                                            step=step,
+                                            value=(group["min"] + group["max"]) / 2,
                                             label=group["name"],
+                                            show_label=False,
                                             interactive=True,
                                             elem_classes="compact-comp"
                                         )
                                     else:
-                                        comp = gr.Dropdown(
-                                            choices=choices,
-                                            value=default_val,
-                                            label=group["name"],
-                                            multiselect=False,
-                                            interactive=True,
-                                            elem_classes="compact-comp"
-                                        )
-                                group_name_to_comp[group["name"]] = comp
+                                        # Categorical Concept Component
+                                        choices = group["classes"] + ["Not Visible / Occluded"]
+                                        default_val = "Not Visible / Occluded"
+                                        if len(group["classes"]) <= 3:
+                                            comp = gr.Radio(
+                                                choices=choices,
+                                                value=default_val,
+                                                label=group["name"],
+                                                show_label=False,
+                                                interactive=True,
+                                                elem_classes="compact-comp"
+                                            )
+                                        else:
+                                            comp = gr.Dropdown(
+                                                choices=choices,
+                                                value=default_val,
+                                                label=group["name"],
+                                                show_label=False,
+                                                multiselect=False,
+                                                interactive=True,
+                                                elem_classes="compact-comp"
+                                            )
+                                    group_name_to_comp[group["name"]] = comp
+                                    group_name_to_accordion[group["name"]] = accordion
                 
-                # Reconstruct concept_components in the exact order of CONCEPT_GROUPS
+                # Reconstruct concept_components and concept_accordions in the exact order of CONCEPT_GROUPS
                 concept_components = [group_name_to_comp[g["name"]] for g in CONCEPT_GROUPS]
+                concept_accordions = [group_name_to_accordion[g["name"]] for g in CONCEPT_GROUPS]
 
             with gr.Column(scale=1):
                 repredict_btn = gr.Button(
@@ -531,13 +564,15 @@ def build_app() -> gr.Blocks:
                     gr.update(),
                     [],
                     gr.update(),
-                    *[gr.update() for _ in concept_components]
+                    *[gr.update() for _ in concept_components],
+                    *[gr.update() for _ in concept_accordions]
                 )
 
-            pred_text, concept_vals, gallery, seg_pil, _ = run_inference(image)
+            pred_text, concept_vals, gallery, seg_pil, _, concept_logits_list = run_inference(image)
 
-            # Build updates to reflect predicted values
+            # Build updates to reflect predicted values and accordion open/closed state
             component_updates = []
+            accordion_updates = []
             for group in CONCEPT_GROUPS:
                 if group["type"] == "numerical":
                     val = concept_vals[group["flat_indices"][0]]
@@ -549,32 +584,44 @@ def build_app() -> gr.Blocks:
                     else:
                         scaled_val = round(scaled_val, 4)
                     component_updates.append(gr.update(value=scaled_val))
+                    accordion_updates.append(gr.update(open=False))
                 else:
-                    # Categorical concept: select the highest probability class if above threshold,
-                    # otherwise fallback to "Not Visible / Occluded" (all zeros)
-                    probs = [concept_vals[idx] for idx in group["flat_indices"]]
+                    # Categorical concept: select the highest probability class
+                    flat_indices = group["flat_indices"]
+                    probs = [concept_vals[idx] for idx in flat_indices]
                     max_idx = np.argmax(probs)
-                    max_prob = probs[max_idx]
                     
-                    # Threshold of 0.5 (confidence threshold for probability)
-                    if max_prob <= 0.5:
+                    # Extract raw predicted logits for this group
+                    group_logits = [concept_logits_list[idx] for idx in flat_indices]
+                    max_logit = max(group_logits)
+                    
+                    # Fetch optimal validation threshold in logit space from model buffer
+                    if MODEL is not None and hasattr(MODEL, "concept_thresholds") and MODEL.concept_thresholds is not None:
+                        g_threshold = MODEL.concept_thresholds[flat_indices].mean().item()
+                    else:
+                        g_threshold = 0.0  # Fallback to logit 0.0
+                    
+                    # Intervene (open Accordion) if predicted max logit is below threshold + 0.30 logit margin
+                    if max_logit <= (g_threshold + 0.30):
                         selected_cls = "Not Visible / Occluded"
+                        accordion_updates.append(gr.update(open=True))
                     else:
                         selected_cls = group["classes"][max_idx]
+                        accordion_updates.append(gr.update(open=False))
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_vals, gallery, seg_pil, *component_updates)
+            return (pred_text, concept_logits_list, gallery, seg_pil, *component_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, *concept_components]
+            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, *concept_components, *concept_accordions]
         )
 
         repredict_btn.click(
             fn=repredict_with_adjusted_concepts,
-            inputs=concept_components,
+            inputs=[concept_state, *concept_components],
             outputs=[adjusted_prediction]
         )
 
