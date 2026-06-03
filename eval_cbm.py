@@ -286,6 +286,28 @@ def main():
     filter_rare_concepts = checkpoint_args.get('filter_rare_concepts', False)
     if not filter_rare_concepts:
         filter_rare_concepts = checkpoint_config.get('dataset', {}).get('filter_rare_concepts', False)
+        
+    use_nam_head = False
+    nam_hidden_dim = 64
+
+    # Check if NAM head is used based on state_dict keys
+    if "classifier_head.concept_gates" in state_dict:
+        use_nam_head = True
+        # GatedSparseNAMHead uses conv1 grouped conv.
+        if "classifier_head.conv1.weight" in state_dict:
+            num_supervised_gates = state_dict["classifier_head.concept_gates"].shape[0]
+            out_ch = state_dict["classifier_head.conv1.weight"].shape[0]
+            nam_hidden_dim = out_ch // num_supervised_gates
+            
+        # Detect latent concepts in NAM: check if latent_linear layer weights exist
+        if "classifier_head.latent_linear.weight" in state_dict:
+            latent_concepts = state_dict["classifier_head.latent_linear.weight"].shape[1]
+        else:
+            latent_concepts = 0
+    else:
+        # Fallback to args if they exist in the checkpoint
+        use_nam_head = checkpoint_args.get('use_nam_head', False)
+        nam_hidden_dim = checkpoint_args.get('nam_hidden_dim', 64)
     
     tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
@@ -293,7 +315,9 @@ def main():
     tqdm.write(f"     ├─ use_lora: {use_lora} (r={lora_r}, alpha={lora_alpha})")
     tqdm.write(f"     ├─ latent_concepts: {latent_concepts}")
     tqdm.write(f"     ├─ use_group_broadcasting: {use_group_broadcasting}")
-    tqdm.write(f"     └─ filter_rare_concepts: {filter_rare_concepts}")
+    tqdm.write(f"     ├─ filter_rare_concepts: {filter_rare_concepts}")
+    tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
+    tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
     if dataset_name == 'derm7pt':
@@ -386,7 +410,9 @@ def main():
         use_cosine_attention=use_cosine_attention,
         use_group_broadcasting=use_group_broadcasting,
         num_groups=num_groups,
-        group_mapping=group_mapping
+        group_mapping=group_mapping,
+        use_nam_head=use_nam_head,
+        nam_hidden_dim=nam_hidden_dim
     )
     
     # Load state dict
@@ -510,7 +536,7 @@ def main():
             device,
             logit_margin=margin
         )
-        print(f"| {margin:>12.2f} | {unconf_topk.get(1, 0.0)*100:>12.2f}% | {unconf_topk.get(3, 0.0)*100:>12.2f}% | {avg_corrected:>20.2f} / 28 |")
+        print(f"| {margin:>12.2f} | {unconf_topk.get(1, 0.0)*100:>12.2f}% | {unconf_topk.get(3, 0.0)*100:>12.2f}% | {avg_corrected:>20.2f} / {num_groups} |")
     print("============================================================\n")
     
     # 9. Evaluate Chosen Sweet-Spot Logit Margin (0.30)
@@ -531,7 +557,7 @@ def main():
     if 3 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-3 Accuracy : {unconf_topk[3]*100:.2f}%")
     if 5 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-5 Accuracy : {unconf_topk[5]*100:.2f}%")
     if 10 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-10 Accuracy: {unconf_topk[10]*100:.2f}%")
-    print(f"  Avg Groups Corrected per Sample               : {avg_corrected:.2f} / 28")
+    print(f"  Avg Groups Corrected per Sample               : {avg_corrected:.2f} / {num_groups}")
     print("============================================================\n")
     
     # Summary of accomplishments with Top-K metrics

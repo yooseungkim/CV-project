@@ -572,6 +572,18 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             loss_t.backward()
             optimizer.step()
             
+            # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity
+            if hasattr(model.classifier_head, 'concept_gates'):
+                with torch.no_grad():
+                    threshold = 1e-4
+                    model.classifier_head.concept_gates.copy_(
+                        torch.where(
+                            model.classifier_head.concept_gates.abs() < threshold,
+                            torch.zeros_like(model.classifier_head.concept_gates),
+                            model.classifier_head.concept_gates
+                        )
+                    )
+            
             total_loss_t += loss_t.item()
             total_acc_t += calculate_accuracy(class_logits.detach(), targets)
             train_pbar.set_postfix(TL=f"{loss_t.item():.4f}")
@@ -619,9 +631,9 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             
         if es_handler is not None:
             monitor_target = es_handler.monitor.lower()
-            if monitor_target == "val_target_loss" or monitor_target == "val_loss":
+            if "loss" in monitor_target:
                 monitor_score = avg_val_loss_t
-            elif monitor_target == "val_accuracy" or monitor_target == "val_acc":
+            elif "acc" in monitor_target or "accuracy" in monitor_target:
                 monitor_score = avg_val_acc_t
             else:
                 monitor_score = avg_val_loss_t
@@ -680,18 +692,33 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     phase3_lr = args.phase3_lr if args.phase3_lr is not None else 1e-5
     phase3_epochs = args.phase3_epochs
     
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    trainable_names  = [n for n, p in model.named_parameters() if p.requires_grad]
-    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(trainable_params)} tensors")
+    # Use differential learning rates: phase3_lr for backbone, and 50x higher LR for classifier head
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if "backbone" in name:
+                backbone_params.append(param)
+            else:
+                head_params.append(param)
+                
+    param_groups = [
+        {"params": backbone_params, "lr": phase3_lr},
+        {"params": head_params, "lr": phase3_lr * 50}  # 50x higher learning rate for classifier/gating parameters
+    ]
+    
+    trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
+    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(backbone_params) + len(head_params)} tensors")
     tqdm.write(f"     └─ Modules: {', '.join(dict.fromkeys(n.split('.')[0] for n in trainable_names))}")
+    tqdm.write(f"     └─ Differential LRs: backbone={phase3_lr:.6f}, classifier_head={phase3_lr * 50:.6f}")
     
     if opt_type == "adamw":
-        optimizer = optim.AdamW(trainable_params, lr=phase3_lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
     elif opt_type == "sgd":
         momentum = opt_cfg.get("momentum", 0.9)
-        optimizer = optim.SGD(trainable_params, lr=phase3_lr, weight_decay=weight_decay, momentum=momentum)
+        optimizer = optim.SGD(param_groups, weight_decay=weight_decay, momentum=momentum)
     else:
-        optimizer = optim.Adam(trainable_params, lr=phase3_lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(param_groups, weight_decay=weight_decay)
         
     sched_cfg = config_data.get("scheduler", {})
     sched_type = sched_cfg.get("type", "none").lower()
@@ -884,6 +911,18 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             total_loss.backward()
             optimizer.step()
             
+            # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity
+            if hasattr(model.classifier_head, 'concept_gates'):
+                with torch.no_grad():
+                    threshold = 1e-4
+                    model.classifier_head.concept_gates.copy_(
+                        torch.where(
+                            model.classifier_head.concept_gates.abs() < threshold,
+                            torch.zeros_like(model.classifier_head.concept_gates),
+                            model.classifier_head.concept_gates
+                        )
+                    )
+            
             total_loss_joint += total_loss.item()
             total_loss_t += loss_t.item()
             total_loss_c += loss_c.item()
@@ -934,9 +973,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             
         if es_handler is not None:
             monitor_target = es_handler.monitor.lower()
-            if monitor_target == "val_target_loss" or monitor_target == "val_loss":
+            if "loss" in monitor_target:
                 monitor_score = avg_val_loss_t
-            elif monitor_target == "val_accuracy" or monitor_target == "val_acc":
+            elif "acc" in monitor_target or "accuracy" in monitor_target:
                 monitor_score = avg_val_acc_t
             else:
                 monitor_score = avg_val_loss_t

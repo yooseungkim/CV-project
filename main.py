@@ -90,6 +90,7 @@ def parse_args():
     if "resume_checkpoint" in tr_cfg: flat_defaults["resume_checkpoint"] = tr_cfg["resume_checkpoint"]
     if "latent_concepts" in tr_cfg: flat_defaults["latent_concepts"] = tr_cfg["latent_concepts"]
     if "run_app" in tr_cfg: flat_defaults["run_app"] = tr_cfg["run_app"]
+    if "run_eval" in tr_cfg: flat_defaults["run_eval"] = tr_cfg["run_eval"]
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
@@ -195,6 +196,7 @@ def parse_args():
     parser.add_argument('--resume_checkpoint', type=str, default=flat_defaults.get('resume_checkpoint', None), help="Path to checkpoint .pth to resume or fine-tune from")
     parser.add_argument('--save_filename', type=str, default=None, help="Custom filename to save the final weights")
     parser.add_argument('--run_app', type=str2bool, default=flat_defaults.get('run_app', True), help="Automatically launch Gradio app after training finishes")
+    parser.add_argument('--run_eval', type=str2bool, default=flat_defaults.get('run_eval', False), help="Automatically run evaluation (eval_cbm.py) after training finishes")
     parser.add_argument('--use_nam_head', type=str2bool, default=flat_defaults.get('use_nam_head', False), help="Use GatedSparseNAMHead instead of standard nn.Linear classifier head")
     parser.add_argument('--nam_hidden_dim', type=int, default=flat_defaults.get('nam_hidden_dim', 64), help="Hidden dimension for GatedSparseNAMHead subnetworks")
     
@@ -642,6 +644,22 @@ def main():
 
     if args.use_wandb:
         wandb.finish()
+
+    # Automatically run evaluation benchmark using subprocess to execute eval_cbm.py
+    if args.run_eval:
+        tqdm.write(f"\n{BOLD}{CYAN}[Evaluation]{RESET} Launching evaluation benchmark automatically...")
+        import subprocess
+        import sys
+        
+        cmd = [
+            sys.executable, "eval_cbm.py",
+            "--checkpoint", save_path
+        ]
+        tqdm.write(f"  Running: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd)
+        except Exception as e:
+            tqdm.write(f"\n{BOLD}{YELLOW}[Evaluation]{RESET} Automatic evaluation failed: {e}")
 
     # Automatically launch Gradio app using subprocess to execute app.py
     if args.run_app:

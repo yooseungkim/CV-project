@@ -22,7 +22,7 @@ dataset:
   csv_path: "data/derm7pt/meta/meta.csv"
   image_dir: "data/derm7pt/images"
   concept_config_path: "data/derm7pt/concept_config.json"
-  use_concept_groups: false  # Disable GroupSoftmax to let independent BCE mapping work
+  use_concept_groups: true  # Disable GroupSoftmax to let independent BCE mapping work
 
 # 3. Core Training Hyperparameters
 training:
@@ -31,8 +31,8 @@ training:
   phase3_epochs: 10  # Joint end-to-end parameter tuning
   batch_size: 64  # Optimized for derm7pt split sizes
   lambda_c: 0.1  # Scale factor for concept loss
-  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
-  use_nam_head: false  # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
+  l1_lambda: 0.02  # L1 Lasso Regularization for Phase 2 classifier head (with Sparsity)
+  use_nam_head: true  # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
   nam_hidden_dim: 8  # Hidden dimension for parallel NAM sub-networks
   l1_warmup_epochs: 5  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
   
@@ -55,6 +55,8 @@ training:
   pin_memory: true
   cache_in_memory: true  # Enables full RAM-caching for ultra-fast disk I/O
   max_cache_size_gb: 10.0
+  run_eval: true
+  run_app: false
 
 # 4. Optimizer Configurations
 optimizer:
@@ -77,8 +79,8 @@ early_stopping:
   enabled: true
   phase1_monitor: "val_concept_balanced_acc"
   phase1_patience: 5
-  phase2_monitor: "val_target_loss"
+  phase2_monitor: "val_acc"
   phase2_patience: 7
-  phase3_monitor: "val_target_loss"
+  phase3_monitor: "val_acc"
   phase3_patience: 5
   min_delta: 0.001

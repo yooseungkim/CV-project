@@ -158,6 +158,83 @@ def _unnormalize_tensor(img_tensor: torch.Tensor) -> np.ndarray:
     return img.permute(1, 2, 0).numpy()
 
 
+def plot_concept_contributions(model, concept_logits_tensor, concept_names, target_class_idx):
+    """
+    Generate a matplotlib horizontal bar chart showing concept contributions for the predicted class.
+    Returns:
+        PIL.Image.Image of the plot or None
+    """
+    if model is None or len(concept_names) == 0:
+        return None
+
+    with torch.no_grad():
+        if hasattr(model, "classifier_head") and hasattr(model.classifier_head, "conv1") and hasattr(model.classifier_head, "concept_gates"):
+            # GatedSparseNAMHead case
+            supervised_x = concept_logits_tensor[:, :model.num_supervised_concepts].unsqueeze(-1)
+            h = F.relu(model.classifier_head.conv1(supervised_x))
+            y = model.classifier_head.conv2(h)
+            y = y.view(1, model.num_supervised_concepts, model.num_classes)
+            gated_y = y * model.classifier_head.concept_gates.view(1, model.num_supervised_concepts, 1)
+            contributions = gated_y[0, :, target_class_idx].cpu().numpy()
+        elif hasattr(model, "classifier_head") and hasattr(model.classifier_head, "weight"):
+            # Standard nn.Linear case
+            weight = model.classifier_head.weight[target_class_idx].cpu().numpy()
+            x = concept_logits_tensor[0, :model.num_supervised_concepts].cpu().numpy()
+            contributions = weight * x
+        else:
+            return None
+
+    import numpy as np
+    names = concept_names[:len(contributions)]
+    if len(names) < len(contributions):
+        names += [f"Concept {i}" for i in range(len(names), len(contributions))]
+        
+    abs_contribs = np.abs(contributions)
+    top_indices = np.argsort(abs_contribs)[-12:]
+    
+    plot_contribs = contributions[top_indices]
+    plot_names = [names[idx] for idx in top_indices]
+    
+    fig, ax = plt.subplots(figsize=(6.5, 4.2), dpi=150)
+    colors = ['#10b981' if c >= 0 else '#ef4444' for c in plot_contribs]
+    
+    y_pos = np.arange(len(plot_names))
+    bars = ax.barh(y_pos, plot_contribs, color=colors, edgecolor='none', height=0.6)
+    
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(plot_names, fontsize=8, fontweight='semibold')
+    ax.axvline(0, color='#6b7280', linestyle='--', linewidth=0.8)
+    ax.set_xlabel("Contribution Score (Logit Scale)", fontsize=9, fontweight='semibold')
+    
+    class_name = TARGET_CLASSES[target_class_idx] if target_class_idx < len(TARGET_CLASSES) else f"Class {target_class_idx}"
+    ax.set_title(f"Concept Contribution to: {class_name}", fontsize=10, fontweight='bold', pad=10)
+    
+    max_val = max(abs(plot_contribs)) if len(plot_contribs) > 0 else 0
+    ax_offset = 0.02 * (max_val + 1e-5)
+    for bar in bars:
+        width = bar.get_width()
+        if width >= 0:
+            ax.text(width + ax_offset, bar.get_y() + bar.get_height()/2, f"+{width:.2f}", 
+                    va='center', ha='left', fontsize=7, color='#1e293b', fontweight='semibold')
+        else:
+            ax.text(width - ax_offset, bar.get_y() + bar.get_height()/2, f"{width:.2f}", 
+                    va='center', ha='right', fontsize=7, color='#1e293b', fontweight='semibold')
+            
+    for spine in ['top', 'right']:
+        ax.spines[spine].set_visible(False)
+    ax.spines['left'].set_color('#cbd5e1')
+    ax.spines['bottom'].set_color('#cbd5e1')
+    ax.grid(axis='x', linestyle=':', alpha=0.5)
+    
+    plt.tight_layout()
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    img = Image.open(buf)
+    plt.close(fig)
+    return img
+
+
 # ---------------------------------------------------------------------------
 # Core inference function
 # ---------------------------------------------------------------------------
@@ -188,6 +265,7 @@ def run_inference(image: Image.Image):
         prob = torch.sigmoid(class_logits).item()
         pred_label = "Malignant" if prob >= 0.5 else "Benign"
         prediction_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
+        target_class_idx = 0
     else:
         probs = torch.softmax(class_logits, dim=-1).squeeze(0)
         top_k = min(3, NUM_CLASSES)
@@ -200,6 +278,7 @@ def run_inference(image: Image.Image):
             marker = ">" if i == 0 else " "
             lines.append(f"{marker} **{name}**: {p:.4f}")
         prediction_text = "\n".join(lines)
+        target_class_idx = top_idxs[0].item()
 
     # Concept values
     concept_vals = concept_probs.squeeze(0).cpu().tolist()
@@ -250,7 +329,9 @@ def run_inference(image: Image.Image):
 
     concept_logits_list = concept_logits.squeeze(0).cpu().tolist()
 
-    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np, concept_logits_list
+    contrib_img = plot_concept_contributions(MODEL, concept_logits, CONCEPT_NAMES, target_class_idx)
+
+    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np, concept_logits_list, contrib_img
 
 
 def repredict_with_adjusted_concepts(original_logits, *component_values):
@@ -260,7 +341,7 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
     If the user has not modified a concept group, it preserves the original predicted logits.
     """
     if MODEL is None:
-        return "No model loaded."
+        return "No model loaded.", None
 
     # If original_logits is not populated (e.g. user clicked re-predict without running inference first)
     if not original_logits:
@@ -334,7 +415,8 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
     if NUM_CLASSES == 1:
         prob = torch.sigmoid(class_logits).item()
         pred_label = "Malignant" if prob >= 0.5 else "Benign"
-        return f"**{pred_label}** (Malignancy probability: {prob:.4f})"
+        pred_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
+        target_class_idx = 0
     else:
         probs = torch.softmax(class_logits, dim=-1).squeeze(0)
         top_k = min(3, NUM_CLASSES)
@@ -346,7 +428,11 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
             name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
             marker = ">" if i == 0 else " "
             lines.append(f"{marker} **{name}**: {p:.4f}")
-        return "\n".join(lines)
+        pred_text = "\n".join(lines)
+        target_class_idx = top_idxs[0].item()
+
+    contrib_img = plot_concept_contributions(MODEL, logits_mutated, CONCEPT_NAMES, target_class_idx)
+    return pred_text, contrib_img
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +555,14 @@ def build_app() -> gr.Blocks:
                 prediction_output = gr.Markdown(
                     value="*Upload an image and click Run Inference*"
                 )
+                
+                gr.Markdown("### Concept Decision Contributions")
+                contrib_output = gr.Image(
+                    label="Concept Contribution Plot",
+                    type="pil",
+                    interactive=False,
+                    height=280
+                )
 
             # ==== Column 3: Heatmaps ====
             with gr.Column(scale=2):
@@ -564,11 +658,12 @@ def build_app() -> gr.Blocks:
                     gr.update(),
                     [],
                     gr.update(),
+                    gr.update(),
                     *[gr.update() for _ in concept_components],
                     *[gr.update() for _ in concept_accordions]
                 )
 
-            pred_text, concept_vals, gallery, seg_pil, _, concept_logits_list = run_inference(image)
+            pred_text, concept_vals, gallery, seg_pil, _, concept_logits_list, contrib_img = run_inference(image)
 
             # Build updates to reflect predicted values and accordion open/closed state
             component_updates = []
@@ -611,18 +706,18 @@ def build_app() -> gr.Blocks:
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_logits_list, gallery, seg_pil, *component_updates, *accordion_updates)
+            return (pred_text, concept_logits_list, gallery, seg_pil, contrib_img, *component_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, *concept_components, *concept_accordions]
+            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, contrib_output, *concept_components, *concept_accordions]
         )
 
         repredict_btn.click(
             fn=repredict_with_adjusted_concepts,
             inputs=[concept_state, *concept_components],
-            outputs=[adjusted_prediction]
+            outputs=[adjusted_prediction, contrib_output]
         )
 
     return app
@@ -834,17 +929,39 @@ def main():
     else:
         state_dict = loaded_checkpoint
     
-    # Auto-detect number of latent concepts from classifier_head weight shape
+    # Auto-detect number of latent concepts and NAM head configuration from checkpoint keys
     latent_concepts = args.latent_concepts
-    if "classifier_head.weight" in state_dict:
+    use_nam_head = False
+    nam_hidden_dim = 64
+
+    # 1. Check if NAM head is used
+    if "classifier_head.concept_gates" in state_dict:
+        use_nam_head = True
+        # GatedSparseNAMHead uses conv1 grouped conv. Out channels is num_concepts * hidden_dim
+        if "classifier_head.conv1.weight" in state_dict:
+            out_ch = state_dict["classifier_head.conv1.weight"].shape[0]
+            nam_hidden_dim = out_ch // NUM_CONCEPTS
+            print(f"[Config] Auto-detected GatedSparseNAMHead: use_nam_head=True, nam_hidden_dim={nam_hidden_dim}")
+        
+        # Detect latent concepts in NAM: check if latent_linear layer weights exist
+        if "classifier_head.latent_linear.weight" in state_dict:
+            latent_concepts = state_dict["classifier_head.latent_linear.weight"].shape[1]
+            print(f"[Config] Auto-detected latent concepts from NAM latent_linear: {latent_concepts}")
+        else:
+            latent_concepts = 0
+            print(f"[Config] No latent concepts found in NAM head. Setting latent_concepts=0")
+    # 2. Otherwise fallback to standard linear head
+    elif "classifier_head.weight" in state_dict:
         checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
         detected_latent = checkpoint_dims - NUM_CONCEPTS
         if detected_latent >= 0:
             latent_concepts = detected_latent
-            print(f"[Config] Auto-detected latent concepts from checkpoint: {latent_concepts} (Total dimensions: {checkpoint_dims})")
+            print(f"[Config] Auto-detected standard head with latent concepts: {latent_concepts} (Total dimensions: {checkpoint_dims})")
         else:
             print(f"[Config] Warning: Checkpoint dimensions ({checkpoint_dims}) are less than supervised concepts ({NUM_CONCEPTS}). Using args.latent_concepts={args.latent_concepts}.")
-        print(f"[Config] Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
+    else:
+        print(f"[Config] Warning: 'classifier_head.weight' or 'classifier_head.concept_gates' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
+
     use_lora = getattr(args, 'use_lora', False)
     lora_r = getattr(args, 'lora_r', 8)
     lora_alpha = getattr(args, 'lora_alpha', 16.0)
@@ -1000,7 +1117,9 @@ def main():
         num_groups=num_groups,
         group_mapping=group_mapping,
         use_dino_mask=use_dino_mask,
-        dino_mask_threshold=dino_mask_threshold
+        dino_mask_threshold=dino_mask_threshold,
+        use_nam_head=use_nam_head,
+        nam_hidden_dim=nam_hidden_dim
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

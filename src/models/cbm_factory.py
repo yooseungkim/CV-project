@@ -46,6 +46,19 @@ class GatedSparseNAMHead(nn.Module):
         else:
             self.latent_linear = None
 
+        # Weight Initialization
+        nn.init.kaiming_uniform_(self.conv1.weight, a=math.sqrt(5))
+        if self.conv1.bias is not None:
+            nn.init.zeros_(self.conv1.bias)
+            
+        nn.init.xavier_uniform_(self.conv2.weight)
+        if self.conv2.bias is not None:
+            nn.init.zeros_(self.conv2.bias)
+            
+        if self.num_latent_concepts > 0 and self.latent_linear is not None:
+            nn.init.xavier_uniform_(self.latent_linear.weight)
+            nn.init.zeros_(self.latent_linear.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.size(0)
         supervised_x = x[:, :self.num_concepts].unsqueeze(-1)
@@ -88,6 +101,13 @@ class ConceptAttentionLayer(nn.Module):
         
         # Learnable temperature for cosine similarity scaling (init=1 -> no-op at start)
         self.temperature = nn.Parameter(torch.ones(1))
+
+        # Weight Initialization
+        nn.init.xavier_uniform_(self.attention_conv.weight)
+        if self.attention_conv.bias is not None:
+            nn.init.zeros_(self.attention_conv.bias)
+            
+        nn.init.xavier_uniform_(self.concept_proj)
 
     def forward(self, features: torch.Tensor):
         # features: [B, C, H, W]
@@ -356,6 +376,10 @@ class ViTCrossAttentionLayer(nn.Module):
         bias_init = -math.log((1 - pi) / pi)
         nn.init.constant_(self.concept_bias, bias_init)
 
+        # Weight Initialization
+        nn.init.trunc_normal_(self.concept_queries, std=0.02)
+        nn.init.xavier_uniform_(self.concept_proj)
+
         if use_cosine_attention:
             # Explicit Q / K / V projections for cosine attention path
             self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -543,6 +567,13 @@ class PatchWiseMLPConceptHead(nn.Module):
             nn.Linear(hidden_dim, num_concepts)
         )
         
+        # Weight Initialization
+        for m in self.mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
         # Surgical prior initialization to prevent BCE logit explosion (RetinaNet Prior pi=0.01)
         pi = 0.01
         bias_init = -math.log((1 - pi) / pi)
@@ -684,14 +715,25 @@ class UniversalFlexibleCBM(nn.Module):
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
             print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
 
-            # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
-            print(f"{BOLD}{BLUE}[Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
-            self.supervised_attention = PatchWiseMLPConceptHead(
-                feature_dim=embed_dim,
-                num_concepts=num_supervised_concepts,
-                hidden_dim=384
-            )
+            if use_group_broadcasting:
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} GroupToConceptAttention ({embed_dim} -> groups={num_groups} -> concepts={num_supervised_concepts})")
+                self.supervised_attention = GroupToConceptAttention(
+                    embed_dim=embed_dim,
+                    num_groups=num_groups,
+                    num_concepts=num_supervised_concepts,
+                    group_mapping=group_mapping
+                )
+            else:
+                # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
+                self.supervised_attention = PatchWiseMLPConceptHead(
+                    feature_dim=embed_dim,
+                    num_concepts=num_supervised_concepts,
+                    hidden_dim=384
+                )
             if self.num_latent_concepts > 0:
+                if use_group_broadcasting:
+                    raise NotImplementedError("Latent concepts are not supported with group broadcasting.")
                 self.latent_attention = PatchWiseMLPConceptHead(
                     feature_dim=embed_dim,
                     num_concepts=self.num_latent_concepts,
@@ -777,6 +819,12 @@ class UniversalFlexibleCBM(nn.Module):
                 concept_logits = supervised_logits
                 attn_weights = supervised_attn
                 latent_features = None
+        elif self.use_group_broadcasting:
+            # ViT / DINOv2 with Group Broadcasting
+            supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+            concept_logits = supervised_logits
+            attn_weights = supervised_attn
+            latent_features = None
         else:
             # ViT / DINOv2 uses PatchWiseMLPConceptHead
             k_val = 3
