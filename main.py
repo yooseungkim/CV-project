@@ -62,8 +62,7 @@ def parse_args():
     if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
     if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
     if "use_group_broadcasting" in bb_cfg: flat_defaults["use_group_broadcasting"] = bb_cfg["use_group_broadcasting"]
-    if "use_dino_mask" in bb_cfg: flat_defaults["use_dino_mask"] = bb_cfg["use_dino_mask"]
-    if "dino_mask_threshold" in bb_cfg: flat_defaults["dino_mask_threshold"] = bb_cfg["dino_mask_threshold"]
+    # (use_dino_mask and dino_mask_threshold flat defaults removed)
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -192,8 +191,7 @@ def parse_args():
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
     parser.add_argument('--use_group_broadcasting', type=str2bool, default=flat_defaults.get('use_group_broadcasting', False), help="Use GroupToConceptAttention: group queries → independent BCE classifiers based on concept_config (fixes TPR/TNR collapse from Group Softmax)")
-    parser.add_argument('--use_dino_mask', type=str2bool, default=flat_defaults.get('use_dino_mask', False), help="Use DINOv2 self-attention to generate a silhouette foreground mask for background suppression")
-    parser.add_argument('--dino_mask_threshold', type=float, default=flat_defaults.get('dino_mask_threshold', 0.35), help="Threshold to binarize DINOv2 attention map for silhouette mask")
+    # (use_dino_mask and dino_mask_threshold parser arguments removed)
     parser.add_argument('--use_dynamic_threshold', type=str2bool, default=flat_defaults.get('use_dynamic_threshold', True), help="Optimize validation concept decision thresholds via Youden's J statistic")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
@@ -400,8 +398,7 @@ def main():
         use_group_broadcasting=args.use_group_broadcasting,
         num_groups=num_groups,
         group_mapping=group_mapping,
-        use_dino_mask=args.use_dino_mask,
-        dino_mask_threshold=args.dino_mask_threshold,
+        # use_dino_mask and dino_mask_threshold parameters removed
         use_nam_head=args.use_nam_head or args.use_gated_nam,
         nam_hidden_dim=args.nam_hidden_dim,
         use_probabilistic_cbm=args.use_probabilistic_cbm,

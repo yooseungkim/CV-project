@@ -279,17 +279,29 @@ def main():
     checkpoint_config = loaded.get('config', {})
     state_dict = loaded.get('state_dict', loaded)
     
-    # Auto-detect configs
-    dataset_name = checkpoint_args.get('dataset', 'cub')
-    backbone_type = checkpoint_args.get('backbone_type', 'timm')
-    backbone_name = checkpoint_args.get('backbone_name', 'vit_base_patch14_dinov2')
-    use_lora = checkpoint_args.get('use_lora', False)
-    lora_r = checkpoint_args.get('lora_r', 8)
-    lora_alpha = checkpoint_args.get('lora_alpha', 16.0)
-    use_group_broadcasting = checkpoint_args.get('use_group_broadcasting', False)
-    use_cosine_attention = checkpoint_args.get('use_cosine_attention', False)
-    latent_concepts = checkpoint_args.get('latent_concepts', 0)
-    num_classes = checkpoint_args.get('num_classes', 200)
+    # Auto-detect configs with fallbacks to config dictionaries and state_dict keys
+    dataset_name = checkpoint_args.get('dataset') or checkpoint_config.get('dataset', {}).get('name') or 'cub'
+    backbone_type = checkpoint_args.get('backbone_type') or checkpoint_config.get('backbone', {}).get('backbone_type') or 'timm'
+    backbone_name = checkpoint_args.get('backbone_name') or checkpoint_config.get('backbone', {}).get('backbone_name') or 'vit_base_patch14_dinov2'
+    use_lora = checkpoint_args.get('use_lora') or checkpoint_config.get('backbone', {}).get('use_lora') or False
+    lora_r = checkpoint_args.get('lora_r') or checkpoint_config.get('backbone', {}).get('lora_r') or 8
+    lora_alpha = checkpoint_args.get('lora_alpha') or checkpoint_config.get('backbone', {}).get('lora_alpha') or 16.0
+    
+    use_group_broadcasting = checkpoint_args.get('use_group_broadcasting') or checkpoint_config.get('backbone', {}).get('use_group_broadcasting') or False
+    if not use_group_broadcasting:
+        has_group_queries = any("supervised_attention.group_queries" in k for k in state_dict.keys())
+        if has_group_queries:
+            use_group_broadcasting = True
+
+    use_cosine_attention = checkpoint_args.get('use_cosine_attention') or checkpoint_config.get('backbone', {}).get('use_cosine_attention') or False
+    if not use_cosine_attention:
+        has_cosine_keys = any(".q_proj.weight" in k and "supervised_attention" in k for k in state_dict.keys())
+        has_mha_keys    = any(".cross_attention." in k for k in state_dict.keys())
+        if has_cosine_keys and not has_mha_keys:
+            use_cosine_attention = True
+
+    latent_concepts = checkpoint_args.get('latent_concepts') or checkpoint_config.get('training', {}).get('latent_concepts') or 0
+    num_classes = checkpoint_args.get('num_classes') or checkpoint_config.get('training', {}).get('num_classes') or 200
     filter_rare_concepts = checkpoint_args.get('filter_rare_concepts', False)
     if not filter_rare_concepts:
         filter_rare_concepts = checkpoint_config.get('dataset', {}).get('filter_rare_concepts', False)
@@ -312,18 +324,52 @@ def main():
         else:
             latent_concepts = 0
     else:
-        # Fallback to args if they exist in the checkpoint
-        use_nam_head = checkpoint_args.get('use_nam_head', False)
-        nam_hidden_dim = checkpoint_args.get('nam_hidden_dim', 64)
-    
+        # Fallback to args/configs if they exist in the checkpoint
+        use_nam_head = checkpoint_args.get('use_nam_head') or checkpoint_args.get('use_gated_nam') or checkpoint_config.get('training', {}).get('use_nam_head') or checkpoint_config.get('training', {}).get('use_gated_nam') or False
+        nam_hidden_dim = checkpoint_args.get('nam_hidden_dim') or checkpoint_config.get('training', {}).get('nam_hidden_dim') or 64
+
+    use_probabilistic_cbm = False
+    if 'use_probabilistic_cbm' in checkpoint_args:
+        use_probabilistic_cbm = checkpoint_args['use_probabilistic_cbm']
+    elif 'use_probabilistic_cbm' in checkpoint_config.get('training', {}):
+        use_probabilistic_cbm = checkpoint_config['training']['use_probabilistic_cbm']
+    elif any(k in state_dict for k in [
+        'supervised_attention.concept_weight_logvar',
+        'supervised_attention.concept_bias_logvar',
+        'supervised_attention.concept_proj_logvar',
+        'supervised_attention.concept_bias_logvar',
+        'supervised_attention.mlp_logvar.0.weight'
+    ]):
+        use_probabilistic_cbm = True
+
+    use_pairwise_nam = False
+    if 'use_pairwise_nam' in checkpoint_args:
+        use_pairwise_nam = checkpoint_args['use_pairwise_nam']
+    elif 'use_pairwise_nam' in checkpoint_config.get('training', {}):
+        use_pairwise_nam = checkpoint_config['training']['use_pairwise_nam']
+    elif 'classifier_head.pairwise_gates' in state_dict:
+        use_pairwise_nam = True
+
+    use_concept_attention = False
+    if 'use_concept_attention' in checkpoint_args:
+        use_concept_attention = checkpoint_args['use_concept_attention']
+    elif 'use_concept_attention' in checkpoint_config.get('backbone', {}):
+        use_concept_attention = checkpoint_config['backbone']['use_concept_attention']
+    elif 'supervised_attention.concept_queries' in state_dict:
+        use_concept_attention = True
+
     tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
     tqdm.write(f"     ├─ use_lora: {use_lora} (r={lora_r}, alpha={lora_alpha})")
     tqdm.write(f"     ├─ latent_concepts: {latent_concepts}")
     tqdm.write(f"     ├─ use_group_broadcasting: {use_group_broadcasting}")
+    tqdm.write(f"     ├─ use_cosine_attention: {use_cosine_attention}")
+    tqdm.write(f"     ├─ use_concept_attention: {use_concept_attention}")
+    tqdm.write(f"     ├─ use_probabilistic_cbm: {use_probabilistic_cbm}")
     tqdm.write(f"     ├─ filter_rare_concepts: {filter_rare_concepts}")
     tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
+    tqdm.write(f"     ├─ use_pairwise_nam: {use_pairwise_nam}")
     tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
@@ -418,8 +464,12 @@ def main():
         use_group_broadcasting=use_group_broadcasting,
         num_groups=num_groups,
         group_mapping=group_mapping,
+        # use_dino_mask and dino_mask_threshold parameters removed
         use_nam_head=use_nam_head,
-        nam_hidden_dim=nam_hidden_dim
+        nam_hidden_dim=nam_hidden_dim,
+        use_probabilistic_cbm=use_probabilistic_cbm,
+        use_concept_attention=use_concept_attention,
+        use_pairwise_nam=use_pairwise_nam
     )
     
     # Load state dict
@@ -573,11 +623,15 @@ def main():
     for k in available_ks:
         val_0 = group_tti_results[0][1][k] * 100
         val_all = group_tti_results[-1][1][k] * 100
+        val_unconf = unconf_topk.get(k, 0.0) * 100
         delta = val_all - val_0
+        delta_unconf = val_unconf - val_0
         print(f"  [TTI] Standard (K=0) Target Top-{k} Accuracy: {val_0:.2f}%")
+        print(f"  [TTI] Unconfident-Only (Margin=0.30) Top-{k} Accuracy: {val_unconf:.2f}% ({BOLD}{YELLOW}{delta_unconf:+.2f}%{RESET})")
         print(f"  [TTI] Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
         print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
         print(f"  ----------------------------------------------------------")
+    print(f"  [TTI] Unconfident Avg Groups Corrected: {avg_corrected:.2f} / {num_groups}")
     print(f"{BOLD}{GREEN}============================================================{RESET}\n")
     
     # 10. Export Active Pairwise NAM Interactions

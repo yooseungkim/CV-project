@@ -13,8 +13,6 @@ backbone:
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
   use_group_broadcasting: true  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
-  use_dino_mask: false     # Use DINOv2 self-attention silhouette foreground masking
-  dino_mask_threshold: 0.35
   use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
@@ -95,4 +93,6 @@ early_stopping:
   phase1_patience: 5
   phase2_monitor: "val_acc"
   phase2_patience: 10  # Longer patience for Phase 2 target learning
+  phase3_monitor: "val_acc"
+  phase3_patience: 5
   min_delta: 0.001

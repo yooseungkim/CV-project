@@ -1,0 +1,418 @@
+[
+    {
+        "index": 315,
+        "concept_i_idx": 16,
+        "concept_j_idx": 20,
+        "concept_i": "dots_and_globules_irregular",
+        "concept_j": "vascular_structures_absent",
+        "gate_weight": 0.112267404794693
+    },
+    {
+        "index": 209,
+        "concept_i_idx": 9,
+        "concept_j_idx": 12,
+        "concept_i": "pigmentation_localized irregular",
+        "concept_j": "regression_structures_blue areas",
+        "gate_weight": -0.08562041819095612
+    },
+    {
+        "index": 284,
+        "concept_i_idx": 13,
+        "concept_j_idx": 25,
+        "concept_i": "regression_structures_combinations",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": -0.08264290541410446
+    },
+    {
+        "index": 163,
+        "concept_i_idx": 6,
+        "concept_j_idx": 23,
+        "concept_i": "pigmentation_absent",
+        "concept_j": "vascular_structures_dotted",
+        "gate_weight": -0.07492862641811371
+    },
+    {
+        "index": 79,
+        "concept_i_idx": 3,
+        "concept_j_idx": 5,
+        "concept_i": "streaks_absent",
+        "concept_j": "streaks_regular",
+        "gate_weight": 0.07337236404418945
+    },
+    {
+        "index": 288,
+        "concept_i_idx": 14,
+        "concept_j_idx": 16,
+        "concept_i": "regression_structures_white areas",
+        "concept_j": "dots_and_globules_irregular",
+        "gate_weight": 0.07335210591554642
+    },
+    {
+        "index": 256,
+        "concept_i_idx": 11,
+        "concept_j_idx": 26,
+        "concept_i": "regression_structures_absent",
+        "concept_j": "vascular_structures_within regression",
+        "gate_weight": -0.05574362725019455
+    },
+    {
+        "index": 274,
+        "concept_i_idx": 13,
+        "concept_j_idx": 15,
+        "concept_i": "regression_structures_combinations",
+        "concept_j": "dots_and_globules_absent",
+        "gate_weight": 0.0373837873339653
+    },
+    {
+        "index": 334,
+        "concept_i_idx": 18,
+        "concept_j_idx": 20,
+        "concept_i": "blue_whitish_veil_absent",
+        "concept_j": "vascular_structures_absent",
+        "gate_weight": 0.03174685686826706
+    },
+    {
+        "index": 341,
+        "concept_i_idx": 18,
+        "concept_j_idx": 27,
+        "concept_i": "blue_whitish_veil_absent",
+        "concept_j": "vascular_structures_wreath",
+        "gate_weight": 0.027612833306193352
+    },
+    {
+        "index": 129,
+        "concept_i_idx": 5,
+        "concept_j_idx": 10,
+        "concept_i": "streaks_regular",
+        "concept_j": "pigmentation_localized regular",
+        "gate_weight": 0.024181030690670013
+    },
+    {
+        "index": 249,
+        "concept_i_idx": 11,
+        "concept_j_idx": 19,
+        "concept_i": "regression_structures_absent",
+        "concept_j": "blue_whitish_veil_present",
+        "gate_weight": -0.023845629766583443
+    },
+    {
+        "index": 143,
+        "concept_i_idx": 5,
+        "concept_j_idx": 24,
+        "concept_i": "streaks_regular",
+        "concept_j": "vascular_structures_hairpin",
+        "gate_weight": 0.023152055218815804
+    },
+    {
+        "index": 127,
+        "concept_i_idx": 5,
+        "concept_j_idx": 8,
+        "concept_i": "streaks_regular",
+        "concept_j": "pigmentation_diffuse regular",
+        "gate_weight": -0.022934822365641594
+    },
+    {
+        "index": 265,
+        "concept_i_idx": 12,
+        "concept_j_idx": 20,
+        "concept_i": "regression_structures_blue areas",
+        "concept_j": "vascular_structures_absent",
+        "gate_weight": 0.016655581071972847
+    },
+    {
+        "index": 210,
+        "concept_i_idx": 9,
+        "concept_j_idx": 13,
+        "concept_i": "pigmentation_localized irregular",
+        "concept_j": "regression_structures_combinations",
+        "gate_weight": -0.01593976654112339
+    },
+    {
+        "index": 61,
+        "concept_i_idx": 2,
+        "concept_j_idx": 11,
+        "concept_i": "pigment_network_typical",
+        "concept_j": "regression_structures_absent",
+        "gate_weight": 0.01584966480731964
+    },
+    {
+        "index": 172,
+        "concept_i_idx": 7,
+        "concept_j_idx": 12,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "regression_structures_blue areas",
+        "gate_weight": 0.015155150555074215
+    },
+    {
+        "index": 208,
+        "concept_i_idx": 9,
+        "concept_j_idx": 11,
+        "concept_i": "pigmentation_localized irregular",
+        "concept_j": "regression_structures_absent",
+        "gate_weight": 0.012342357076704502
+    },
+    {
+        "index": 122,
+        "concept_i_idx": 4,
+        "concept_j_idx": 25,
+        "concept_i": "streaks_irregular",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": 0.01127147488296032
+    },
+    {
+        "index": 230,
+        "concept_i_idx": 10,
+        "concept_j_idx": 16,
+        "concept_i": "pigmentation_localized regular",
+        "concept_j": "dots_and_globules_irregular",
+        "gate_weight": -0.009946915321052074
+    },
+    {
+        "index": 78,
+        "concept_i_idx": 3,
+        "concept_j_idx": 4,
+        "concept_i": "streaks_absent",
+        "concept_j": "streaks_irregular",
+        "gate_weight": -0.009161525405943394
+    },
+    {
+        "index": 96,
+        "concept_i_idx": 3,
+        "concept_j_idx": 22,
+        "concept_i": "streaks_absent",
+        "concept_j": "vascular_structures_comma",
+        "gate_weight": -0.00868191197514534
+    },
+    {
+        "index": 329,
+        "concept_i_idx": 17,
+        "concept_j_idx": 24,
+        "concept_i": "dots_and_globules_regular",
+        "concept_j": "vascular_structures_hairpin",
+        "gate_weight": -0.008558259345591068
+    },
+    {
+        "index": 84,
+        "concept_i_idx": 3,
+        "concept_j_idx": 10,
+        "concept_i": "streaks_absent",
+        "concept_j": "pigmentation_localized regular",
+        "gate_weight": 0.008109727874398232
+    },
+    {
+        "index": 95,
+        "concept_i_idx": 3,
+        "concept_j_idx": 21,
+        "concept_i": "streaks_absent",
+        "concept_j": "vascular_structures_arborizing",
+        "gate_weight": 0.008049044758081436
+    },
+    {
+        "index": 10,
+        "concept_i_idx": 0,
+        "concept_j_idx": 11,
+        "concept_i": "pigment_network_absent",
+        "concept_j": "regression_structures_absent",
+        "gate_weight": -0.00766844442114234
+    },
+    {
+        "index": 171,
+        "concept_i_idx": 7,
+        "concept_j_idx": 11,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "regression_structures_absent",
+        "gate_weight": 0.007657366804778576
+    },
+    {
+        "index": 53,
+        "concept_i_idx": 2,
+        "concept_j_idx": 3,
+        "concept_i": "pigment_network_typical",
+        "concept_j": "streaks_absent",
+        "gate_weight": 0.0070707593113183975
+    },
+    {
+        "index": 216,
+        "concept_i_idx": 9,
+        "concept_j_idx": 19,
+        "concept_i": "pigmentation_localized irregular",
+        "concept_j": "blue_whitish_veil_present",
+        "gate_weight": -0.006635206751525402
+    },
+    {
+        "index": 169,
+        "concept_i_idx": 7,
+        "concept_j_idx": 9,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "pigmentation_localized irregular",
+        "gate_weight": -0.006471858825534582
+    },
+    {
+        "index": 317,
+        "concept_i_idx": 16,
+        "concept_j_idx": 22,
+        "concept_i": "dots_and_globules_irregular",
+        "concept_j": "vascular_structures_comma",
+        "gate_weight": 0.005985974799841642
+    },
+    {
+        "index": 177,
+        "concept_i_idx": 7,
+        "concept_j_idx": 17,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "dots_and_globules_regular",
+        "gate_weight": 0.005787939764559269
+    },
+    {
+        "index": 223,
+        "concept_i_idx": 9,
+        "concept_j_idx": 26,
+        "concept_i": "pigmentation_localized irregular",
+        "concept_j": "vascular_structures_within regression",
+        "gate_weight": -0.005618828348815441
+    },
+    {
+        "index": 185,
+        "concept_i_idx": 7,
+        "concept_j_idx": 25,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": 0.005306119564920664
+    },
+    {
+        "index": 279,
+        "concept_i_idx": 13,
+        "concept_j_idx": 20,
+        "concept_i": "regression_structures_combinations",
+        "concept_j": "vascular_structures_absent",
+        "gate_weight": 0.005114261526614428
+    },
+    {
+        "index": 24,
+        "concept_i_idx": 0,
+        "concept_j_idx": 25,
+        "concept_i": "pigment_network_absent",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": -0.0047885156236588955
+    },
+    {
+        "index": 225,
+        "concept_i_idx": 10,
+        "concept_j_idx": 11,
+        "concept_i": "pigmentation_localized regular",
+        "concept_j": "regression_structures_absent",
+        "gate_weight": -0.004454683046787977
+    },
+    {
+        "index": 98,
+        "concept_i_idx": 3,
+        "concept_j_idx": 24,
+        "concept_i": "streaks_absent",
+        "concept_j": "vascular_structures_hairpin",
+        "gate_weight": -0.003071664599701762
+    },
+    {
+        "index": 102,
+        "concept_i_idx": 4,
+        "concept_j_idx": 5,
+        "concept_i": "streaks_irregular",
+        "concept_j": "streaks_regular",
+        "gate_weight": -0.003045996418222785
+    },
+    {
+        "index": 339,
+        "concept_i_idx": 18,
+        "concept_j_idx": 25,
+        "concept_i": "blue_whitish_veil_absent",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": 0.0025704577565193176
+    },
+    {
+        "index": 167,
+        "concept_i_idx": 6,
+        "concept_j_idx": 27,
+        "concept_i": "pigmentation_absent",
+        "concept_j": "vascular_structures_wreath",
+        "gate_weight": 0.00251971953548491
+    },
+    {
+        "index": 242,
+        "concept_i_idx": 11,
+        "concept_j_idx": 12,
+        "concept_i": "regression_structures_absent",
+        "concept_j": "regression_structures_blue areas",
+        "gate_weight": -0.002203654497861862
+    },
+    {
+        "index": 57,
+        "concept_i_idx": 2,
+        "concept_j_idx": 7,
+        "concept_i": "pigment_network_typical",
+        "concept_j": "pigmentation_diffuse irregular",
+        "gate_weight": 0.0018400800181552768
+    },
+    {
+        "index": 234,
+        "concept_i_idx": 10,
+        "concept_j_idx": 20,
+        "concept_i": "pigmentation_localized regular",
+        "concept_j": "vascular_structures_absent",
+        "gate_weight": -0.0016033430583775043
+    },
+    {
+        "index": 253,
+        "concept_i_idx": 11,
+        "concept_j_idx": 23,
+        "concept_i": "regression_structures_absent",
+        "concept_j": "vascular_structures_dotted",
+        "gate_weight": 0.0015555850695818663
+    },
+    {
+        "index": 68,
+        "concept_i_idx": 2,
+        "concept_j_idx": 18,
+        "concept_i": "pigment_network_typical",
+        "concept_j": "blue_whitish_veil_absent",
+        "gate_weight": -0.0015126209473237395
+    },
+    {
+        "index": 312,
+        "concept_i_idx": 16,
+        "concept_j_idx": 17,
+        "concept_i": "dots_and_globules_irregular",
+        "concept_j": "dots_and_globules_regular",
+        "gate_weight": 0.0014648680808022618
+    },
+    {
+        "index": 37,
+        "concept_i_idx": 1,
+        "concept_j_idx": 12,
+        "concept_i": "pigment_network_atypical",
+        "concept_j": "regression_structures_blue areas",
+        "gate_weight": -0.0013846458168700337
+    },
+    {
+        "index": 372,
+        "concept_i_idx": 24,
+        "concept_j_idx": 25,
+        "concept_i": "vascular_structures_hairpin",
+        "concept_j": "vascular_structures_linear irregular",
+        "gate_weight": 0.0011183113092556596
+    },
+    {
+        "index": 38,
+        "concept_i_idx": 1,
+        "concept_j_idx": 13,
+        "concept_i": "pigment_network_atypical",
+        "concept_j": "regression_structures_combinations",
+        "gate_weight": -0.0010319272987544537
+    },
+    {
+        "index": 176,
+        "concept_i_idx": 7,
+        "concept_j_idx": 16,
+        "concept_i": "pigmentation_diffuse irregular",
+        "concept_j": "dots_and_globules_irregular",
+        "gate_weight": 0.0010213054483756423
+    }
+]

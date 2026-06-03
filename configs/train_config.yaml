@@ -16,9 +16,7 @@ backbone:
   # Freeze final classification head weights (true/false)
   freeze_head: false
   
-  # DINOv2 Self-Attention Foreground Silhouette Masking settings (only supported for DINOv2 models)
-  use_dino_mask: false
-  dino_mask_threshold: 0.35
+  use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
@@ -47,6 +45,17 @@ training:
   
   # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
   phase2_dropout: 0.05
+  
+  # 🧠 Advanced Architectural & Sparsity settings
+  l1_lambda: 0.02  # L1 Lasso Regularization for Phase 2 classifier head
+  use_nam_head: false  # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
+  nam_hidden_dim: 8  # Hidden dimension for parallel NAM sub-networks
+  l1_warmup_epochs: 5  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
+  use_gated_nam: false  # Gated Sparse NAM head activation
+  use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
+  use_probabilistic_cbm: false  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  l1_lambda_gate: 0.01  # L1 Regularization strength on gates
+  weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.

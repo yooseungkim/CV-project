@@ -947,8 +947,52 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                             replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
                             epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
                         )
-                    concept_logits = supervised_logits
-                    latent_features = None
+                    
+                    supervised_attn = attn_weights
+                    
+                    if model.num_latent_concepts > 0:
+                        # Latent attention is PatchWiseMLPConceptHead for ViT
+                        k_val = 3
+                        B_size = features.size(0)
+                        N_patches = features.size(1)
+                        H_attn = int(N_patches ** 0.5)
+                        D_dim = features.size(-1)
+                        
+                        if getattr(model, "use_probabilistic_cbm", False):
+                            latent_mean, latent_logvar, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                            if model.training:
+                                std_l = torch.exp(0.5 * latent_logvar)
+                                eps_l = torch.randn_like(std_l)
+                                latent_logits = latent_mean + std_l * eps_l
+                            else:
+                                latent_logits = latent_mean
+                        else:
+                            latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                        
+                        latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
+                        latent_weights_transposed = latent_weights.permute(0, 2, 1)
+                        latent_k_val = latent_topk_indices.size(1)
+                        
+                        from torchvision.transforms.functional import gaussian_blur
+                        sparse_latent_maps = torch.zeros(B_size, model.num_latent_concepts, N_patches, device=device)
+                        sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
+                        sparse_latent_maps = sparse_latent_maps.view(B_size, model.num_latent_concepts, H_attn, H_attn)
+                        latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                        
+                        latent_flat_indices = latent_indices_transposed.reshape(B_size, model.num_latent_concepts * latent_k_val)
+                        latent_gathered_flat = torch.gather(
+                            features,
+                            dim=1,
+                            index=latent_flat_indices.unsqueeze(-1).expand(-1, -1, D_dim)
+                        )
+                        latent_gathered_features = latent_gathered_flat.view(B_size, model.num_latent_concepts, latent_k_val, D_dim)
+                        latent_features = torch.sum(latent_gathered_features * latent_weights_transposed.unsqueeze(-1), dim=2)
+                        
+                        concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                        attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+                    else:
+                        concept_logits = supervised_logits
+                        latent_features = None
                 else:
                     # PatchWiseMLPConceptHead
                     if getattr(model, "use_probabilistic_cbm", False):

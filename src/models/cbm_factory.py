@@ -288,105 +288,15 @@ def inject_lora_to_vit(model: nn.Module, r: int = 8, lora_alpha: float = 16.0) -
 
 
 class ViTBackboneWrapper(nn.Module):
-    def __init__(self, vit_model, use_dino_mask: bool = False, mask_threshold: float = 0.35):
+    def __init__(self, vit_model):
         """Wrapper for Vision Transformer to dynamically extract patch tokens while ignoring the CLS token.
         Ensures compatibility with internal feature representations and main training pipelines.
-        Supports DINOv2 attention silhouette foreground masking.
         """
         super().__init__()
         self.vit = vit_model
-        self.use_dino_mask = use_dino_mask
-        self.mask_threshold = mask_threshold
-        
-        if self.use_dino_mask:
-            if hasattr(self.vit, "blocks") and len(self.vit.blocks) > 0 and hasattr(self.vit.blocks[-1], "attn"):
-                attn_module = self.vit.blocks[-1].attn
-                attn_module.fused_attn = False  # Disable fused attention to force explicit weight computation
-                
-                import types
-                def custom_forward(attn_self, x, attn_mask=None, is_causal=False):
-                    B, N, C = x.shape
-                    qkv = attn_self.qkv(x).reshape(B, N, 3, attn_self.num_heads, attn_self.head_dim).permute(2, 0, 3, 1, 4)
-                    q, k, v = qkv.unbind(0)
-                    q, k = attn_self.q_norm(q), attn_self.k_norm(k)
-                    
-                    q = q * attn_self.scale
-                    attn = q @ k.transpose(-2, -1)
-                    
-                    if attn_mask is not None:
-                        from timm.layers.attention import resolve_self_attn_mask, maybe_add_mask
-                        attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
-                        attn = maybe_add_mask(attn, attn_bias)
-                        
-                    attn = attn.softmax(dim=-1)
-                    attn_self.last_attn_weights = attn
-                    
-                    attn = attn_self.attn_drop(attn)
-                    x = attn @ v
-                    
-                    x = x.transpose(1, 2).reshape(B, N, attn_self.attn_dim)
-                    x = attn_self.norm(x)
-                    x = attn_self.proj(x)
-                    x = attn_self.proj_drop(x)
-                    return x
-                
-                attn_module.forward = types.MethodType(custom_forward, attn_module)
-                print(f"{BOLD}{GREEN}[DINOv2 Masking]{RESET} Successfully patched final attention block of {self.vit.__class__.__name__} to extract self-attention maps (threshold={mask_threshold}).")
-            else:
-                print(f"{BOLD}{YELLOW}[DINOv2 Masking]{RESET} The backbone does not support attention patching (missing 'blocks' or 'attn'). Masking disabled.")
-                self.use_dino_mask = False
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        
-        if self.use_dino_mask:
-            # ── PASS 1: Extract DINOv2 self-attention map ──
-            # Run a forward pass to capture the attention maps of the final block
-            with torch.no_grad():
-                _ = self.vit.forward_features(x)
-                
-            attn = getattr(self.vit.blocks[-1].attn, "last_attn_weights", None)
-            if attn is not None:
-                # attn shape: [B, num_heads, N_tokens, N_tokens]
-                # CLS attention to all other patch tokens is at index 0 (CLS) to index 1: (all other tokens)
-                cls_attn = attn[:, :, 0, 1:]  # [B, num_heads, N_patches]
-                mean_attn = cls_attn.mean(dim=1)  # [B, N_patches]
-                
-                # Min-max normalization per-image to [0, 1] range to handle dynamic scale differences
-                min_val = mean_attn.min(dim=1, keepdim=True)[0]
-                max_val = mean_attn.max(dim=1, keepdim=True)[0]
-                norm_attn = (mean_attn - min_val) / (max_val - min_val + 1e-8)  # [B, 196]
-                
-                # Reshape to [B, 1, grid, grid] assuming grid x grid patches
-                grid_size = int(norm_attn.shape[1] ** 0.5)
-                norm_attn_grid = norm_attn.view(B, 1, grid_size, grid_size)
-                
-                # Upsample the mask to match raw image resolution [B, 1, H, W]
-                segmentation_mask = F.interpolate(
-                    norm_attn_grid, 
-                    size=(H, W), 
-                    mode='bilinear', 
-                    align_corners=False
-                )
-                
-                # Binarize mask using the configured threshold
-                segmentation_mask = (segmentation_mask > self.mask_threshold).float()  # [B, 1, H, W]
-                
-                # Apply background blur to the input image batch x
-                import torchvision.transforms.functional as TF
-                # kernel_size must be odd
-                blurred_x = TF.gaussian_blur(x, kernel_size=[21, 21])
-                
-                # Blend foreground (original) and background (blurred)
-                blurred_input = (x * segmentation_mask) + (blurred_x * (1.0 - segmentation_mask))
-                
-                # ── PASS 2: Extract features from the blended image ──
-                feats = self.vit.forward_features(blurred_input)
-            else:
-                # Fallback if attention map could not be captured
-                feats = self.vit.forward_features(x)
-        else:
-            feats = self.vit.forward_features(x)
+        feats = self.vit.forward_features(x)
             
         if isinstance(feats, tuple):
             feats = feats[0]
@@ -674,9 +584,6 @@ class UniversalFlexibleCBM(nn.Module):
         use_group_broadcasting: bool = False,
         num_groups: int = 28,
         group_mapping: Optional[List[int]] = None,  # required when use_group_broadcasting=True
-        # ── DINOv2 Attention Silhouette Mask Settings ────────────────────────
-        use_dino_mask: bool = False,
-        dino_mask_threshold: float = 0.35,
         # ── Gated Sparse NAM Head Settings ───────────────────────────────────
         use_nam_head: bool = False,
         nam_hidden_dim: int = 64,
@@ -776,7 +683,7 @@ class UniversalFlexibleCBM(nn.Module):
             # Load ViT / DINOv2 backbone with positional embedding interpolation enabled (dynamic_img_size=True)
             # This cleanly supports 224x224 input without hardcoded image sizing or silencing TypeErrors.
             vit_model = timm.create_model(backbone_name, pretrained=pretrained, dynamic_img_size=True)
-            self.backbone = ViTBackboneWrapper(vit_model, use_dino_mask=use_dino_mask, mask_threshold=dino_mask_threshold)
+            self.backbone = ViTBackboneWrapper(vit_model)
             
             # Apply LoRA 어댑터 주입 if requested
             self.lora_active = use_lora
@@ -960,11 +867,50 @@ class UniversalFlexibleCBM(nn.Module):
                     supervised_logits = supervised_mean + std * eps
                 else:
                     supervised_logits = supervised_mean
-                concept_logits = supervised_logits
-                attn_weights = supervised_attn
-                latent_features = None
             else:
                 supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+
+            if self.num_latent_concepts > 0:
+                # Latent attention is always PatchWiseMLPConceptHead for ViT
+                k_val = 3
+                B = features.size(0)
+                N_patches = features.size(1)
+                H_attn = int(math.sqrt(N_patches))
+                device = features.device
+                D = features.size(-1)
+
+                if self.use_probabilistic_cbm:
+                    latent_mean, latent_logvar, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
+                    if self.training or stochastic:
+                        std_l = torch.exp(0.5 * latent_logvar)
+                        eps_l = torch.randn_like(std_l)
+                        latent_logits = latent_mean + std_l * eps_l
+                    else:
+                        latent_logits = latent_mean
+                else:
+                    latent_logits, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
+
+                latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
+                latent_weights_transposed = latent_weights.permute(0, 2, 1)
+
+                from torchvision.transforms.functional import gaussian_blur
+                sparse_latent_maps = torch.zeros(B, self.num_latent_concepts, N_patches, device=device)
+                sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
+                sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
+                latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+
+                latent_flat_indices = latent_indices_transposed.reshape(B, self.num_latent_concepts * k_val)
+                latent_gathered_flat = torch.gather(
+                    features,
+                    dim=1,
+                    index=latent_flat_indices.unsqueeze(-1).expand(-1, -1, D)
+                )
+                latent_gathered_features = latent_gathered_flat.view(B, self.num_latent_concepts, k_val, D)
+                latent_features = torch.sum(latent_gathered_features * latent_weights_transposed.unsqueeze(-1), dim=2)
+
+                concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+            else:
                 concept_logits = supervised_logits
                 attn_weights = supervised_attn
                 latent_features = None

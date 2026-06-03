@@ -104,49 +104,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def generate_segmentation_overlay(img_np: np.ndarray, attn: Optional[torch.Tensor], use_mask: bool, threshold: float) -> Image.Image:
-    """Generate the binarized silhouette mask overlay or soft CLS-attention map overlay."""
-    if attn is None:
-        return Image.fromarray((img_np * 255).astype(np.uint8))
-        
-    try:
-        # cls_attn: [1, num_heads, N_patches]
-        cls_attn = attn[:, :, 0, 1:]
-        mean_attn = cls_attn.mean(dim=1)  # [1, N_patches]
-        
-        # Min-max normalization per image
-        min_val = mean_attn.min(dim=1, keepdim=True)[0]
-        max_val = mean_attn.max(dim=1, keepdim=True)[0]
-        norm_attn = (mean_attn - min_val) / (max_val - min_val + 1e-8)
-        
-        N_patches = norm_attn.size(1)
-        H_grid = int(math.sqrt(N_patches))
-        norm_attn_2d = norm_attn.view(1, 1, H_grid, H_grid)
-        
-        # Upsample to 224x224
-        norm_attn_upsampled = F.interpolate(norm_attn_2d, size=(224, 224), mode='bilinear', align_corners=False).squeeze().cpu().numpy()
-        
-        if use_mask:
-            # Binarized mask overlay: darken the background (multiply original image by mask * 0.75 + 0.25)
-            mask = (norm_attn_upsampled > threshold).astype(np.float32)
-            overlay = img_np * np.expand_dims(mask * 0.75 + 0.25, axis=-1)
-            overlay_img = (overlay * 255).astype(np.uint8)
-            return Image.fromarray(overlay_img)
-        else:
-            # Soft attention overlay
-            fig, ax = plt.subplots(1, 1, figsize=(4, 4))
-            ax.imshow(img_np)
-            ax.imshow(norm_attn_upsampled, cmap='jet', alpha=0.45)
-            ax.axis('off')
-            plt.tight_layout(pad=0)
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
-            buf.seek(0)
-            plt.close(fig)
-            return Image.open(buf)
-    except Exception as e:
-        print(f"Error generating segmentation overlay: {e}")
-        return Image.fromarray((img_np * 255).astype(np.uint8))
+# (generate_segmentation_overlay removed)
 
 
 def _unnormalize_tensor(img_tensor: torch.Tensor) -> np.ndarray:
@@ -323,18 +281,11 @@ def run_inference(image: Image.Image):
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
 
-    # Intercept final block's attention weights to generate segmentation overlay
-    attn = None
-    use_mask = False
-    threshold = 0.35
-    
-    seg_pil = generate_segmentation_overlay(img_np, attn, use_mask, threshold)
-
     concept_logits_list = concept_logits.squeeze(0).cpu().tolist()
 
     contrib_img = plot_concept_contributions(MODEL, concept_logits, CONCEPT_NAMES, target_class_idx)
 
-    return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np, concept_logits_list, contrib_img
+    return prediction_text, concept_vals, heatmap_gallery, img_np, concept_logits_list, contrib_img
 
 
 def show_selected_concept_heatmap(select_data: gr.SelectData, image):
@@ -597,14 +548,8 @@ def build_app() -> gr.Blocks:
                     size="lg"
                 )
 
-            # ==== Column 2: DINOv2 Foreground Segmentation Overlay ====
+            # ==== Column 2: Model Prediction & Contributions ====
             with gr.Column(scale=1):
-                gr.Markdown("### DINOv2 Foreground Segmentation")
-                seg_output = gr.Image(
-                    label="Foreground Mask Overlay",
-                    height=280,
-                    interactive=False
-                )
                 
                 gr.Markdown("### Model Prediction")
                 prediction_output = gr.Markdown(
@@ -736,13 +681,12 @@ def build_app() -> gr.Blocks:
                     gr.update(),
                     [],
                     gr.update(),
-                    gr.update(),
                     *[gr.update() for _ in concept_components],
                     *[gr.update() for _ in uncertainty_components],
                     *[gr.update() for _ in concept_accordions]
                 )
 
-            pred_text, concept_vals, gallery, seg_pil, _, concept_logits_list, contrib_img = run_inference(image)
+            pred_text, concept_vals, gallery, _, concept_logits_list, contrib_img = run_inference(image)
 
             # Build updates to reflect predicted values and accordion open/closed state
             component_updates = []
@@ -796,12 +740,12 @@ def build_app() -> gr.Blocks:
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_logits_list, gallery, seg_pil, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
+            return (pred_text, concept_logits_list, gallery, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, contrib_output, *concept_components, *uncertainty_components, *concept_accordions]
+            outputs=[prediction_output, concept_state, heatmap_gallery, contrib_output, *concept_components, *uncertainty_components, *concept_accordions]
         )
 
         repredict_btn.click(
@@ -855,14 +799,7 @@ def parse_app_args():
         '--use_lora', action='store_true', default=False,
         help="Enable LoRA adapters for ViT backbone"
     )
-    parser.add_argument(
-        '--use_dino_mask', type=str2bool, default=None,
-        help="Use DINOv2 self-attention to generate a silhouette foreground mask for background suppression"
-    )
-    parser.add_argument(
-        '--dino_mask_threshold', type=float, default=None,
-        help="Threshold to binarize DINOv2 attention map for silhouette mask"
-    )
+    # (use_dino_mask and dino_mask_threshold CLI arguments removed)
     parser.add_argument(
         '--no_grouping', action='store_true', default=False,
         help="Disable mutually exclusive concept grouping (defaults to auto-detecting from checkpoint)"
@@ -1082,8 +1019,7 @@ def main():
     use_concept_groups = True
     use_cosine_attention = getattr(args, 'use_cosine_attention', False)
     use_group_broadcasting = getattr(args, 'use_group_broadcasting', False)
-    use_dino_mask = False
-    dino_mask_threshold = 0.35
+    # (use_dino_mask and dino_mask_threshold variables removed)
     use_gated_nam = getattr(args, 'use_gated_nam', False)
     use_pairwise_nam = getattr(args, 'use_pairwise_nam', False)
     use_probabilistic_cbm = getattr(args, 'use_probabilistic_cbm', False)
@@ -1104,9 +1040,7 @@ def main():
             backbone_type = checkpoint_args.get('backbone_type', 'timm')
         if 'use_concept_groups' in checkpoint_args:
             use_concept_groups = checkpoint_args['use_concept_groups']
-        if 'use_dino_mask' in checkpoint_args:
-            use_dino_mask = checkpoint_args['use_dino_mask']
-            dino_mask_threshold = checkpoint_args.get('dino_mask_threshold', 0.35)
+        pass
         if 'use_gated_nam' in checkpoint_args:
             use_gated_nam = checkpoint_args['use_gated_nam']
         elif 'use_nam_head' in checkpoint_args:
@@ -1117,7 +1051,7 @@ def main():
             use_probabilistic_cbm = checkpoint_args['use_probabilistic_cbm']
         if 'use_concept_attention' in checkpoint_args:
             use_concept_attention = checkpoint_args['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
@@ -1136,9 +1070,7 @@ def main():
             backbone_type = bb_cfg.get('backbone_type', 'timm')
         if 'use_concept_groups' in ds_cfg:
             use_concept_groups = ds_cfg['use_concept_groups']
-        if 'use_dino_mask' in bb_cfg:
-            use_dino_mask = bb_cfg['use_dino_mask']
-            dino_mask_threshold = bb_cfg.get('dino_mask_threshold', 0.35)
+        pass
         if 'use_gated_nam' in tr_cfg:
             use_gated_nam = tr_cfg['use_gated_nam']
         elif 'use_nam_head' in tr_cfg:
@@ -1149,7 +1081,7 @@ def main():
             use_probabilistic_cbm = tr_cfg['use_probabilistic_cbm']
         if 'use_concept_attention' in bb_cfg:
             use_concept_attention = bb_cfg['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -1168,16 +1100,12 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
     
     # Command line argument override
     if getattr(args, 'no_grouping', False):
         use_concept_groups = False
         print("[Config] Command line override: Disabling concept grouping.")
-    if getattr(args, 'use_dino_mask', None) is not None:
-        use_dino_mask = args.use_dino_mask
-    if getattr(args, 'dino_mask_threshold', None) is not None:
-        dino_mask_threshold = args.dino_mask_threshold
 
     # Build concept_groups_info for dynamic softmax activation integration
     global USE_CONCEPT_GROUPS
@@ -1253,8 +1181,7 @@ def main():
         use_group_broadcasting=use_group_broadcasting,
         num_groups=num_groups,
         group_mapping=group_mapping,
-        use_dino_mask=use_dino_mask,
-        dino_mask_threshold=dino_mask_threshold,
+        # use_dino_mask and dino_mask_threshold parameters removed
         use_nam_head=use_nam_head or use_gated_nam,
         nam_hidden_dim=nam_hidden_dim,
         use_probabilistic_cbm=use_probabilistic_cbm,
