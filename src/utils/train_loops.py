@@ -670,7 +670,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity
             if hasattr(model.classifier_head, 'concept_gates'):
                 with torch.no_grad():
-                    threshold = 1e-4
+                    threshold = 0.05
                     model.classifier_head.concept_gates.copy_(
                         torch.where(
                             model.classifier_head.concept_gates.abs() < threshold,
@@ -717,7 +717,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         if hasattr(model.classifier_head, 'concept_gates'):
             with torch.no_grad():
                 gates = model.classifier_head.concept_gates.detach().cpu()
-                active_count = (gates.abs() > 1e-3).sum().item()
+                active_count = (gates.abs() > 0.0).sum().item()
                 gate_mean_val = gates.abs().mean().item()
                 tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
         
@@ -763,6 +763,12 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
     if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
         tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 2 completed. Restoring best Phase 2 weights.")
         model.load_state_dict(es_handler.best_weights)
+
+    if hasattr(model.classifier_head, 'concept_gates'):
+        with torch.no_grad():
+            gates = model.classifier_head.concept_gates.detach().cpu()
+            final_active_count = (gates.abs() > 0.0).sum().item()
+            tqdm.write(f"  {BOLD}{GREEN}[NAM Gating Post-Phase 2]{RESET} Final Active Gates (threshold=0.05): {final_active_count}/{gates.size(0)}")
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
@@ -1136,7 +1142,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity
             if hasattr(model.classifier_head, 'concept_gates'):
                 with torch.no_grad():
-                    threshold = 1e-4
+                    threshold = 0.05
                     model.classifier_head.concept_gates.copy_(
                         torch.where(
                             model.classifier_head.concept_gates.abs() < threshold,
@@ -1186,7 +1192,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         if hasattr(model.classifier_head, 'concept_gates'):
             with torch.no_grad():
                 gates = model.classifier_head.concept_gates.detach().cpu()
-                active_count = (gates.abs() > 1e-3).sum().item()
+                active_count = (gates.abs() > 0.0).sum().item()
                 gate_mean_val = gates.abs().mean().item()
                 tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
         
@@ -1229,3 +1235,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
         tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 3 completed. Restoring best Phase 3 weights.")
         model.load_state_dict(es_handler.best_weights)
+
+    if hasattr(model.classifier_head, 'concept_gates'):
+        with torch.no_grad():
+            gates = model.classifier_head.concept_gates.detach().cpu()
+            final_active_count = (gates.abs() > 0.0).sum().item()
+            tqdm.write(f"  {BOLD}{GREEN}[NAM Gating Post-Phase 3]{RESET} Final Active Gates (threshold=0.05): {final_active_count}/{gates.size(0)}")

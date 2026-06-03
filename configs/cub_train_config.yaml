@@ -12,8 +12,8 @@ backbone:
   lora_r: 16             # LoRA rank dimension
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
-  use_group_broadcasting: true  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
-  use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
+  use_group_broadcasting: false  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
+  use_concept_attention: true  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
@@ -39,7 +39,7 @@ training:
   phase2_dropout: 0.5  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
   use_gated_nam: true  # Gated Sparse NAM head activation
   use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
-  use_probabilistic_cbm: false  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  use_probabilistic_cbm: true  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
   l1_lambda_gate: 0.01  # L1 Regularization strength on gates
   weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
   
@@ -71,11 +71,16 @@ optimizer:
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
   phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
+  phase3_lr: 0.00001
   weight_decay: 0.05
-  concept_loss_type: "focal"  # Choices: ["focal", "bce"]
+  concept_loss_type: "asl"  # Choices: ["focal", "bce", "asl"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
-  focal_alpha: 0.95
-  focal_gamma: 2.5  # Focal loss focus exponent gamma
+  # focal_alpha: 0.95 
+  # focal_gamma: 2.5  # Focal loss focus exponent gamma
+  asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
+  asl_gamma_neg: 4.0    # easy negative gradient noise 강력 억제
+  asl_alpha_pos: 1.2    # positive 샘플에 static weight 부여
+  asl_clip: 0.05        # 비대칭 클리핑 threshold
   ortho_lambda: 0.0  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
@@ -93,6 +98,6 @@ early_stopping:
   phase1_patience: 5
   phase2_monitor: "val_acc"
   phase2_patience: 10  # Longer patience for Phase 2 target learning
-  phase3_monitor: "val_acc"
+  phase3_monitor: "val_joint_loss"
   phase3_patience: 5
   min_delta: 0.001

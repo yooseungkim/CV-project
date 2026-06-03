@@ -659,12 +659,14 @@ class UniversalFlexibleCBM(nn.Module):
             feature_dim, _, _ = self._infer_feature_dim()
             
             # Layer Construction for ResNet
+            print(f"{BOLD}{BLUE}[Concept Head]{RESET} ConceptAttentionLayer ({feature_dim} -> {num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
             self.supervised_attention = ConceptAttentionLayer(
                 feature_dim=feature_dim, 
                 num_concepts=num_supervised_concepts,
                 probabilistic=use_probabilistic_cbm
             )
             if self.num_latent_concepts > 0:
+                print(f"{BOLD}{BLUE}[Latent Concept Head]{RESET} ConceptAttentionLayer ({feature_dim} -> {num_latent_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
                 self.latent_attention = ConceptAttentionLayer(
                     feature_dim=feature_dim, 
                     num_concepts=num_latent_concepts,
@@ -695,7 +697,7 @@ class UniversalFlexibleCBM(nn.Module):
             print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
 
             if use_group_broadcasting:
-                print(f"{BOLD}{BLUE}[Concept Head]{RESET} GroupToConceptAttention ({embed_dim} -> groups={num_groups} -> concepts={num_supervised_concepts})")
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} GroupToConceptAttention ({embed_dim} -> groups={num_groups} -> concepts={num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
                 self.supervised_attention = GroupToConceptAttention(
                     embed_dim=embed_dim,
                     num_groups=num_groups,
@@ -704,7 +706,7 @@ class UniversalFlexibleCBM(nn.Module):
                     probabilistic=use_probabilistic_cbm
                 )
             elif use_concept_attention:
-                print(f"{BOLD}{BLUE}[Concept Head]{RESET} ViTCrossAttentionLayer ({embed_dim} -> {num_supervised_concepts})")
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} ViTCrossAttentionLayer ({embed_dim} -> {num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
                 self.supervised_attention = ViTCrossAttentionLayer(
                     embed_dim=embed_dim,
                     num_concepts=num_supervised_concepts,
@@ -712,7 +714,7 @@ class UniversalFlexibleCBM(nn.Module):
                 )
             else:
                 # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
-                print(f"{BOLD}{BLUE}[Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
                 self.supervised_attention = PatchWiseMLPConceptHead(
                     feature_dim=embed_dim,
                     num_concepts=num_supervised_concepts,
@@ -722,6 +724,7 @@ class UniversalFlexibleCBM(nn.Module):
             if self.num_latent_concepts > 0:
                 if use_group_broadcasting:
                     raise NotImplementedError("Latent concepts are not supported with group broadcasting.")
+                print(f"{BOLD}{BLUE}[Latent Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {self.num_latent_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
                 self.latent_attention = PatchWiseMLPConceptHead(
                     feature_dim=embed_dim,
                     num_concepts=self.num_latent_concepts,
@@ -765,7 +768,24 @@ class UniversalFlexibleCBM(nn.Module):
         # If 'concept_thresholds' is not in the loaded state_dict, inject it to prevent strict loading errors
         if 'concept_thresholds' not in state_dict:
             state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
-        return super().load_state_dict(state_dict, strict=strict)
+        ret = super().load_state_dict(state_dict, strict=strict)
+        
+        # Post-load Gated NAM concept gates pruning (threshold = 0.05)
+        if hasattr(self.classifier_head, 'concept_gates'):
+            with torch.no_grad():
+                gates = self.classifier_head.concept_gates
+                total_gates = gates.numel()
+                original_active = (gates.abs() > 0.0).sum().item()
+                
+                # Zero out gates <= 0.05
+                pruned_mask = gates.abs() <= 0.05
+                gates[pruned_mask] = 0.0
+                
+                final_active = (gates.abs() > 0.0).sum().item()
+                print(f"[Gated NAM Pruning] Pruned gates with absolute value <= 0.05")
+                print(f"  Original active gates (>0.0): {original_active} / {total_gates}")
+                print(f"  Final remaining gates (>0.05): {final_active} / {total_gates}")
+        return ret
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:
         """Pass a dummy tensor through the backbone to dynamically infer feature dimensions (ResNet only)."""

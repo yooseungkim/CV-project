@@ -16,7 +16,7 @@ from src.utils.visualization import generate_concept_heatmaps
 
 # Modularized utility, loss, and training loop imports
 from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos_weights, get_dataset_choices
-from src.utils.losses import SigmoidFocalLoss, GroupCrossEntropyLoss
+from src.utils.losses import SigmoidFocalLoss, AsymmetricLossWithWeight, GroupCrossEntropyLoss
 from src.utils.train_loops import train_phase1, train_phase2, train_phase3
 
 # ANSI terminal colors for highlighting
@@ -115,6 +115,10 @@ def parse_args():
     if "focal_alpha" in opt_cfg: flat_defaults["focal_alpha"] = opt_cfg["focal_alpha"]
     if "focal_gamma" in opt_cfg: flat_defaults["focal_gamma"] = opt_cfg["focal_gamma"]
     if "ortho_lambda" in opt_cfg: flat_defaults["ortho_lambda"] = opt_cfg["ortho_lambda"]
+    if "asl_gamma_pos" in opt_cfg: flat_defaults["asl_gamma_pos"] = opt_cfg["asl_gamma_pos"]
+    if "asl_gamma_neg" in opt_cfg: flat_defaults["asl_gamma_neg"] = opt_cfg["asl_gamma_neg"]
+    if "asl_alpha_pos" in opt_cfg: flat_defaults["asl_alpha_pos"] = opt_cfg["asl_alpha_pos"]
+    if "asl_clip" in opt_cfg: flat_defaults["asl_clip"] = opt_cfg["asl_clip"]
     if "lambda_ce" in opt_cfg: flat_defaults["lambda_ce"] = opt_cfg["lambda_ce"]
     if "lambda_latent_ortho" in opt_cfg: flat_defaults["lambda_latent_ortho"] = opt_cfg["lambda_latent_ortho"]
     if "lambda_latent_l1" in opt_cfg: flat_defaults["lambda_latent_l1"] = opt_cfg["lambda_latent_l1"]
@@ -168,9 +172,13 @@ def parse_args():
     parser.add_argument('--phase3_monitor', type=str, default=flat_defaults.get('phase3_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 3")
     parser.add_argument('--phase3_epochs', type=int, default=flat_defaults.get('phase3_epochs', 5), help="Number of epochs for Phase 3 (Joint Parameter Tuning)")
     parser.add_argument('--lambda_ce', type=float, default=flat_defaults.get('lambda_ce', 0.1), help="Scaling factor for Softmax Cross-Entropy loss to balance gradient scale against Focal/BCE loss")
-    parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce'], help="Concept loss function type")
+    parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce', 'asl'], help="Concept loss function type")
     parser.add_argument('--focal_alpha', type=str_or_float, default=flat_defaults.get('focal_alpha', 'dynamic'), help="Alpha parameter for Focal Loss (float or 'dynamic')")
     parser.add_argument('--focal_gamma', type=float, default=flat_defaults.get('focal_gamma', 2.0), help="Gamma parameter for Focal Loss")
+    parser.add_argument('--asl_gamma_pos', type=float, default=flat_defaults.get('asl_gamma_pos', 0.0), help="ASL: gamma for positive samples (0=no decay)")
+    parser.add_argument('--asl_gamma_neg', type=float, default=flat_defaults.get('asl_gamma_neg', 4.0), help="ASL: gamma for negative samples")
+    parser.add_argument('--asl_alpha_pos', type=float, default=flat_defaults.get('asl_alpha_pos', 1.2), help="ASL: static weight for positive samples")
+    parser.add_argument('--asl_clip', type=float, default=flat_defaults.get('asl_clip', 0.05), help="ASL: asymmetric clipping threshold")
     parser.add_argument('--ortho_lambda', type=float, default=flat_defaults.get('ortho_lambda', 0.05), help="Orthogonality regularization loss multiplier for attention map separation")
     parser.add_argument('--l1_lambda', type=float, default=flat_defaults.get('l1_lambda', 0.0), help="L1 Lasso regularization multiplier for Phase 2 classifier")
     parser.add_argument('--l1_warmup_epochs', type=int, default=flat_defaults.get('l1_warmup_epochs', 5), help="Number of warmup epochs for L1 sparsity regularization in Phase 2")
@@ -488,7 +496,19 @@ def main():
             lambda_ce=args.lambda_ce,
             loss_type=args.concept_loss_type,
             focal_alpha=focal_alpha,
-            focal_gamma=args.focal_gamma
+            focal_gamma=args.focal_gamma,
+            asl_gamma_pos=args.asl_gamma_pos,
+            asl_gamma_neg=args.asl_gamma_neg,
+            asl_alpha_pos=args.asl_alpha_pos,
+            asl_clip=args.asl_clip
+        )
+    elif args.concept_loss_type == 'asl':
+        tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} Asymmetric Loss (gamma_pos={args.asl_gamma_pos}, gamma_neg={args.asl_gamma_neg}, alpha_pos={args.asl_alpha_pos}, clip={args.asl_clip})")
+        concept_criterion = AsymmetricLossWithWeight(
+            gamma_pos=args.asl_gamma_pos,
+            gamma_neg=args.asl_gamma_neg,
+            alpha_pos=args.asl_alpha_pos,
+            clip=args.asl_clip
         )
     elif args.concept_loss_type == 'focal':
         if isinstance(args.focal_alpha, str) and args.focal_alpha.lower() == 'dynamic':

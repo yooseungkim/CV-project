@@ -69,18 +69,56 @@ class SigmoidFocalLoss(nn.Module):
             return loss.sum()
         return loss
 
+
+class AsymmetricLossWithWeight(nn.Module):
+    """비대칭 손실 함수 (ASL): gamma_pos와 gamma_neg를 분리하여 Focal Loss의 "Gamma Trap" 해결.
+    positive 예측에 대한 gradient decay를 제거하고, easy negative의 gradient noise를 강력히 억제.
+    """
+    def __init__(self, gamma_pos: float = 0.0, gamma_neg: float = 4.0,
+                 alpha_pos: float = 1.2, clip: float = 0.05,
+                 reduction: str = 'mean'):
+        super().__init__()
+        self.gamma_pos = gamma_pos
+        self.gamma_neg = gamma_neg
+        self.alpha_pos = alpha_pos
+        self.clip = clip
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+
+        # Positive / Negative 분리
+        pos_probs = probs
+        neg_probs = 1.0 - probs
+
+        # 비대칭 클리핑: negative 확률을 하한 shift하여 easy negative gradient 추가 억제
+        if self.clip > 0:
+            neg_probs = (neg_probs + self.clip).clamp(max=1.0)
+
+        # 수치 안정 로그 계산
+        pos_log = torch.clamp(pos_probs, min=1e-8).log()
+        neg_log = torch.clamp(neg_probs, min=1e-8).log()
+
+        # Focal modulator 적용 (gamma_pos=0 → positive decay 없음)
+        pos_loss = -targets * pos_log * ((1.0 - pos_probs) ** self.gamma_pos)
+        neg_loss = -(1.0 - targets) * neg_log * (probs ** self.gamma_neg)
+
+        # alpha_pos 가중치: positive에 static weight 부여
+        loss = self.alpha_pos * pos_loss + neg_loss
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
+
 class GroupCrossEntropyLoss(nn.Module):
-    def __init__(self, groups_info: list[tuple[int, int]], lambda_ce: float = 0.1, loss_type: str = 'bce', focal_alpha = None, focal_gamma: float = 2.0):
+    def __init__(self, groups_info: list[tuple[int, int]], lambda_ce: float = 0.1, loss_type: str = 'bce',
+                 focal_alpha = None, focal_gamma: float = 2.0,
+                 asl_gamma_pos: float = 0.0, asl_gamma_neg: float = 4.0,
+                 asl_alpha_pos: float = 1.2, asl_clip: float = 0.05):
         """Robust Group-level Softmax Cross Entropy Loss with Loss Scale Balancing.
-        Penalizes prediction errors within mutually exclusive attribute categories (Softmax),
-        balanced by lambda_ce against independent multi-label concept categories (Sigmoid).
-        Supports both BCE and Sigmoid Focal Loss for the Sigmoid/1D fallback categories.
-        
-        groups_info: list of (start_idx, num_feats)
-        lambda_ce: scaling hyperparameter for mutually exclusive cross entropy loss.
-        loss_type: loss type for Sigmoid fallback nodes ('bce' or 'focal').
-        focal_alpha: alpha weighting factor for Focal Loss (float, torch.Tensor, or None).
-        focal_gamma: focus exponent gamma for Focal Loss.
+        Supports BCE, Sigmoid Focal Loss, and ASL for the Sigmoid/1D fallback categories.
         """
         super().__init__()
         self.groups_info = groups_info
@@ -88,6 +126,10 @@ class GroupCrossEntropyLoss(nn.Module):
         self.loss_type = loss_type.lower()
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
+        self.asl_gamma_pos = asl_gamma_pos
+        self.asl_gamma_neg = asl_gamma_neg
+        self.asl_alpha_pos = asl_alpha_pos
+        self.asl_clip = asl_clip
         
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         loss = 0.0
@@ -114,7 +156,20 @@ class GroupCrossEntropyLoss(nn.Module):
                     active_groups += 1
             else:
                 # 2. Sigmoid / BCE / 1D fallback group (independent binary node)
-                if self.loss_type == 'focal':
+                if self.loss_type == 'asl':
+                    # ASL for 1D fallback
+                    probs = torch.sigmoid(group_logits)
+                    neg_probs = 1.0 - probs
+                    if self.asl_clip > 0:
+                        neg_probs = (neg_probs + self.asl_clip).clamp(max=1.0)
+                    pos_log = torch.clamp(probs, min=1e-8).log()
+                    neg_log = torch.clamp(neg_probs, min=1e-8).log()
+                    pos_loss = -group_targets * pos_log * ((1.0 - probs) ** self.asl_gamma_pos)
+                    neg_loss = -(1.0 - group_targets) * neg_log * (probs ** self.asl_gamma_neg)
+                    asl_loss = self.asl_alpha_pos * pos_loss + neg_loss
+                    loss += asl_loss.mean()
+                    active_groups += 1
+                elif self.loss_type == 'focal':
                     # Calculate focal loss for this individual node
                     probs = torch.sigmoid(group_logits)
                     bce_loss = F.binary_cross_entropy_with_logits(group_logits, group_targets, reduction='none')
