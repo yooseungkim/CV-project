@@ -97,6 +97,8 @@ def parse_args():
     if "scheduled_sampling_prob" in tr_cfg: flat_defaults["scheduled_sampling_prob"] = tr_cfg["scheduled_sampling_prob"]
     if "scheduled_sampling_epsilon" in tr_cfg: flat_defaults["scheduled_sampling_epsilon"] = tr_cfg["scheduled_sampling_epsilon"]
     if "phase1_label_smoothing" in tr_cfg: flat_defaults["phase1_label_smoothing"] = tr_cfg["phase1_label_smoothing"]
+    if "use_nam_head" in tr_cfg: flat_defaults["use_nam_head"] = tr_cfg["use_nam_head"]
+    if "nam_hidden_dim" in tr_cfg: flat_defaults["nam_hidden_dim"] = tr_cfg["nam_hidden_dim"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -191,6 +193,8 @@ def parse_args():
     parser.add_argument('--resume_checkpoint', type=str, default=flat_defaults.get('resume_checkpoint', None), help="Path to checkpoint .pth to resume or fine-tune from")
     parser.add_argument('--save_filename', type=str, default=None, help="Custom filename to save the final weights")
     parser.add_argument('--run_app', type=str2bool, default=flat_defaults.get('run_app', True), help="Automatically launch Gradio app after training finishes")
+    parser.add_argument('--use_nam_head', type=str2bool, default=flat_defaults.get('use_nam_head', False), help="Use GatedSparseNAMHead instead of standard nn.Linear classifier head")
+    parser.add_argument('--nam_hidden_dim', type=int, default=flat_defaults.get('nam_hidden_dim', 64), help="Hidden dimension for GatedSparseNAMHead subnetworks")
     
     args = parser.parse_args()
     return args, config_data
@@ -381,7 +385,9 @@ def main():
         num_groups=num_groups,
         group_mapping=group_mapping,
         use_dino_mask=args.use_dino_mask,
-        dino_mask_threshold=args.dino_mask_threshold
+        dino_mask_threshold=args.dino_mask_threshold,
+        use_nam_head=args.use_nam_head,
+        nam_hidden_dim=args.nam_hidden_dim
     )
     
     if args.freeze_backbone:

@@ -551,8 +551,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             # L1 Lasso Regularization on classifier_head parameters to select high-information concepts
             l1_lambda = getattr(args, "l1_lambda", 0.0)
             if l1_lambda > 0:
-                l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
-                loss_t = loss_t + l1_lambda * l1_norm
+                if hasattr(model.classifier_head, "get_sparsity_loss"):
+                    loss_t = loss_t + l1_lambda * model.classifier_head.get_sparsity_loss()
+                else:
+                    l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
+                    loss_t = loss_t + l1_lambda * l1_norm
                 
             loss_t.backward()
             optimizer.step()
@@ -840,8 +843,11 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             # L1 Lasso Regularization on classifier_head parameters
             l1_lambda = getattr(args, "l1_lambda", 0.0)
             if l1_lambda > 0:
-                l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
-                total_loss = total_loss + l1_lambda * l1_norm
+                if hasattr(model.classifier_head, "get_sparsity_loss"):
+                    total_loss = total_loss + l1_lambda * model.classifier_head.get_sparsity_loss()
+                else:
+                    l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
+                    total_loss = total_loss + l1_lambda * l1_norm
                 
             total_loss.backward()
             optimizer.step()

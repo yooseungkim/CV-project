@@ -14,6 +14,59 @@ CYAN = "\033[96m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
+class GatedSparseNAMHead(nn.Module):
+    def __init__(self, num_concepts: int = 312, num_classes: int = 200, 
+                 hidden_dim: int = 64, num_latent_concepts: int = 0):
+        super().__init__()
+        self.num_concepts = num_concepts
+        self.num_classes = num_classes
+        self.hidden_dim = hidden_dim
+        self.num_latent_concepts = num_latent_concepts
+        
+        # Parallel MLPs using Grouped Conv1d (groups=num_concepts)
+        self.conv1 = nn.Conv1d(
+            in_channels=num_concepts,
+            out_channels=num_concepts * hidden_dim,
+            kernel_size=1,
+            groups=num_concepts
+        )
+        
+        self.conv2 = nn.Conv1d(
+            in_channels=num_concepts * hidden_dim,
+            out_channels=num_concepts * num_classes,
+            kernel_size=1,
+            groups=num_concepts
+        )
+        
+        # Learnable gating parameter initialized to 1.0
+        self.concept_gates = nn.Parameter(torch.ones(num_concepts))
+        
+        if self.num_latent_concepts > 0:
+            self.latent_linear = nn.Linear(num_latent_concepts, num_classes)
+        else:
+            self.latent_linear = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.size(0)
+        supervised_x = x[:, :self.num_concepts].unsqueeze(-1)
+        
+        h = F.relu(self.conv1(supervised_x))
+        y = self.conv2(h) # Shape: [Batch, num_concepts * num_classes, 1]
+        
+        y = y.view(batch_size, self.num_concepts, self.num_classes)
+        gated_y = y * self.concept_gates.view(1, self.num_concepts, 1)
+        supervised_out = gated_y.sum(dim=1)
+        
+        if self.num_latent_concepts > 0 and self.latent_linear is not None:
+            latent_x = x[:, self.num_concepts:]
+            latent_out = self.latent_linear(latent_x)
+            return supervised_out + latent_out
+            
+        return supervised_out
+
+    def get_sparsity_loss(self) -> torch.Tensor:
+        return torch.sum(torch.abs(self.concept_gates))
+
 class ConceptAttentionLayer(nn.Module):
     def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
         """Concept-specific Spatial Cosine Attention Layer for CNN (ResNet) backbones.
@@ -534,6 +587,9 @@ class UniversalFlexibleCBM(nn.Module):
         # ── DINOv2 Attention Silhouette Mask Settings ────────────────────────
         use_dino_mask: bool = False,
         dino_mask_threshold: float = 0.35,
+        # ── Gated Sparse NAM Head Settings ───────────────────────────────────
+        use_nam_head: bool = False,
+        nam_hidden_dim: int = 64,
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -659,7 +715,16 @@ class UniversalFlexibleCBM(nn.Module):
             print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Activated Standard Flat Sigmoid Activation.")
             
         self.dropout = nn.Dropout(p=0.2)
-        self.classifier_head = nn.Linear(self.num_concepts, num_classes)
+        if use_nam_head:
+            print(f"{BOLD}{BLUE}[Classifier Head]{RESET} GatedSparseNAMHead (concepts={num_supervised_concepts} -> hidden={nam_hidden_dim} -> classes={num_classes})")
+            self.classifier_head = GatedSparseNAMHead(
+                num_concepts=num_supervised_concepts,
+                num_classes=num_classes,
+                hidden_dim=nam_hidden_dim,
+                num_latent_concepts=num_latent_concepts
+            )
+        else:
+            self.classifier_head = nn.Linear(self.num_concepts, num_classes)
         
         # Register a buffer to store dynamically-found optimal validation logit thresholds
         self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
