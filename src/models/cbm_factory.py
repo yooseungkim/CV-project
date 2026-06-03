@@ -6,6 +6,14 @@ import open_clip
 import math
 from typing import Optional, List, Tuple
 
+# ANSI terminal colors for highlighting
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+CYAN = "\033[96m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
 class ConceptAttentionLayer(nn.Module):
     def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
         """Concept-specific Spatial Cosine Attention Layer for CNN (ResNet) backbones.
@@ -147,7 +155,7 @@ def inject_lora_to_vit(model: nn.Module, r: int = 8, lora_alpha: float = 16.0) -
                 module.qkv = lora_qkv
                 injected_modules.append(lora_qkv)
                 
-    print(f"🛠️ LoRA Injector: Successfully injected LoRA (r={r}, alpha={lora_alpha}) into {len(injected_modules)} ViT attention blocks.")
+    print(f"{BOLD}{GREEN}[LoRA Injector]{RESET} Successfully injected LoRA (r={r}, alpha={lora_alpha}) into {len(injected_modules)} ViT attention blocks.")
     return injected_modules
 
 
@@ -195,9 +203,9 @@ class ViTBackboneWrapper(nn.Module):
                     return x
                 
                 attn_module.forward = types.MethodType(custom_forward, attn_module)
-                print(f"👁️ DINOv2 Masking: Successfully patched final attention block of {self.vit.__class__.__name__} to extract self-attention maps (threshold={mask_threshold}).")
+                print(f"{BOLD}{GREEN}[DINOv2 Masking]{RESET} Successfully patched final attention block of {self.vit.__class__.__name__} to extract self-attention maps (threshold={mask_threshold}).")
             else:
-                print("⚠️ DINOv2 Masking: The backbone does not support attention patching (missing 'blocks' or 'attn'). Masking disabled.")
+                print(f"{BOLD}{YELLOW}[DINOv2 Masking]{RESET} The backbone does not support attention patching (missing 'blocks' or 'attn'). Masking disabled.")
                 self.use_dino_mask = False
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -579,9 +587,9 @@ class UniversalFlexibleCBM(nn.Module):
                             block.conv2.dilation = (2, 2)
                             block.conv2.padding = (2, 2)
                             
-                    print("🛠️ True 14x14 Dilated Surgery: Modified layer4 strides to (1, 1) and conv dilations to (2, 2) to preserve receptive field alignment.")
+                    print(f"{BOLD}{GREEN}[Dilated Surgery]{RESET} Modified layer4 strides to (1, 1) and conv dilations to (2, 2) to preserve receptive field alignment.")
                 except Exception as e:
-                    print(f"⚠️ Warning: Stride surgery failed on resnet backbone: {e}. Falling back to standard stride.")
+                    print(f"{BOLD}{YELLOW}[Warning]{RESET} Stride surgery failed on resnet backbone: {e}. Falling back to standard stride.")
             
             # Dynamic Feature Dimension Inference
             feature_dim, _, _ = self._infer_feature_dim()
@@ -618,10 +626,10 @@ class UniversalFlexibleCBM(nn.Module):
             
             # Extract embed_dim from the Vit model
             embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
-            print(f"🛠️ Dual-Backbone Factory: Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
+            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
 
             # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
-            print(f"🛠️ Concept Head: PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
+            print(f"{BOLD}{BLUE}[Concept Head]{RESET} PatchWiseMLPConceptHead ({embed_dim} -> 384 -> {num_supervised_concepts})")
             self.supervised_attention = PatchWiseMLPConceptHead(
                 feature_dim=embed_dim,
                 num_concepts=num_supervised_concepts,
@@ -642,13 +650,13 @@ class UniversalFlexibleCBM(nn.Module):
             # Sigmoid is applied implicitly inside BCEWithLogitsLoss during training.
             # For inference / visualization we use sigmoid explicitly.
             self.concept_activation = nn.Sigmoid()
-            print("🛠️ Dual-Backbone Factory: Group Broadcasting mode — BCEWithLogitsLoss compatible (Sigmoid activation for inference).")
+            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Group Broadcasting mode — BCEWithLogitsLoss compatible (Sigmoid activation for inference).")
         elif concept_groups_info is not None:
             self.concept_activation = GroupSoftmaxActivation(concept_groups_info)
-            print(f"🛠️ Dual-Backbone Factory: Activated Mutual Exclusive Group Softmax over {len(concept_groups_info)} groups.")
+            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Activated Mutual Exclusive Group Softmax over {len(concept_groups_info)} groups.")
         else:
             self.concept_activation = nn.Sigmoid()
-            print("🛠️ Dual-Backbone Factory: Activated Standard Flat Sigmoid Activation.")
+            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Activated Standard Flat Sigmoid Activation.")
             
         self.dropout = nn.Dropout(p=0.2)
         self.classifier_head = nn.Linear(self.num_concepts, num_classes)
@@ -794,11 +802,11 @@ class UniversalFlexibleCBM(nn.Module):
                     param.requires_grad = True
                 else:
                     param.requires_grad = False
-            print("🔓 LoRA Unfreeze: Activated only LoRA adapter parameters for training.")
+            print(f"{BOLD}{GREEN}[LoRA Unfreeze]{RESET} Activated only LoRA adapter parameters for training.")
         else:
             for param in self.backbone.parameters():
                 param.requires_grad = True
-            print("🔓 Full Unfreeze: Activated all backbone parameters for training.")
+            print(f"{BOLD}{GREEN}[Full Unfreeze]{RESET} Activated all backbone parameters for training.")
 
     def freeze_classifier(self):
         """Freezes the classifier head parameters."""

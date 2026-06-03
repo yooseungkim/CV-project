@@ -19,6 +19,15 @@ from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos
 from src.utils.losses import SigmoidFocalLoss, GroupCrossEntropyLoss
 from src.utils.train_loops import train_phase1, train_phase2, train_phase3
 
+# ANSI terminal colors for highlighting
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+CYAN = "\033[96m"
+MAGENTA = "\033[95m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
 
 def parse_args():
     # Stage 1: Parse only the --config_path argument
@@ -38,7 +47,7 @@ def parse_args():
             import json
             with open(temp_args.config_path, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
-        tqdm.write(f"  📄 Config loaded: {temp_args.config_path}")
+        tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Loaded config file: {temp_args.config_path}")
         
     flat_defaults = {}
     
@@ -193,10 +202,10 @@ def main():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = f"{args.backbone_name}-cbm-{timestamp}"
 
-    tqdm.write(f"\n{'='*60}")
-    tqdm.write(f"  🚀 Training Run: {run_name}")
-    tqdm.write(f"  📦 Device: {device}")
-    tqdm.write(f"{'='*60}")
+    tqdm.write(f"\n{BOLD}{CYAN}{'='*60}{RESET}")
+    tqdm.write(f"  {BOLD}{CYAN}[Training Run]{RESET} {run_name}")
+    tqdm.write(f"  {BOLD}{CYAN}[Device]{RESET} {device}")
+    tqdm.write(f"{BOLD}{CYAN}{'='*60}{RESET}")
 
     # 1. Dataset & DataLoader Factory Setup
     if args.dataset == 'milk10k':
@@ -248,17 +257,17 @@ def main():
     num_concepts_total = num_concepts_supervised + args.latent_concepts
     num_classes = resolved_config["num_classes"]
 
-    tqdm.write(f"  📂 Dataset: {args.dataset} | Supervised Concepts: {num_concepts_supervised} | Latent Concepts: {args.latent_concepts} | Classes: {num_classes}")
-    tqdm.write(f"  📊 Train: {len(train_dataset)} samples | Val: {len(val_dataset)} samples")
+    tqdm.write(f"  {BOLD}{BLUE}[Dataset]{RESET} {args.dataset} | Supervised Concepts: {num_concepts_supervised} | Latent Concepts: {args.latent_concepts} | Classes: {num_classes}")
+    tqdm.write(f"  {BOLD}{BLUE}[Samples]{RESET} Train: {len(train_dataset)} | Val: {len(val_dataset)}")
     
     # Log target class names if available
     target_classes = resolved_config.get("target_classes", [])
     if target_classes:
-        tqdm.write(f"  🏷️  Classes: {target_classes}")
+        tqdm.write(f"  {BOLD}{BLUE}[Classes]{RESET} {target_classes}")
 
     num_workers = args.num_workers
     if getattr(train_dataset, "cache_in_memory", False):
-        tqdm.write("  ⚡ In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
+        tqdm.write(f"  {BOLD}{GREEN}[Cache]{RESET} In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
         num_workers = 0
 
     train_loader = DataLoader(
@@ -306,13 +315,13 @@ def main():
                 concept_groups_info.append((start, num))
                 if num > 1:
                     grouped_count += 1
-        tqdm.write(f"  📂 Group-level Softmax Activation: Configured {grouped_count} mutually exclusive groups out of {len(train_dataset.concept_features_info)} total categories.")
+        tqdm.write(f"  {BOLD}{BLUE}[Softmax Group]{RESET} Configured {grouped_count} mutually exclusive groups out of {len(train_dataset.concept_features_info)} total categories.")
     else:
-        tqdm.write("  📂 Group-level Softmax Activation: DISABLED (Sigmoid activation fallback active).")
+        tqdm.write(f"  {BOLD}{BLUE}[Softmax Group]{RESET} DISABLED (Sigmoid activation fallback active).")
 
     # 2. Model Initialization
-    tqdm.write(f"  🧠 Model: {args.backbone_type}/{args.backbone_name}")
-    tqdm.write(f"  🧬 Concepts - Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
+    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} {args.backbone_type}/{args.backbone_name}")
+    tqdm.write(f"  {BOLD}{BLUE}[Concepts]{RESET} Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
 
     # 2a. Build group_mapping for GroupToConceptAttention (if requested)
     group_mapping = None
@@ -353,9 +362,9 @@ def main():
             )
             # When using group broadcasting, disable Group Softmax (it conflicts with independent BCE)
             concept_groups_info = None
-            tqdm.write(f"  📡 Group Broadcasting: {num_groups} anatomical groups → {num_concepts_supervised} independent BCE classifiers (Group Softmax disabled).")
+            tqdm.write(f"  {BOLD}{BLUE}[Broadcasting]{RESET} {num_groups} anatomical groups -> {num_concepts_supervised} independent BCE classifiers (Group Softmax disabled).")
         else:
-            tqdm.write("  ⚠️  use_group_broadcasting=True but concept config information could not be resolved. Falling back to standard attention.")
+            tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} use_group_broadcasting=True but concept config information could not be resolved. Falling back to standard attention.")
 
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
@@ -377,15 +386,15 @@ def main():
     
     if args.freeze_backbone:
         model.freeze_backbone()
-        tqdm.write("  🔒 Backbone frozen")
+        tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Backbone frozen")
         
     if args.freeze_head:
         model.freeze_classifier()
-        tqdm.write("  🔒 Classifier head frozen")
+        tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Classifier head frozen")
         
     if args.resume_checkpoint:
         if os.path.exists(args.resume_checkpoint):
-            tqdm.write(f"  🔄 Loading pre-trained weights from: {args.resume_checkpoint}")
+            tqdm.write(f"  {BOLD}{CYAN}[Resume]{RESET} Loading pre-trained weights from: {args.resume_checkpoint}")
             loaded_checkpoint = torch.load(args.resume_checkpoint, map_location=device, weights_only=True)
             if isinstance(loaded_checkpoint, dict) and 'state_dict' in loaded_checkpoint:
                 state_dict = loaded_checkpoint['state_dict']
@@ -416,26 +425,26 @@ def main():
 
             old_mha_keys = {k for k in state_dict if ".cross_attention." in k}
             if old_mha_keys:
-                tqdm.write(f"  ⚠️  Detected {len(old_mha_keys)} legacy MHA key(s). Migrating to cosine-attention layout…")
+                tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} Detected {len(old_mha_keys)} legacy MHA key(s). Migrating to cosine-attention layout...")
                 state_dict = _migrate_state_dict(state_dict)
-                tqdm.write("  ✅  State-dict migration complete.")
+                tqdm.write(f"  {BOLD}{GREEN}[Migration]{RESET} State-dict migration complete.")
 
             try:
                 model.load_state_dict(state_dict, strict=True)
-                tqdm.write("  ✅ Weights loaded successfully (strict match).")
+                tqdm.write(f"  {BOLD}{GREEN}[Success]{RESET} Weights loaded successfully (strict match).")
             except RuntimeError as e:
-                tqdm.write(f"  ⚠️ Warning: Strict loading failed. Attempting non-strict load. Error: {e}")
+                tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} Strict loading failed. Attempting non-strict load. Error: {e}")
                 model.load_state_dict(state_dict, strict=False)
-                tqdm.write("  ✅ Weights loaded successfully (non-strict match).")
+                tqdm.write(f"  {BOLD}{GREEN}[Success]{RESET} Weights loaded successfully (non-strict match).")
         else:
-            tqdm.write(f"  ❌ Error: Checkpoint path '{args.resume_checkpoint}' does not exist. Starting training from scratch.")
+            tqdm.write(f"  {BOLD}{YELLOW}[Error]{RESET} Checkpoint path '{args.resume_checkpoint}' does not exist. Starting training from scratch.")
             
     model.to(device)
 
     # 3. Loss & Optimizer Setup
     if getattr(args, 'use_group_broadcasting', False):
         pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised).to(device)
-        tqdm.write(f"  🎯 Concept Loss: BCEWithLogitsLoss (Group Broadcasting mode) with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
+        tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} BCEWithLogitsLoss (Group Broadcasting mode) with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
         concept_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
     elif concept_groups_info is not None:
         # Determine alpha value for Focal Loss if chosen as fallback
@@ -449,7 +458,7 @@ def main():
                 focal_alpha = float(args.focal_alpha)
                 
         tqdm.write(
-            f"  🎯 Concept Loss: Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups, "
+            f"  {BOLD}{BLUE}[Concept Loss]{RESET} Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups, "
             f"lambda_ce={args.lambda_ce}, fallback_loss={args.concept_loss_type})"
         )
         concept_criterion = GroupCrossEntropyLoss(
@@ -465,15 +474,15 @@ def main():
             pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised)
             focal_alpha = pos_weights / (1.0 + pos_weights)
             focal_alpha = focal_alpha.to(device)
-            tqdm.write(f"  🎯 Concept Loss: Sigmoid Focal Loss with DYNAMIC alpha (first 5 shown): {[f'{a:.4f}' for a in focal_alpha[:5].tolist()]}, gamma={args.focal_gamma}")
+            tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} Sigmoid Focal Loss with DYNAMIC alpha (first 5 shown): {[f'{a:.4f}' for a in focal_alpha[:5].tolist()]}, gamma={args.focal_gamma}")
             concept_criterion = SigmoidFocalLoss(alpha=focal_alpha, gamma=args.focal_gamma)
         else:
-            tqdm.write(f"  🎯 Concept Loss: Sigmoid Focal Loss (alpha={args.focal_alpha}, gamma={args.focal_gamma})")
+            tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} Sigmoid Focal Loss (alpha={args.focal_alpha}, gamma={args.focal_gamma})")
             concept_criterion = SigmoidFocalLoss(alpha=args.focal_alpha, gamma=args.focal_gamma)
     else:
         # Calculate positive weights dynamically for BCEWithLogitsLoss to handle concept sparsity
         pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised).to(device)
-        tqdm.write(f"  ⚖️  Concept Loss: BCEWithLogitsLoss with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
+        tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} BCEWithLogitsLoss with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
         concept_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
     
     if num_classes == 1:
@@ -521,7 +530,7 @@ def main():
             name=run_name,
             config=vars(args)
         )
-        tqdm.write(f"  📡 W&B run initialized")
+        tqdm.write(f"  {BOLD}{BLUE}[W&B]{RESET} Run initialized successfully.")
 
     tqdm.write(f"{'='*60}\n")
     
@@ -542,8 +551,24 @@ def main():
             resolved_config=resolved_config,
             concept_groups_info=concept_groups_info
         )
+        
+        # Safety Backup: Save intermediate Phase 1 checkpoint to allow resuming Phase 2
+        save_subdir = os.path.join(args.save_dir, args.backbone_name)
+        os.makedirs(save_subdir, exist_ok=True)
+        phase1_save_filename = args.save_filename or f"{args.dataset}_{args.backbone_name}_latent{args.latent_concepts}_phase1.pt"
+        if not phase1_save_filename.endswith("_phase1.pt") and not phase1_save_filename.endswith("_phase1.pth"):
+            phase1_save_filename = phase1_save_filename.replace(".pt", "_phase1.pt").replace(".pth", "_phase1.pth")
+        phase1_save_path = os.path.join(save_subdir, phase1_save_filename)
+        
+        checkpoint_p1 = {
+            'state_dict': model.state_dict(),
+            'config': config_data,
+            'args': vars(args)
+        }
+        torch.save(checkpoint_p1, phase1_save_path)
+        tqdm.write(f"\n{BOLD}{GREEN}[Safety Backup]{RESET} Phase 1 complete! Saved intermediate checkpoint to: {phase1_save_path}\n")
     else:
-        tqdm.write("  Skipping Phase 1: phase1_epochs is 0.")
+        tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 1: phase1_epochs is 0.")
         
     # Phase 2: Target Learning
     phase2_epochs = args.phase2_epochs if args.phase2_epochs is not None else args.epochs
@@ -562,7 +587,7 @@ def main():
             num_classes=num_classes
         )
     else:
-        tqdm.write("  Skipping Phase 2: phase2_epochs is 0.")
+        tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 2: phase2_epochs is 0.")
     
     # Phase 3: Joint Parameter Tuning
     if getattr(args, "phase3_epochs", 5) > 0:
@@ -601,18 +626,18 @@ def main():
     }
     torch.save(checkpoint, save_path)
     
-    tqdm.write(f"\n{'='*60}")
-    tqdm.write(f"  ✅ Training complete!")
-    tqdm.write(f"  💾 Weights saved: {save_path}")
-    tqdm.write(f"  🖼️  Heatmaps saved: visualizations/{run_name}/")
-    tqdm.write(f"{'='*60}")
+    tqdm.write(f"\n{BOLD}{GREEN}{'='*60}{RESET}")
+    tqdm.write(f"  {BOLD}{GREEN}[Success] Training complete!{RESET}")
+    tqdm.write(f"  {BOLD}{GREEN}[Save]{RESET} Weights saved to: {save_path}")
+    tqdm.write(f"  {BOLD}{GREEN}[Save]{RESET} Heatmaps saved to: visualizations/{run_name}/")
+    tqdm.write(f"{BOLD}{GREEN}{'='*60}{RESET}")
 
     if args.use_wandb:
         wandb.finish()
 
     # Automatically launch Gradio app using subprocess to execute app.py
     if args.run_app:
-        tqdm.write(f"\n🚀 Launching Gradio inference application automatically...")
+        tqdm.write(f"\n{BOLD}{CYAN}[Gradio]{RESET} Launching inference application automatically...")
         import subprocess
         import sys
         
@@ -633,7 +658,7 @@ def main():
         try:
             subprocess.run(cmd)
         except KeyboardInterrupt:
-            tqdm.write("\n👋 Gradio app stopped by user.")
+            tqdm.write(f"\n{BOLD}{YELLOW}[Gradio]{RESET} Gradio app stopped by user.")
 
 if __name__ == "__main__":
     main()

@@ -129,11 +129,11 @@ if __name__ == "__main__":
     
     # 입력 텐서의 그래디언트 유입 상태 검증
     assert dummy_backbone_features.grad is not None, "Gradient did not flow back to input features!"
-    print("✅ Gradient successfully backpropagated to input features.")
+    print("Gradient successfully backpropagated to input features.")
     
     # 파라미터 그래디언트 상태 검증
     for name, head in extractor.heads.items():
         assert head.weight.grad is not None, f"Gradient not computed for head: {name}"
-    print("✅ Gradients computed successfully for all heads parameters.")
+    print("Gradients computed successfully for all heads parameters.")
     
-    print("\n🎉 Unit Test successfully passed!")
+    print("\nUnit Test successfully passed!")

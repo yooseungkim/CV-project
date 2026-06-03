@@ -14,6 +14,15 @@ from src.data.derm7pt import Derm7PtDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.metrics import calculate_accuracy, calculate_concept_metrics
 
+# ANSI terminal colors for highlighting
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+CYAN = "\033[96m"
+MAGENTA = "\033[95m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Concept Bottleneck Model Evaluation & Test-Time Intervention (TTI) Benchmark")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to saved CBM model checkpoint (.pt or .pth)")
@@ -253,9 +262,9 @@ def main():
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"Checkpoint not found at: {args.checkpoint}")
         
-    tqdm.write(f"\n============================================================")
-    tqdm.write(f"  🔍 Loading CBM Checkpoint: {args.checkpoint}")
-    tqdm.write(f"============================================================")
+    tqdm.write(f"\n{BOLD}{CYAN}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{CYAN}[Checkpoint]{RESET} Loading CBM Checkpoint: {args.checkpoint}")
+    tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}")
     
     # 1. Load checkpoint meta to auto-detect model configs
     loaded = torch.load(args.checkpoint, map_location='cpu')
@@ -278,7 +287,7 @@ def main():
     if not filter_rare_concepts:
         filter_rare_concepts = checkpoint_config.get('dataset', {}).get('filter_rare_concepts', False)
     
-    tqdm.write(f"  📦 Auto-detected config:")
+    tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
     tqdm.write(f"     ├─ use_lora: {use_lora} (r={lora_r}, alpha={lora_alpha})")
@@ -301,7 +310,7 @@ def main():
             filtered_path = concept_config_path.replace(".json", "_filtered.json")
             if os.path.exists(filtered_path):
                 concept_config_path = filtered_path
-                tqdm.write(f"     ℹ️ Redirected concept_config to: {concept_config_path}")
+                tqdm.write(f"     [Config] Redirected concept_config to: {concept_config_path}")
         
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
@@ -384,9 +393,9 @@ def main():
     model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
     
-    tqdm.write(f"\n============================================================")
-    tqdm.write(f"  🎬 Running Test Set Evaluation...")
-    tqdm.write(f"============================================================")
+    tqdm.write(f"\n{BOLD}{MAGENTA}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Evaluation]{RESET} Running Test Set Evaluation...")
+    tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
     
     # 5. Run standard evaluation
     topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
@@ -396,20 +405,20 @@ def main():
         device
     )
     
-    tqdm.write(f"\n📈 Standard CBM Test Performance:")
-    tqdm.write(f"   🎯 Target Accuracy (Top-1)  : {topk_accs.get(1, 0.0)*100:.2f}%")
-    if 3 in topk_accs: tqdm.write(f"   🎯 Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
-    if 5 in topk_accs: tqdm.write(f"   🎯 Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
-    if 10 in topk_accs: tqdm.write(f"   🎯 Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
-    tqdm.write(f"   🧬 Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
-    tqdm.write(f"   🧬 Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
-    tqdm.write(f"   🧬 Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
+    tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM Test Performance:{RESET}")
+    tqdm.write(f"   Target Accuracy (Top-1)  : {BOLD}{GREEN}{topk_accs.get(1, 0.0)*100:.2f}%{RESET}")
+    if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
+    if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
+    if 10 in topk_accs: tqdm.write(f"   Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
+    tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
+    tqdm.write(f"   Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
+    tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
     
     # 6. Run Group-level Test-Time Intervention (TTI)
-    tqdm.write(f"\n============================================================")
-    tqdm.write(f"  🧑‍⚕️ Running Group-level Test-Time Intervention (TTI)...")
+    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{BLUE}[TTI - Group Level]{RESET} Running Group-level Test-Time Intervention (TTI)...")
     tqdm.write(f"  (Correcting anatomical attribute groups in order of prediction error)")
-    tqdm.write(f"============================================================")
+    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
     
     group_tti_results = run_tti_group_level(
         model, 
@@ -445,10 +454,10 @@ def main():
     print(border)
     
     # 7. Run Individual Concept-level Test-Time Intervention (TTI)
-    tqdm.write(f"\n============================================================")
-    tqdm.write(f"  🧑‍⚕️ Running Individual Concept-level TTI...")
+    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Running Individual Concept-level TTI...")
     tqdm.write(f"  (Correcting individual concepts by percentage)")
-    tqdm.write(f"============================================================")
+    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
     
     concept_tti_results = run_tti_concept_level(
         model, 
@@ -483,9 +492,9 @@ def main():
     print(border_concept)
     
     # 8. Run "Not Visible / Occluded" Only TTI under different logit margins
-    print("\n============================================================")
-    print("  Searching for the optimal logit margin to achieve ~2-3 corrected groups...")
-    print("============================================================")
+    print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
+    print(f"  {BOLD}{YELLOW}[Margin Search]{RESET} Searching for the optimal logit margin to achieve ~2-3 corrected groups...")
+    print(f"{BOLD}{YELLOW}============================================================{RESET}")
     
     logit_margin_candidates = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0]
     print("| Logit Margin | Top-1 Accuracy | Top-3 Accuracy | Avg Groups Corrected |")
@@ -505,9 +514,9 @@ def main():
     print("============================================================\n")
     
     # 9. Evaluate Chosen Sweet-Spot Logit Margin (0.30)
-    print("============================================================")
-    print("  Running Unconfident-Only TTI with Selected Logit Margin (0.30)...")
-    print("============================================================")
+    print(f"{BOLD}{YELLOW}============================================================{RESET}")
+    print(f"  {BOLD}{YELLOW}[Unconfident TTI]{RESET} Running Unconfident-Only TTI with Selected Logit Margin (0.30)...")
+    print(f"{BOLD}{YELLOW}============================================================{RESET}")
     unconf_topk, avg_corrected = run_tti_unconfident_only(
         model, 
         concept_logits, 
@@ -526,17 +535,17 @@ def main():
     print("============================================================\n")
     
     # Summary of accomplishments with Top-K metrics
-    print(f"\n============================================================")
-    print(f"  ✅ TTI Benchmark Evaluation Complete!")
+    print(f"\n{BOLD}{GREEN}============================================================{RESET}")
+    print(f"  {BOLD}{GREEN}[Success] TTI Benchmark Evaluation Complete!{RESET}")
     for k in available_ks:
         val_0 = group_tti_results[0][1][k] * 100
         val_all = group_tti_results[-1][1][k] * 100
         delta = val_all - val_0
-        print(f"  🌟 Standard (K=0) Target Top-{k} Accuracy: {val_0:.2f}%")
-        print(f"  🌟 Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
-        print(f"  📈 Top-{k} Intervention headroom (TTI Delta): {delta:+.2f}%")
+        print(f"  [TTI] Standard (K=0) Target Top-{k} Accuracy: {val_0:.2f}%")
+        print(f"  [TTI] Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
+        print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
         print(f"  ----------------------------------------------------------")
-    print(f"============================================================\n")
+    print(f"{BOLD}{GREEN}============================================================{RESET}\n")
 
 
 if __name__ == "__main__":

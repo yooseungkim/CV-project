@@ -205,7 +205,7 @@ class CUB2011Dataset(BaseDataset):
                 try:
                     with open(filtered_path, 'w', encoding='utf-8') as f:
                         json.dump(filtered_config, f, indent=2, ensure_ascii=False)
-                    print(f"🎉 Saved filtered concept configuration to: {filtered_path}")
+                    print(f"[Config] Saved filtered concept configuration to: {filtered_path}")
                 except Exception as e:
                     print(f"Warning: Failed to save filtered concept configuration to {filtered_path}: {e}")
         else:

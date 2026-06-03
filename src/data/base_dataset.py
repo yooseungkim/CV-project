@@ -71,14 +71,14 @@ class BaseDataset(Dataset, ABC):
         
         if estimated_gb > max_cache_size_gb:
             tqdm.write(
-                f"  ⚠️  Dataset too large for caching ({estimated_gb:.2f} GB > {max_cache_size_gb} GB). "
+                f"  [Cache] Warning: Dataset too large for caching ({estimated_gb:.2f} GB > {max_cache_size_gb} GB). "
                 f"Falling back to on-the-fly loading."
             )
             self.cache_in_memory = False
             return
         
         tqdm.write(
-            f"  💾 Caching {len(self)} samples into memory "
+            f"  [Cache] Caching {len(self)} samples into memory "
             f"(estimated disk size: {estimated_gb:.2f} GB)..."
         )
         
@@ -90,7 +90,7 @@ class BaseDataset(Dataset, ABC):
             self._cache[idx] = self._load_sample(idx)
         
         self._cache_populated = True
-        tqdm.write(f"  ✅ Cache ready for [{self.split}] split ({len(self)} samples)")
+        tqdm.write(f"  [Cache] Cache ready for [{self.split}] split ({len(self)} samples)")
 
     @abstractmethod
     def _load_sample(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

@@ -197,7 +197,7 @@ def run_inference(image: Image.Image):
             idx = top_idxs[i].item()
             p = top_probs[i].item()
             name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
-            marker = "🔴" if i == 0 else "⚪"
+            marker = ">" if i == 0 else " "
             lines.append(f"{marker} **{name}**: {p:.4f}")
         prediction_text = "\n".join(lines)
 
@@ -344,7 +344,7 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
             idx = top_idxs[i].item()
             p = top_probs[i].item()
             name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
-            marker = "🔴" if i == 0 else "⚪"
+            marker = ">" if i == 0 else " "
             lines.append(f"{marker} **{name}**: {p:.4f}")
         return "\n".join(lines)
 
@@ -435,7 +435,7 @@ def build_app() -> gr.Blocks:
     with gr.Blocks(title="Attention-CBM Explorer") as app:
 
         # ---- Header ----
-        gr.HTML("<div class='main-title'>🔬 Attention-CBM Explorer</div>")
+        gr.HTML("<div class='main-title'>Attention-CBM Explorer</div>")
         gr.HTML("<div class='subtitle'>Interactive Concept Bottleneck Model — Inference & Human-in-the-Loop</div>")
 
         # ---- State for concept values ----
@@ -444,35 +444,35 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             # ==== Column 1: Input ====
             with gr.Column(scale=1):
-                gr.Markdown("### 📤 Input Image")
+                gr.Markdown("### Input Image")
                 input_image = gr.Image(
                     type="pil",
                     label="Upload a dermoscopy image",
                     height=280
                 )
                 run_btn = gr.Button(
-                    "🚀 Run Inference",
+                    "Run Inference",
                     variant="primary",
                     size="lg"
                 )
 
             # ==== Column 2: DINOv2 Foreground Segmentation Overlay ====
             with gr.Column(scale=1):
-                gr.Markdown("### 👁️ DINOv2 Foreground Segmentation")
+                gr.Markdown("### DINOv2 Foreground Segmentation")
                 seg_output = gr.Image(
                     label="Foreground Mask Overlay",
                     height=280,
                     interactive=False
                 )
                 
-                gr.Markdown("### 🎯 Model Prediction")
+                gr.Markdown("### Model Prediction")
                 prediction_output = gr.Markdown(
                     value="*Upload an image and click Run Inference*"
                 )
 
             # ==== Column 3: Heatmaps ====
             with gr.Column(scale=2):
-                gr.Markdown("### 🖼️ Concept Attention Heatmaps")
+                gr.Markdown("### Concept Attention Heatmaps")
                 heatmap_gallery = gr.Gallery(
                     label="Per-concept attention maps",
                     columns=4,
@@ -484,7 +484,7 @@ def build_app() -> gr.Blocks:
         gr.Markdown("---")
 
         # ---- Human-in-the-Loop Section ----
-        gr.Markdown("### 🎛️ Human-in-the-Loop: Concept Intervention")
+        gr.Markdown("### Human-in-the-Loop: Concept Intervention")
         gr.Markdown(
             "Adjust the concept values below and click **Re-predict** to see how "
             "changes in individual concepts affect the final classification. "
@@ -548,7 +548,7 @@ def build_app() -> gr.Blocks:
 
             with gr.Column(scale=1):
                 repredict_btn = gr.Button(
-                    "🔄 Re-predict with adjusted concepts",
+                    "Re-predict with adjusted concepts",
                     variant="secondary",
                     size="lg"
                 )
@@ -728,17 +728,17 @@ def main():
                             orig_dims += 1
                     if checkpoint_dims < orig_dims:
                         use_filtered = True
-                        print(f"🕵️ Dimension mismatch detected: Checkpoint has {checkpoint_dims} dimensions, but original config has {orig_dims}. Attempting to use filtered config.")
+                        print(f"[Config] Dimension mismatch detected: Checkpoint has {checkpoint_dims} dimensions, but original config has {orig_dims}. Attempting to use filtered config.")
                         
             if use_filtered:
                 filtered_path = args.concept_config_path.replace(".json", "_filtered.json")
                 if os.path.exists(filtered_path):
-                    print(f"🔄 Automatically redirecting concept config to: {filtered_path}")
+                    print(f"[Config] Automatically redirecting concept config to: {filtered_path}")
                     args.concept_config_path = filtered_path
                 else:
-                    print(f"⚠️ Warning: Checkpoint indicates rare concept filtering, but filtered config was not found at: {filtered_path}")
+                    print(f"[Config] Warning: Checkpoint indicates rare concept filtering, but filtered config was not found at: {filtered_path}")
         except Exception as e:
-            print(f"⚠️ Pre-loading checkpoint failed to auto-detect filtering settings: {e}")
+            print(f"[Config] Pre-loading checkpoint failed to auto-detect filtering settings: {e}")
 
     # 1. Load concept config
     if not os.path.exists(args.concept_config_path):
@@ -841,10 +841,10 @@ def main():
         detected_latent = checkpoint_dims - NUM_CONCEPTS
         if detected_latent >= 0:
             latent_concepts = detected_latent
-            print(f"🔮 Auto-detected latent concepts from checkpoint: {latent_concepts} (Total dimensions: {checkpoint_dims})")
+            print(f"[Config] Auto-detected latent concepts from checkpoint: {latent_concepts} (Total dimensions: {checkpoint_dims})")
         else:
-            print(f"⚠️ Warning: Checkpoint dimensions ({checkpoint_dims}) are less than supervised concepts ({NUM_CONCEPTS}). Using args.latent_concepts={args.latent_concepts}.")
-        print(f"⚠️ Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
+            print(f"[Config] Warning: Checkpoint dimensions ({checkpoint_dims}) are less than supervised concepts ({NUM_CONCEPTS}). Using args.latent_concepts={args.latent_concepts}.")
+        print(f"[Config] Warning: 'classifier_head.weight' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
     use_lora = getattr(args, 'use_lora', False)
     lora_r = getattr(args, 'lora_r', 8)
     lora_alpha = getattr(args, 'lora_alpha', 16.0)
@@ -874,7 +874,7 @@ def main():
         if 'use_dino_mask' in checkpoint_args:
             use_dino_mask = checkpoint_args['use_dino_mask']
             dino_mask_threshold = checkpoint_args.get('dino_mask_threshold', 0.35)
-        print(f"🔮 Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
@@ -895,7 +895,7 @@ def main():
         if 'use_dino_mask' in bb_cfg:
             use_dino_mask = bb_cfg['use_dino_mask']
             dino_mask_threshold = bb_cfg.get('dino_mask_threshold', 0.35)
-        print(f"🔮 Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -914,12 +914,12 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"🔮 Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
     
     # Command line argument override
     if getattr(args, 'no_grouping', False):
         use_concept_groups = False
-        print("🔮 Command line override: Disabling concept grouping.")
+        print("[Config] Command line override: Disabling concept grouping.")
     if getattr(args, 'use_dino_mask', None) is not None:
         use_dino_mask = args.use_dino_mask
     if getattr(args, 'dino_mask_threshold', None) is not None:
@@ -961,12 +961,12 @@ def main():
                     concept_groups_info.append((start, num))
                     if num > 1:
                         grouped_count += 1
-            print(f"🔮 Configured Group-level Softmax over {grouped_count} mutually exclusive groups out of {len(CONCEPT_GROUPS)} total categories.")
+            print(f"[Config] Configured Group-level Softmax over {grouped_count} mutually exclusive groups out of {len(CONCEPT_GROUPS)} total categories.")
     
     if not use_concept_groups or concept_groups_info is None:
         concept_groups_info = None
         USE_CONCEPT_GROUPS = False
-        print("🔮 Group-level Softmax Activation is DISABLED (Sigmoid activation fallback active).")
+        print("[Config] Group-level Softmax Activation is DISABLED (Sigmoid activation fallback active).")
 
     # 2b. Build group_mapping for GroupToConceptAttention (if requested)
     group_mapping = None
@@ -982,7 +982,7 @@ def main():
         # When using group broadcasting, disable Group Softmax (which conflicts with independent BCE)
         concept_groups_info = None
         USE_CONCEPT_GROUPS = False
-        print(f"🔮 Group Broadcasting: {num_groups} anatomical groups → {NUM_CONCEPTS} independent BCE classifiers (Group Softmax disabled).")
+        print(f"[Config] Group Broadcasting: {num_groups} anatomical groups → {NUM_CONCEPTS} independent BCE classifiers (Group Softmax disabled).")
 
     # 3. Initialize model with correct parameters
     MODEL = UniversalFlexibleCBM(
@@ -1020,34 +1020,34 @@ def main():
                 migrated[f"{prefix}.q_proj.weight"] = v[:D].clone()
                 migrated[f"{prefix}.k_proj.weight"] = v[D:2*D].clone()
                 migrated[f"{prefix}.v_proj.weight"] = v[2*D:].clone()
-                print(f"  🔄 Migrated in_proj_weight → q/k/v_proj.weight  ({prefix})")
+                print(f"  [Migration] Migrated in_proj_weight → q/k/v_proj.weight  ({prefix})")
             elif ".cross_attention.in_proj_bias" in k:
                 # Bias is not used in the new projections (bias=False); skip.
-                print(f"  ⏭️  Skipped in_proj_bias (new proj layers have no bias): {k}")
+                print(f"  [Migration] Skipped in_proj_bias (new proj layers have no bias): {k}")
             elif ".cross_attention.out_proj.weight" in k:
                 new_k = k.replace(".cross_attention.out_proj.weight", ".out_proj.weight")
                 migrated[new_k] = v
-                print(f"  🔄 Migrated out_proj.weight: {k} → {new_k}")
+                print(f"  [Migration] Migrated out_proj.weight: {k} → {new_k}")
             elif ".cross_attention.out_proj.bias" in k:
                 # out_proj bias not present in new arch; skip.
-                print(f"  ⏭️  Skipped out_proj.bias (new out_proj has no bias): {k}")
+                print(f"  [Migration] Skipped out_proj.bias (new out_proj has no bias): {k}")
             else:
                 migrated[k] = v
         return migrated
 
     old_keys = {k for k in state_dict if ".cross_attention." in k}
     if old_keys:
-        print(f"⚠️  Checkpoint contains {len(old_keys)} legacy MHA key(s). Running migration…")
+        print(f"[Migration] Checkpoint contains {len(old_keys)} legacy MHA key(s). Running migration...")
         state_dict = _migrate_state_dict(state_dict)
-        print("✅  State-dict migration complete.")
+        print("[Migration] State-dict migration complete.")
 
     # Load with strict=False so that new parameters (temperature, …) that are
     # absent from old checkpoints are left at their default initialization.
     missing, unexpected = MODEL.load_state_dict(state_dict, strict=False)
     if missing:
-        print(f"ℹ️  New parameters not found in checkpoint (initialized from scratch): {missing}")
+        print(f"[Config] New parameters not found in checkpoint (initialized from scratch): {missing}")
     if unexpected:
-        print(f"⚠️  Unexpected keys ignored during loading: {unexpected}")
+        print(f"[Config] Unexpected keys ignored during loading: {unexpected}")
     MODEL.to(DEVICE)
     MODEL.eval()
 

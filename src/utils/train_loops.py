@@ -10,6 +10,15 @@ from src.utils.visualization import generate_concept_heatmaps
 from src.utils.losses import calculate_orthogonality_loss
 from src.utils.helpers import EarlyStopping
 
+# ANSI terminal colors for highlighting
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+CYAN = "\033[96m"
+MAGENTA = "\033[95m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
 def inject_concept_noise(pred_logits, gt_labels, replace_prob=0.3, epsilon=0.05):
     """
     pred_logits: Phase 1 output logits (Batch, Num_Concepts)
@@ -41,9 +50,9 @@ def apply_label_smoothing(hard_labels, epsilon=0.05):
     return torch.where(hard_labels >= 0.5, 1.0 - epsilon, epsilon)
 
 def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, concept_groups_info=None):
-    tqdm.write(f"\n{'-'*60}")
-    tqdm.write("  🎬 Phase 1: Concept Learning (Backbone & Concept Head)")
-    tqdm.write(f"{'-'*60}")
+    tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Phase 1] Concept Learning (Backbone & Concept Head){RESET}")
+    tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
     
     # Extract concept grouping indices from dataset for group-level orthogonality loss
     concept_groups_indices = None
@@ -70,7 +79,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             indices = [idx for idx in range(start, start + num) if idx < num_concepts_supervised]
             if indices:
                 concept_groups_indices.append(indices)
-        tqdm.write(f"  📂 Group-level Orthogonality: Detected {len(concept_groups_indices)} semantic attribute groups for separation.")
+        tqdm.write(f"  {BOLD}{BLUE}[Orthogonality]{RESET} Detected {len(concept_groups_indices)} semantic attribute groups for separation.")
     
     # classifier_head 가중치 동결
     for param in model.classifier_head.parameters():
@@ -270,7 +279,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                     key=lambda x: x[1]
                 )
                 lowest_3 = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
-                tqdm.write(f"  🔍 Final Struggling Concepts (Balanced Acc): {lowest_3}")
+                tqdm.write(f"  {BOLD}{YELLOW}[Struggling Concepts]{RESET} Final Struggling Concepts (Balanced Acc): {lowest_3}")
             
         if val_vis_data is not None and (is_last_epoch or es_handler.early_stop):
             vis_images, vis_attn = val_vis_data
@@ -289,7 +298,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             scheduler.step()
             
         if es_handler.early_stop:
-            tqdm.write(f"  ⏳ Early stopping Phase 1 at Epoch {epoch + 1}. Restoring best Phase 1 weights.")
+            tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 1 at Epoch {epoch + 1}. Restoring best Phase 1 weights.")
             model.load_state_dict(es_handler.best_weights)
             break
             
@@ -356,7 +365,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     )
     
     # 2. Run Youden's J search
-    tqdm.write("\n🔍 Finding optimal per-concept validation thresholds using Youden's J statistic...")
+    tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Finding optimal per-concept validation thresholds using Youden's J statistic...")
     optimal_thresholds = find_optimal_concept_thresholds(
         all_val_logits,
         all_val_targets,
@@ -374,16 +383,16 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         threshold=optimal_thresholds
     )
     
-    tqdm.write(f"\n📈 Phase 1 Validation side-by-side comparison:")
-    tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% ──> {opt_metrics['mean_balanced_acc']*100:.2f}% (J-Optimal)")
-    tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% ──> {opt_metrics['tpr']*100:.2f}% (J-Optimal)")
-    tqdm.write(f"   └─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% ──> {opt_metrics['tnr']*100:.2f}% (J-Optimal)")
-    tqdm.write(f"============================================================\n")
+    tqdm.write(f"\n{BOLD}{CYAN}[Comparison]{RESET} Phase 1 Validation side-by-side comparison:")
+    tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% --> {opt_metrics['mean_balanced_acc']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% --> {opt_metrics['tpr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   └─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}\n")
 
 def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
-    tqdm.write(f"\n{'-'*60}")
-    tqdm.write("  🎬 Phase 2: Target Learning (Classifier Head)")
-    tqdm.write(f"{'-'*60}")
+    tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Phase 2] Target Learning (Classifier Head){RESET}")
+    tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
     
     # 백본과 컨셉 어텐션 가중치 엄격히 동결
     for param in model.backbone.parameters():
@@ -401,7 +410,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
 
     if hasattr(model, 'dropout'):
         model.dropout.p = phase2_dropout_p
-        tqdm.write(f"  💧 Adjusted dropout probability for Phase 2: {original_dropout_p} -> {model.dropout.p}")
+        tqdm.write(f"  {BOLD}{YELLOW}[Dropout]{RESET} Adjusted dropout probability for Phase 2: {original_dropout_p} -> {model.dropout.p}")
         
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
@@ -437,7 +446,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         phase2_patience = args.phase2_patience if args.phase2_patience is not None else es_cfg.get("phase2_patience", es_cfg.get("patience", 5))
         min_delta = es_cfg.get("min_delta", 0.0)
         es_handler = EarlyStopping(patience=phase2_patience, min_delta=min_delta, monitor=phase2_monitor)
-        tqdm.write(f"  🛑 Phase 2 Early stopping: monitor={phase2_monitor}, patience={phase2_patience}")
+        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 2 Early stopping: monitor={phase2_monitor}, patience={phase2_patience}")
         
     for epoch in range(phase2_epochs):
         model.train()
@@ -454,9 +463,22 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             with torch.no_grad():
                 features = model.backbone(images)
                 if hasattr(model.supervised_attention, 'mlp'):
-                    supervised_logits, supervised_max_indices = model.supervised_attention(features)
-                    gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-                    supervised_features = torch.gather(features, dim=1, index=gather_indices)
+                    supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                    k_val = supervised_topk_indices.size(1)
+                    indices_transposed = supervised_topk_indices.permute(0, 2, 1) # [B, num_supervised_concepts, k]
+                    weights_transposed = supervised_weights.permute(0, 2, 1) # [B, num_supervised_concepts, k]
+                    B_size = features.size(0)
+                    D_dim = features.size(-1)
+                    num_c = indices_transposed.size(1)
+                    
+                    flat_indices = indices_transposed.reshape(B_size, num_c * k_val)
+                    gathered_flat = torch.gather(
+                        features,
+                        dim=1,
+                        index=flat_indices.unsqueeze(-1).expand(-1, -1, D_dim)
+                    )
+                    gathered_features = gathered_flat.view(B_size, num_c, k_val, D_dim)
+                    supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                 else:
                     supervised_logits, _, supervised_features = model.supervised_attention(features)
                     
@@ -474,9 +496,22 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             # 레이턴트 컨셉은 그래디언트를 흘려주어야 하므로 no_grad 밖에서 계산
             if model.num_latent_concepts > 0:
                 if hasattr(model.latent_attention, 'mlp'):
-                    latent_logits, latent_max_indices = model.latent_attention(features)
-                    gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-                    latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                    latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                    k_val = latent_topk_indices.size(1)
+                    indices_transposed = latent_topk_indices.permute(0, 2, 1) # [B, num_latent_concepts, k]
+                    weights_transposed = latent_weights.permute(0, 2, 1) # [B, num_latent_concepts, k]
+                    B_size = features.size(0)
+                    D_dim = features.size(-1)
+                    num_c = indices_transposed.size(1)
+                    
+                    flat_indices = indices_transposed.reshape(B_size, num_c * k_val)
+                    gathered_flat = torch.gather(
+                        features,
+                        dim=1,
+                        index=flat_indices.unsqueeze(-1).expand(-1, -1, D_dim)
+                    )
+                    gathered_features = gathered_flat.view(B_size, num_c, k_val, D_dim)
+                    latent_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                 else:
                     latent_logits, _, latent_features = model.latent_attention(features)
                 concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
@@ -552,7 +587,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         avg_val_acc_t = val_acc_t / len(val_loader)
         
         # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
-        tqdm.write(f"[Phase 2] Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {avg_val_acc_t * 100:.2f}%")
+        tqdm.write(f"{BOLD}{MAGENTA}[Phase 2]{RESET} Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
         
         if scheduler is not None:
             scheduler.step()
@@ -568,7 +603,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 
             es_handler(monitor_score, model)
             if es_handler.early_stop:
-                tqdm.write(f"  🛑 Early stopping Phase 2 at Epoch {epoch + 1}. Restoring best Phase 2 weights.")
+                tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 2 at Epoch {epoch + 1}. Restoring best Phase 2 weights.")
                 model.load_state_dict(es_handler.best_weights)
                 break
                 
@@ -585,22 +620,22 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
     # 💧 Phase 2 종료 후 드롭아웃 원복
     if hasattr(model, 'dropout'):
         model.dropout.p = original_dropout_p
-        tqdm.write(f"  💧 Restored dropout probability after Phase 2: {model.dropout.p}")
+        tqdm.write(f"  {BOLD}{YELLOW}[Dropout]{RESET} Restored dropout probability after Phase 2: {model.dropout.p}")
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
-    tqdm.write(f"\n{'-'*60}")
-    tqdm.write("  🎬 Phase 3: Backbone & Classifier Fine-Tuning (Concept Head Frozen)")
-    tqdm.write(f"{'-'*60}")
+    tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Backbone & Classifier Fine-Tuning (Concept Head Frozen){RESET}")
+    tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
     
     # 1. Freeze Concept Head (supervised + latent attention) — preserve Phase 1 learned attention
     model.freeze_supervised_attention()
     model.freeze_latent_attention()
-    tqdm.write("  🔒 Concept Head frozen: supervised & latent attention weights are fixed.")
+    tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Concept Head frozen: supervised & latent attention weights are fixed.")
     
     # 2. Unfreeze only LoRA backbone adapters + classifier head
     model.unfreeze_backbone()    # LoRA-active: only lora_A / lora_B params, pretrained weights stay frozen
     model.unfreeze_classifier()
-    tqdm.write("  🔓 Backbone (LoRA adapters) and Classifier Head unfrozen for fine-tuning.")
+    tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Backbone (LoRA adapters) and Classifier Head unfrozen for fine-tuning.")
     
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
@@ -612,7 +647,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     trainable_names  = [n for n, p in model.named_parameters() if p.requires_grad]
-    tqdm.write(f"  🧠 Trainable parameters in Phase 3: {len(trainable_params)} tensors")
+    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(trainable_params)} tensors")
     tqdm.write(f"     └─ Modules: {', '.join(dict.fromkeys(n.split('.')[0] for n in trainable_names))}")
     
     if opt_type == "adamw":
@@ -639,7 +674,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         phase3_patience = args.phase3_patience if args.phase3_patience is not None else 5
         min_delta = es_cfg.get("min_delta", 0.0)
         es_handler = EarlyStopping(patience=phase3_patience, min_delta=min_delta, monitor=phase3_monitor)
-        tqdm.write(f"  🛑 Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}")
+        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}")
         
     for epoch in range(phase3_epochs):
         model.train()
@@ -699,7 +734,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     latent_features = None
                 else:
                     # PatchWiseMLPConceptHead
-                    supervised_logits, supervised_max_indices = model.supervised_attention(features)
+                    supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
                     
                     # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
                     if getattr(args, "phase2_scheduled_sampling", False):
@@ -711,28 +746,50 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                         )
                         
                     # Reconstruct spatial maps and gathered features
-                    B_size = supervised_max_indices.size(0)
+                    k_val = supervised_topk_indices.size(1)
+                    indices_transposed = supervised_topk_indices.permute(0, 2, 1) # [B, num_concepts_supervised, k]
+                    weights_transposed = supervised_weights.permute(0, 2, 1) # [B, num_concepts_supervised, k]
+                    
+                    B_size = features.size(0)
                     N_patches = features.size(1)
                     H_attn = int(N_patches ** 0.5)
+                    D_dim = features.size(-1)
+                    
                     sparse_maps = torch.zeros(B_size, num_concepts_supervised, N_patches, device=device)
-                    sparse_maps.scatter_(2, supervised_max_indices.unsqueeze(-1), 1.0)
+                    sparse_maps.scatter_(2, indices_transposed, weights_transposed)
                     sparse_maps = sparse_maps.view(B_size, num_concepts_supervised, H_attn, H_attn)
                     from torchvision.transforms.functional import gaussian_blur
                     supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
                     
-                    gather_indices = supervised_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-                    supervised_features = torch.gather(features, dim=1, index=gather_indices)
+                    flat_indices = indices_transposed.reshape(B_size, num_concepts_supervised * k_val)
+                    gathered_flat = torch.gather(
+                        features,
+                        dim=1,
+                        index=flat_indices.unsqueeze(-1).expand(-1, -1, D_dim)
+                    )
+                    gathered_features = gathered_flat.view(B_size, num_concepts_supervised, k_val, D_dim)
+                    supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                     
                     if model.num_latent_concepts > 0:
-                        latent_logits, latent_max_indices = model.latent_attention(features)
+                        latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                        
+                        latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
+                        latent_weights_transposed = latent_weights.permute(0, 2, 1)
+                        latent_k_val = latent_topk_indices.size(1)
                         
                         sparse_latent_maps = torch.zeros(B_size, model.num_latent_concepts, N_patches, device=device)
-                        sparse_latent_maps.scatter_(2, latent_max_indices.unsqueeze(-1), 1.0)
+                        sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
                         sparse_latent_maps = sparse_latent_maps.view(B_size, model.num_latent_concepts, H_attn, H_attn)
                         latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
                         
-                        gather_latent_indices = latent_max_indices.unsqueeze(-1).expand(-1, -1, features.size(-1))
-                        latent_features = torch.gather(features, dim=1, index=gather_latent_indices)
+                        latent_flat_indices = latent_indices_transposed.reshape(B_size, model.num_latent_concepts * latent_k_val)
+                        latent_gathered_flat = torch.gather(
+                            features,
+                            dim=1,
+                            index=latent_flat_indices.unsqueeze(-1).expand(-1, -1, D_dim)
+                        )
+                        latent_gathered_features = latent_gathered_flat.view(B_size, model.num_latent_concepts, latent_k_val, D_dim)
+                        latent_features = torch.sum(latent_gathered_features * latent_weights_transposed.unsqueeze(-1), dim=2)
                         
                         concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
                         attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
@@ -822,7 +879,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         avg_val_loss_t = val_loss_t / len(val_loader)
         avg_val_acc_t = val_acc_t / len(val_loader)
         
-        tqdm.write(f"[Phase 3] Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {avg_val_acc_t * 100:.2f}%")
+        tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
         
         if scheduler is not None:
             scheduler.step()
@@ -838,7 +895,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 
             es_handler(monitor_score, model)
             if es_handler.early_stop:
-                tqdm.write(f"  🛑 Early stopping Phase 3 at Epoch {epoch + 1}. Restoring best Phase 3 weights.")
+                tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 3 at Epoch {epoch + 1}. Restoring best Phase 3 weights.")
                 model.load_state_dict(es_handler.best_weights)
                 break
                 
