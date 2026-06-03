@@ -12,9 +12,10 @@ backbone:
   lora_r: 16             # LoRA rank dimension
   lora_alpha: 16.0        # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (experimental, default: off)
-  use_group_broadcasting: false  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
+  use_group_broadcasting: true  # GroupToConceptAttention: 28 groups → 312 independent BCE classifiers
   use_dino_mask: false     # Use DINOv2 self-attention silhouette foreground masking
   dino_mask_threshold: 0.35
+  use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
@@ -38,6 +39,11 @@ training:
   nam_hidden_dim: 8  # Hidden dimension for parallel NAM sub-networks
   l1_warmup_epochs: 10  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
   phase2_dropout: 0.5  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
+  use_gated_nam: true  # Gated Sparse NAM head activation
+  use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
+  use_probabilistic_cbm: false  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  l1_lambda_gate: 0.01  # L1 Regularization strength on gates
+  weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
@@ -66,7 +72,7 @@ optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
-  phase2_lr: 0.0005  # Larger LR for latent representation learning in Phase 2
+  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
   weight_decay: 0.05
   concept_loss_type: "focal"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio

@@ -16,12 +16,15 @@ BOLD = "\033[1m"
 
 class GatedSparseNAMHead(nn.Module):
     def __init__(self, num_concepts: int = 312, num_classes: int = 200, 
-                 hidden_dim: int = 64, num_latent_concepts: int = 0):
+                 hidden_dim: int = 64, num_latent_concepts: int = 0,
+                 use_pairwise_nam: bool = False, max_pairs: int = 128):
         super().__init__()
         self.num_concepts = num_concepts
         self.num_classes = num_classes
         self.hidden_dim = hidden_dim
         self.num_latent_concepts = num_latent_concepts
+        self.use_pairwise_nam = use_pairwise_nam
+        self.max_pairs = max_pairs
         
         # Parallel MLPs using Grouped Conv1d (groups=num_concepts)
         self.conv1 = nn.Conv1d(
@@ -59,6 +62,40 @@ class GatedSparseNAMHead(nn.Module):
             nn.init.xavier_uniform_(self.latent_linear.weight)
             nn.init.zeros_(self.latent_linear.bias)
 
+        # 2. Pairwise 2D MLPs
+        if use_pairwise_nam:
+            self.num_pairs = num_concepts * (num_concepts - 1) // 2
+            self.M = min(self.num_pairs, max_pairs)
+            
+            pair_indices = []
+            for i in range(num_concepts):
+                for j in range(i + 1, num_concepts):
+                    pair_indices.append((i, j))
+            self.pair_indices = pair_indices
+            
+            self.pairwise_gates = nn.Parameter(torch.zeros(self.num_pairs))
+            nn.init.normal_(self.pairwise_gates, std=0.01)
+            
+            self.pairwise_conv1 = nn.Conv1d(
+                in_channels=self.M * 2,
+                out_channels=self.M * hidden_dim,
+                kernel_size=1,
+                groups=self.M
+            )
+            self.pairwise_conv2 = nn.Conv1d(
+                in_channels=self.M * hidden_dim,
+                out_channels=self.M * num_classes,
+                kernel_size=1,
+                groups=self.M
+            )
+            
+            nn.init.kaiming_uniform_(self.pairwise_conv1.weight, a=math.sqrt(5))
+            if self.pairwise_conv1.bias is not None:
+                nn.init.zeros_(self.pairwise_conv1.bias)
+            nn.init.xavier_uniform_(self.pairwise_conv2.weight)
+            if self.pairwise_conv2.bias is not None:
+                nn.init.zeros_(self.pairwise_conv2.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.size(0)
         supervised_x = x[:, :self.num_concepts].unsqueeze(-1)
@@ -70,6 +107,28 @@ class GatedSparseNAMHead(nn.Module):
         gated_y = y * self.concept_gates.view(1, self.num_concepts, 1)
         supervised_out = gated_y.sum(dim=1)
         
+        if self.use_pairwise_nam:
+            # Select top M active pairs dynamically to prevent parameter explosion
+            topk_vals, topk_indices = torch.topk(torch.abs(self.pairwise_gates), k=self.M)
+            selected_gates = self.pairwise_gates[topk_indices]
+            
+            pair_inputs = []
+            for idx in topk_indices.tolist():
+                i, j = self.pair_indices[idx]
+                c_i = x[:, i].unsqueeze(-1)
+                c_j = x[:, j].unsqueeze(-1)
+                pair_inputs.append(torch.cat([c_i, c_j], dim=-1))
+                
+            pair_features = torch.cat(pair_inputs, dim=1).unsqueeze(-1) # [B, M * 2, 1]
+            
+            h_p = F.relu(self.pairwise_conv1(pair_features))
+            y_p = self.pairwise_conv2(h_p)
+            y_p = y_p.view(batch_size, self.M, self.num_classes)
+            
+            gated_yp = y_p * selected_gates.view(1, self.M, 1)
+            pairwise_out = gated_yp.sum(dim=1)
+            supervised_out = supervised_out + pairwise_out
+            
         if self.num_latent_concepts > 0 and self.latent_linear is not None:
             latent_x = x[:, self.num_concepts:]
             latent_out = self.latent_linear(latent_x)
@@ -78,72 +137,68 @@ class GatedSparseNAMHead(nn.Module):
         return supervised_out
 
     def get_sparsity_loss(self) -> torch.Tensor:
-        return torch.sum(torch.abs(self.concept_gates))
+        loss = torch.sum(torch.abs(self.concept_gates))
+        if self.use_pairwise_nam:
+            loss = loss + torch.sum(torch.abs(self.pairwise_gates))
+        return loss
 
 class ConceptAttentionLayer(nn.Module):
-    def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4):
-        """Concept-specific Spatial Cosine Attention Layer for CNN (ResNet) backbones.
-        Replaces dot-product attention with L2-normalized cosine attention to suppress
-        high-norm border-patch outliers produced by DINOv2 on tightly cropped images.
-        Each concept learns its own unique 1x1 conv mapping to spatial location and
-        individual feature projection.
-        """
+    def __init__(self, feature_dim: int, num_concepts: int, num_heads: int = 4, probabilistic: bool = False):
         super().__init__()
         self.num_concepts = num_concepts
         self.feature_dim = feature_dim
+        self.probabilistic = probabilistic
         
-        # 1x1 Conv to produce per-concept spatial query vectors
         self.attention_conv = nn.Conv2d(feature_dim, num_concepts, kernel_size=1)
-        
-        # Concept-specific weight projections: [num_concepts, feature_dim]
         self.concept_proj = nn.Parameter(torch.randn(num_concepts, feature_dim))
         self.concept_bias = nn.Parameter(torch.zeros(num_concepts))
-        
-        # Learnable temperature for cosine similarity scaling (init=1 -> no-op at start)
         self.temperature = nn.Parameter(torch.ones(1))
 
-        # Weight Initialization
         nn.init.xavier_uniform_(self.attention_conv.weight)
         if self.attention_conv.bias is not None:
             nn.init.zeros_(self.attention_conv.bias)
-            
         nn.init.xavier_uniform_(self.concept_proj)
 
+        if probabilistic:
+            self.concept_proj_logvar = nn.Parameter(torch.randn(num_concepts, feature_dim))
+            self.concept_bias_logvar = nn.Parameter(torch.zeros(num_concepts))
+            nn.init.xavier_uniform_(self.concept_proj_logvar)
+            nn.init.constant_(self.concept_bias_logvar, -2.0)
+
     def forward(self, features: torch.Tensor):
-        # features: [B, C, H, W]
         B, C, H, W = features.shape
         
-        # 1. Compute per-concept spatial attention via Cosine Attention
-        # Produce raw logit maps and L2-normalize along the channel dimension
-        attn_logits = self.attention_conv(features)  # [B, num_concepts, H, W]
-        # L2-normalize feature patches along channel dim to remove magnitude bias
-        features_flat = features.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        features_norm = F.normalize(features_flat, p=2, dim=-1)           # [B, H*W, C]
-        # L2-normalize the attention conv weights (used as per-concept queries)
-        attn_queries = self.attention_conv.weight.squeeze(-1).squeeze(-1)  # [num_concepts, C]
-        attn_queries_norm = F.normalize(attn_queries, p=2, dim=-1)         # [num_concepts, C]
-        # Cosine similarity: [B, num_concepts, H*W]
+        attn_logits = self.attention_conv(features)
+        features_flat = features.flatten(2).transpose(1, 2)
+        features_norm = F.normalize(features_flat, p=2, dim=-1)
+        attn_queries = self.attention_conv.weight.squeeze(-1).squeeze(-1)
+        attn_queries_norm = F.normalize(attn_queries, p=2, dim=-1)
         cosine_logits = torch.bmm(
-            attn_queries_norm.unsqueeze(0).expand(B, -1, -1),  # [B, num_concepts, C]
-            features_norm.transpose(1, 2)                       # [B, C, H*W]
-        ) / self.temperature.clamp(min=1e-4)                   # scale by learnable T
+            attn_queries_norm.unsqueeze(0).expand(B, -1, -1),
+            features_norm.transpose(1, 2)
+        ) / self.temperature.clamp(min=1e-4)
         
-        # Softmax over spatial dimension to get attention weights
-        attn_weights = torch.softmax(cosine_logits, dim=-1)               # [B, num_concepts, H*W]
-        attn_weights_2d = attn_weights.view(B, self.num_concepts, H, W)   # [B, num_concepts, H, W]
+        attn_weights = torch.softmax(cosine_logits, dim=-1)
+        attn_weights_2d = attn_weights.view(B, self.num_concepts, H, W)
         
-        # 2. Weighted Sum: [B, num_concepts, H*W] x [B, H*W, C] -> [B, num_concepts, C]
-        weighted_features = torch.bmm(attn_weights, features_norm)  # [B, num_concepts, C]
+        weighted_features = torch.bmm(attn_weights, features_norm)
         
-        # 3. Concept Logits via cosine similarity with learnable concept projections
-        concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)  # [num_concepts, C]
-        concept_logits = (
+        concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)
+        concept_mean = (
             (weighted_features * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
             / self.temperature.clamp(min=1e-4)
             + self.concept_bias.unsqueeze(0)
-        )  # [B, num_concepts]
-        
-        return concept_logits, attn_weights_2d, weighted_features
+        )
+        if self.probabilistic:
+            concept_proj_logvar_norm = F.normalize(self.concept_proj_logvar, p=2, dim=-1)
+            concept_logvar = (
+                (weighted_features * concept_proj_logvar_norm.unsqueeze(0)).sum(dim=-1)
+                / self.temperature.clamp(min=1e-4)
+                + self.concept_bias_logvar.unsqueeze(0)
+            )
+            return concept_mean, concept_logvar, attn_weights_2d, weighted_features
+            
+        return concept_mean, attn_weights_2d, weighted_features
 
 
 class GroupSoftmaxActivation(nn.Module):
@@ -350,19 +405,12 @@ class ViTBackboneWrapper(nn.Module):
 
 class ViTCrossAttentionLayer(nn.Module):
     def __init__(self, embed_dim: int, num_concepts: int, num_heads: int = 4,
-                 use_cosine_attention: bool = False):
-        """Concept-specific Multihead Cross-Attention Layer for ViT backbones.
-
-        Two attention modes are supported via `use_cosine_attention`:
-          - False (default): Standard nn.MultiheadAttention (stable, pretrained-checkpoint compatible).
-          - True: L2-normalized Cosine Attention with learnable temperature, which suppresses
-            the high-norm border-patch outliers produced by DINOv2 on tightly cropped images
-            ("Vision Transformers Need Registers", ICLR 2024).
-        """
+                 use_cosine_attention: bool = False, probabilistic: bool = False):
         super().__init__()
         self.num_concepts = num_concepts
         self.embed_dim = embed_dim
         self.use_cosine_attention = use_cosine_attention
+        self.probabilistic = probabilistic
         
         # Learnable concept queries: [1, num_concepts, embed_dim]
         self.concept_queries = nn.Parameter(torch.randn(1, num_concepts, embed_dim))
@@ -379,6 +427,12 @@ class ViTCrossAttentionLayer(nn.Module):
         # Weight Initialization
         nn.init.trunc_normal_(self.concept_queries, std=0.02)
         nn.init.xavier_uniform_(self.concept_proj)
+
+        if probabilistic:
+            self.concept_proj_logvar = nn.Parameter(torch.randn(num_concepts, embed_dim))
+            self.concept_bias_logvar = nn.Parameter(torch.zeros(num_concepts))
+            nn.init.xavier_uniform_(self.concept_proj_logvar)
+            nn.init.constant_(self.concept_bias_logvar, -2.0)
 
         if use_cosine_attention:
             # Explicit Q / K / V projections for cosine attention path
@@ -414,11 +468,18 @@ class ViTCrossAttentionLayer(nn.Module):
 
             concept_proj_norm = F.normalize(self.concept_proj, p=2, dim=-1)
             attn_out_norm = F.normalize(attn_out, p=2, dim=-1)
-            concept_logits = (
+            concept_mean = (
                 (attn_out_norm * concept_proj_norm.unsqueeze(0)).sum(dim=-1)
                 / self.temperature.clamp(min=1e-4)
                 + self.concept_bias.unsqueeze(0)
             )
+            if self.probabilistic:
+                concept_proj_logvar_norm = F.normalize(self.concept_proj_logvar, p=2, dim=-1)
+                concept_logvar = (
+                    (attn_out_norm * concept_proj_logvar_norm.unsqueeze(0)).sum(dim=-1)
+                    / self.temperature.clamp(min=1e-4)
+                    + self.concept_bias_logvar.unsqueeze(0)
+                )
         else:
             # --- Standard MultiheadAttention path ---
             attn_out, attn_weights = self.cross_attention(
@@ -427,53 +488,33 @@ class ViTCrossAttentionLayer(nn.Module):
                 value=features
             )  # attn_out: [B, num_concepts, D], attn_weights: [B, num_concepts, N]
 
-            concept_logits = (
+            concept_mean = (
                 (attn_out * self.concept_proj.unsqueeze(0)).sum(dim=-1)
                 + self.concept_bias.unsqueeze(0)
             )
+            if self.probabilistic:
+                concept_logvar = (
+                    (attn_out * self.concept_proj_logvar.unsqueeze(0)).sum(dim=-1)
+                    + self.concept_bias_logvar.unsqueeze(0)
+                )
 
         # Reshape attention weights: [B, num_concepts, N] -> [B, num_concepts, sqrt(N), sqrt(N)]
         H_attn = int(math.sqrt(N))
         attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, H_attn)
 
-        return concept_logits, attn_weights_2d, attn_out
+        if self.probabilistic:
+            return concept_mean, concept_logvar, attn_weights_2d, attn_out
+
+        return concept_mean, attn_weights_2d, attn_out
 
 
 class GroupToConceptAttention(nn.Module):
-    """Attention Broadcasting: Spatial Localization (28 groups) → Semantic Classification (312 concepts).
-
-    Architecture (3-step pipeline):
-      Step 1 — Spatial Localization:
-        28 learnable group queries attend to DINOv2 patch tokens via Cosine Attention.
-        Output: group_features [B, 28, embed_dim]
-
-      Step 2 — Attention Broadcasting:
-        group_features are index-selected via `group_mapping` (int array of length 312,
-        each value in [0..27]) to produce concept_features [B, 312, embed_dim].
-        Concepts sharing the same anatomical part share the same spatial feature —
-        but each has its own independent classifier below.
-
-      Step 3 — Independent Classification:
-        Each of the 312 concepts has its own Linear(embed_dim → 1) with a dedicated bias.
-        Outputs raw logits suitable for BCEWithLogitsLoss (no sigmoid/softmax applied here).
-
-    This design separates "where to look" (group attention) from "what is present"
-    (per-concept binary classifiers), fixing both TPR Collapse (multi-label) and
-    TNR Collapse (occlusion / all-zero GT) caused by Group Softmax.
-    """
-
     def __init__(self, embed_dim: int, num_groups: int, num_concepts: int,
-                 group_mapping: List[int]):
-        """
-        Args:
-            embed_dim:     DINOv2 patch token dimension (e.g. 768).
-            num_groups:    Number of anatomical groups (28 for CUB).
-            num_concepts:  Total supervised concepts (312 for CUB).
-            group_mapping: List of length `num_concepts` mapping each concept → group index.
-        """
+                 group_mapping: List[int], probabilistic: bool = False):
         super().__init__()
         self.num_groups   = num_groups
         self.num_concepts = num_concepts
+        self.probabilistic = probabilistic
         assert len(group_mapping) == num_concepts, (
             f"group_mapping length {len(group_mapping)} must equal num_concepts {num_concepts}"
         )
@@ -497,29 +538,24 @@ class GroupToConceptAttention(nn.Module):
 
         # ── Step 3: 312 Independent Binary Classifiers ──────────────────────────
         # Batched as a single weight matrix [num_concepts, embed_dim] + bias [num_concepts]
-        # Equivalent to 312 separate Linear(embed_dim, 1) layers but computed in one bmm.
         self.concept_weight = nn.Parameter(torch.randn(num_concepts, embed_dim))
         self.concept_bias   = nn.Parameter(torch.zeros(num_concepts))
         nn.init.xavier_uniform_(self.concept_weight.unsqueeze(0))  # treat as [1, C, D]
 
         # Surgical prior initialization: bias = log((1-pi)/pi) for pi=0.01
-        # Prevents Focal Loss / BCE logit explosion at the start of training.
         pi = 0.01
         nn.init.constant_(self.concept_bias, -math.log((1 - pi) / pi))
 
+        if probabilistic:
+            self.concept_weight_logvar = nn.Parameter(torch.randn(num_concepts, embed_dim))
+            self.concept_bias_logvar = nn.Parameter(torch.zeros(num_concepts))
+            nn.init.xavier_uniform_(self.concept_weight_logvar.unsqueeze(0))
+            nn.init.constant_(self.concept_bias_logvar, -2.0)
+
     def forward(self, patch_tokens: torch.Tensor):
-        """
-        Args:
-            patch_tokens: DINOv2 patch features [B, N_patches, embed_dim]
-        Returns:
-            concept_logits:    [B, num_concepts]   — raw BCE logits, no activation applied
-            attn_weights_2d:   [B, num_groups, H, H] — group-level spatial attention maps
-            concept_features:  [B, num_concepts, embed_dim] — broadcasted concept features
-        """
         B, N, D = patch_tokens.shape
 
         # ── Step 1: Cosine Attention over patch tokens ────────────────────────────
-        # L2-normalize group queries and patch keys to remove magnitude bias
         Q = F.normalize(self.group_queries.expand(B, -1, -1), p=2, dim=-1)  # [B, 28, D]
         K = F.normalize(patch_tokens, p=2, dim=-1)                           # [B, N, D]
 
@@ -536,29 +572,30 @@ class GroupToConceptAttention(nn.Module):
         attn_weights_2d = attn_weights.view(B, self.num_groups, H_attn, H_attn)  # [B, 28, H, H]
 
         # ── Step 2: Attention Broadcasting (28 groups → 312 concepts) ─────────────
-        # group_mapping: [312] — index_select along the group dimension
         concept_features = group_features[:, self.group_mapping, :]  # [B, 312, D]
 
         # ── Step 3: Independent Binary Classification ─────────────────────────────
-        # Batched dot-product: [B, 312, D] · [312, D] → [B, 312] (einsum for clarity)
-        concept_logits = (
+        concept_mean = (
             torch.einsum('bcd,cd->bc', concept_features, self.concept_weight)
             + self.concept_bias.unsqueeze(0)
         )  # [B, 312]
 
-        return concept_logits, attn_weights_2d, concept_features
+        if self.probabilistic:
+            concept_logvar = (
+                torch.einsum('bcd,cd->bc', concept_features, self.concept_weight_logvar)
+                + self.concept_bias_logvar.unsqueeze(0)
+            )
+            return concept_mean, concept_logvar, attn_weights_2d, concept_features
+
+        return concept_mean, attn_weights_2d, concept_features
 
 
 class PatchWiseMLPConceptHead(nn.Module):
-    def __init__(self, feature_dim: int, num_concepts: int, hidden_dim: int = 384):
-        """Patch-wise MLP Concept Head with Global Max Pooling.
-        Processes each visual patch token independently through a shared non-linear MLP,
-        and applies Global Max Pooling over the spatial dimension to extract the peak
-        activation and its patch location index.
-        """
+    def __init__(self, feature_dim: int, num_concepts: int, hidden_dim: int = 384, probabilistic: bool = False):
         super().__init__()
         self.feature_dim = feature_dim
         self.num_concepts = num_concepts
+        self.probabilistic = probabilistic
         
         self.mlp = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
@@ -579,22 +616,44 @@ class PatchWiseMLPConceptHead(nn.Module):
         bias_init = -math.log((1 - pi) / pi)
         nn.init.constant_(self.mlp[-1].bias, bias_init)
 
+        if probabilistic:
+            self.mlp_logvar = nn.Sequential(
+                nn.Linear(feature_dim, hidden_dim),
+                nn.GELU(),
+                nn.LayerNorm(hidden_dim),
+                nn.Linear(hidden_dim, num_concepts)
+            )
+            for m in self.mlp_logvar:
+                if isinstance(m, nn.Linear):
+                    nn.init.xavier_uniform_(m.weight)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+            nn.init.constant_(self.mlp_logvar[-1].bias, -2.0)
+
     def forward(self, patch_features: torch.Tensor, k: int = 3, return_weights: bool = False):
         # patch_features: [B, N_patches, feature_dim]
-        # MLP maps [B, N_patches, feature_dim] -> [B, N_patches, num_concepts]
         logits_per_patch = self.mlp(patch_features)
         
         # Top-K Pooling over spatial dimension (N_patches)
-        # logits_per_patch shape: [B, N_patches, num_concepts]
         topk_logits, topk_indices = torch.topk(logits_per_patch, k=k, dim=1)
         
         # Softmax-weighted pooling to prevent downward bias in logits
         weights = torch.softmax(topk_logits, dim=1) # [B, k, num_concepts]
-        concept_logits = torch.sum(topk_logits * weights, dim=1) # [B, num_concepts]
+        concept_mean = torch.sum(topk_logits * weights, dim=1) # [B, num_concepts]
         
+        if self.probabilistic:
+            logvar_per_patch = self.mlp_logvar(patch_features)
+            # Gather logvar values at the top-k indices of the mean path
+            logvar_gathered = torch.gather(logvar_per_patch, dim=1, index=topk_indices) # [B, k, num_concepts]
+            concept_logvar = torch.sum(logvar_gathered * weights, dim=1)
+            
+            if return_weights:
+                return concept_mean, concept_logvar, topk_indices, weights
+            return concept_mean, concept_logvar, topk_indices
+            
         if return_weights:
-            return concept_logits, topk_indices, weights
-        return concept_logits, topk_indices
+            return concept_mean, topk_indices, weights
+        return concept_mean, topk_indices
 
 
 class UniversalFlexibleCBM(nn.Module):
@@ -621,6 +680,10 @@ class UniversalFlexibleCBM(nn.Module):
         # ── Gated Sparse NAM Head Settings ───────────────────────────────────
         use_nam_head: bool = False,
         nam_hidden_dim: int = 64,
+        # ── Advanced Integration Settings ────────────────────────────────────
+        use_probabilistic_cbm: bool = False,
+        use_concept_attention: bool = False,
+        use_pairwise_nam: bool = False,
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -631,6 +694,13 @@ class UniversalFlexibleCBM(nn.Module):
         self.num_classes = num_classes
         self.lora_active = False
         self.use_group_broadcasting = use_group_broadcasting
+        self.use_probabilistic_cbm = use_probabilistic_cbm
+        self.use_concept_attention = use_concept_attention
+        self.use_pairwise_nam = use_pairwise_nam
+        
+        # Placeholders for VAE loss calculation
+        self.last_mean = None
+        self.last_logvar = None
 
         if use_group_broadcasting:
             if group_mapping is None:
@@ -684,12 +754,14 @@ class UniversalFlexibleCBM(nn.Module):
             # Layer Construction for ResNet
             self.supervised_attention = ConceptAttentionLayer(
                 feature_dim=feature_dim, 
-                num_concepts=num_supervised_concepts
+                num_concepts=num_supervised_concepts,
+                probabilistic=use_probabilistic_cbm
             )
             if self.num_latent_concepts > 0:
                 self.latent_attention = ConceptAttentionLayer(
                     feature_dim=feature_dim, 
-                    num_concepts=num_latent_concepts
+                    num_concepts=num_latent_concepts,
+                    probabilistic=use_probabilistic_cbm
                 )
                 
         elif self.backbone_name.startswith('vit') or 'dinov2' in self.backbone_name:
@@ -721,7 +793,15 @@ class UniversalFlexibleCBM(nn.Module):
                     embed_dim=embed_dim,
                     num_groups=num_groups,
                     num_concepts=num_supervised_concepts,
-                    group_mapping=group_mapping
+                    group_mapping=group_mapping,
+                    probabilistic=use_probabilistic_cbm
+                )
+            elif use_concept_attention:
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} ViTCrossAttentionLayer ({embed_dim} -> {num_supervised_concepts})")
+                self.supervised_attention = ViTCrossAttentionLayer(
+                    embed_dim=embed_dim,
+                    num_concepts=num_supervised_concepts,
+                    probabilistic=use_probabilistic_cbm
                 )
             else:
                 # Create PatchWiseMLPConceptHead as the new concept head to prevent attention collapse
@@ -729,7 +809,8 @@ class UniversalFlexibleCBM(nn.Module):
                 self.supervised_attention = PatchWiseMLPConceptHead(
                     feature_dim=embed_dim,
                     num_concepts=num_supervised_concepts,
-                    hidden_dim=384
+                    hidden_dim=384,
+                    probabilistic=use_probabilistic_cbm
                 )
             if self.num_latent_concepts > 0:
                 if use_group_broadcasting:
@@ -737,7 +818,8 @@ class UniversalFlexibleCBM(nn.Module):
                 self.latent_attention = PatchWiseMLPConceptHead(
                     feature_dim=embed_dim,
                     num_concepts=self.num_latent_concepts,
-                    hidden_dim=384
+                    hidden_dim=384,
+                    probabilistic=use_probabilistic_cbm
                 )
         else:
             raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")
@@ -758,12 +840,13 @@ class UniversalFlexibleCBM(nn.Module):
             
         self.dropout = nn.Dropout(p=0.2)
         if use_nam_head:
-            print(f"{BOLD}{BLUE}[Classifier Head]{RESET} GatedSparseNAMHead (concepts={num_supervised_concepts} -> hidden={nam_hidden_dim} -> classes={num_classes})")
+            print(f"{BOLD}{BLUE}[Classifier Head]{RESET} GatedSparseNAMHead (concepts={num_supervised_concepts} -> hidden={nam_hidden_dim} -> classes={num_classes}, use_pairwise_nam={use_pairwise_nam})")
             self.classifier_head = GatedSparseNAMHead(
                 num_concepts=num_supervised_concepts,
                 num_classes=num_classes,
                 hidden_dim=nam_hidden_dim,
-                num_latent_concepts=num_latent_concepts
+                num_latent_concepts=num_latent_concepts,
+                use_pairwise_nam=use_pairwise_nam
             )
         else:
             self.classifier_head = nn.Linear(self.num_concepts, num_classes)
@@ -802,7 +885,7 @@ class UniversalFlexibleCBM(nn.Module):
             
         return C, H, W
 
-    def forward(self, x: torch.Tensor, return_features: bool = False):
+    def forward(self, x: torch.Tensor, return_features: bool = False, stochastic: bool = False):
         # Input tensor shape x: [B, 3, H, W]
         features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, 196, embed_dim] (ViT)
         if isinstance(features, tuple):
@@ -810,25 +893,96 @@ class UniversalFlexibleCBM(nn.Module):
             
         if self.backbone_name.startswith('resnet'):
             # ResNet still uses spatial attention conv
-            supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
-            if self.num_latent_concepts > 0:
-                latent_logits, latent_attn, latent_features = self.latent_attention(features)
-                concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
-                attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+            if self.use_probabilistic_cbm:
+                supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)
+                self.last_mean = supervised_mean
+                self.last_logvar = supervised_logvar
+                if self.training or stochastic:
+                    std = torch.exp(0.5 * supervised_logvar)
+                    eps = torch.randn_like(std)
+                    supervised_logits = supervised_mean + std * eps
+                else:
+                    supervised_logits = supervised_mean
+                
+                if self.num_latent_concepts > 0:
+                    latent_mean, latent_logvar, latent_attn, latent_features = self.latent_attention(features)
+                    if self.training or stochastic:
+                        std_l = torch.exp(0.5 * latent_logvar)
+                        eps_l = torch.randn_like(std_l)
+                        latent_logits = latent_mean + std_l * eps_l
+                    else:
+                        latent_logits = latent_mean
+                    concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                    attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+                else:
+                    concept_logits = supervised_logits
+                    attn_weights = supervised_attn
+                    latent_features = None
             else:
+                supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+                if self.num_latent_concepts > 0:
+                    latent_logits, latent_attn, latent_features = self.latent_attention(features)
+                    concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                    attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+                else:
+                    concept_logits = supervised_logits
+                    attn_weights = supervised_attn
+                    latent_features = None
+        elif self.use_group_broadcasting:
+            # ViT / DINOv2 with Group Broadcasting
+            if self.use_probabilistic_cbm:
+                supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)
+                self.last_mean = supervised_mean
+                self.last_logvar = supervised_logvar
+                if self.training or stochastic:
+                    std = torch.exp(0.5 * supervised_logvar)
+                    eps = torch.randn_like(std)
+                    supervised_logits = supervised_mean + std * eps
+                else:
+                    supervised_logits = supervised_mean
                 concept_logits = supervised_logits
                 attn_weights = supervised_attn
                 latent_features = None
-        elif self.use_group_broadcasting:
-            # ViT / DINOv2 with Group Broadcasting
-            supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
-            concept_logits = supervised_logits
-            attn_weights = supervised_attn
-            latent_features = None
+            else:
+                supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
+        elif self.use_concept_attention:
+            # ViT / DINOv2 with Cross Attention
+            if self.use_probabilistic_cbm:
+                supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)
+                self.last_mean = supervised_mean
+                self.last_logvar = supervised_logvar
+                if self.training or stochastic:
+                    std = torch.exp(0.5 * supervised_logvar)
+                    eps = torch.randn_like(std)
+                    supervised_logits = supervised_mean + std * eps
+                else:
+                    supervised_logits = supervised_mean
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
+            else:
+                supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
         else:
             # ViT / DINOv2 uses PatchWiseMLPConceptHead
             k_val = 3
-            supervised_logits, supervised_topk_indices, supervised_weights = self.supervised_attention(features, k=k_val, return_weights=True)
+            if self.use_probabilistic_cbm:
+                supervised_mean, supervised_logvar, supervised_topk_indices, supervised_weights = self.supervised_attention(features, k=k_val, return_weights=True)
+                self.last_mean = supervised_mean
+                self.last_logvar = supervised_logvar
+                if self.training or stochastic:
+                    std = torch.exp(0.5 * supervised_logvar)
+                    eps = torch.randn_like(std)
+                    supervised_logits = supervised_mean + std * eps
+                else:
+                    supervised_logits = supervised_mean
+            else:
+                supervised_logits, supervised_topk_indices, supervised_weights = self.supervised_attention(features, k=k_val, return_weights=True)
             
             # Convert supervised_topk_indices [B, k, num_supervised_concepts] to sparse/smoothed dynamically-sized maps
             B = supervised_topk_indices.size(0)
@@ -864,7 +1018,16 @@ class UniversalFlexibleCBM(nn.Module):
             supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2) # [B, num_supervised_concepts, D]
             
             if self.num_latent_concepts > 0:
-                latent_logits, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
+                if self.use_probabilistic_cbm:
+                    latent_mean, latent_logvar, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
+                    if self.training or stochastic:
+                        std_l = torch.exp(0.5 * latent_logvar)
+                        eps_l = torch.randn_like(std_l)
+                        latent_logits = latent_mean + std_l * eps_l
+                    else:
+                        latent_logits = latent_mean
+                else:
+                    latent_logits, latent_topk_indices, latent_weights = self.latent_attention(features, k=k_val, return_weights=True)
                 
                 latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
                 latent_weights_transposed = latent_weights.permute(0, 2, 1)

@@ -11,6 +11,7 @@ from tqdm import tqdm
 import timm
 
 from src.data.cub import CUB2011Dataset
+from src.data.derm7pt import Derm7PtDataset
 from src.models.cbm_factory import inject_lora_to_vit
 
 # Early stopping class identical to main.py
@@ -128,7 +129,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     for images, concepts, targets in pbar:
         images = images.to(device)
         concepts = concepts.to(device)
-        targets = targets.squeeze(1).to(device)  # CUB returns [B, 1] target_tensor
+        targets = targets.squeeze(-1).long().to(device)
         
         optimizer.zero_grad()
         logits = model(images, concepts)
@@ -159,7 +160,7 @@ def validate(model, dataloader, criterion, device):
     for images, concepts, targets in pbar:
         images = images.to(device)
         concepts = concepts.to(device)
-        targets = targets.squeeze(1).to(device)
+        targets = targets.squeeze(-1).long().to(device)
         
         logits = model(images, concepts)
         loss = criterion(logits, targets)
@@ -186,20 +187,29 @@ def main():
         config_data = yaml.safe_load(f)
     
     ds_cfg = config_data.get("dataset", {})
-    csv_path = ds_cfg.get("csv_path", "data/CUB_200_2011/images.txt")
-    image_dir = ds_cfg.get("image_dir", "data/CUB_200_2011/images")
-    concept_config_path = ds_cfg.get("concept_config_path", "data/CUB_200_2011/concept_config.json")
+    dataset_name = ds_cfg.get("dataset", "cub").lower()
+    
+    if dataset_name == 'derm7pt':
+        dataset_class = Derm7PtDataset
+        csv_path = ds_cfg.get("csv_path", "data/derm7pt/meta/meta.csv")
+        image_dir = ds_cfg.get("image_dir", "data/derm7pt/images")
+        concept_config_path = ds_cfg.get("concept_config_path", "data/derm7pt/concept_config.json")
+    else:
+        dataset_class = CUB2011Dataset
+        csv_path = ds_cfg.get("csv_path", "data/CUB_200_2011/images.txt")
+        image_dir = ds_cfg.get("image_dir", "data/CUB_200_2011/images")
+        concept_config_path = ds_cfg.get("concept_config_path", "data/CUB_200_2011/concept_config.json")
     
     tqdm.write(f"\n============================================================")
-    tqdm.write(f"  🚀 Upper Bound Multimodal Fusion Classification (CUB)")
+    tqdm.write(f"  🚀 Upper Bound Multimodal Fusion Classification ({dataset_name.upper()})")
     tqdm.write(f"  📦 Image + Attributes | Backbone: timm/{args.backbone_name}")
     tqdm.write(f"============================================================")
     
     # 2. Build Datasets
-    dataset_config = CUB2011Dataset.get_default_config()
+    dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
     
-    train_dataset = CUB2011Dataset(
+    train_dataset = dataset_class(
         csv_path=csv_path,
         image_dir=image_dir,
         split='train',
@@ -207,7 +217,7 @@ def main():
         cache_in_memory=args.cache_in_memory,
         max_cache_size_gb=args.max_cache_size_gb
     )
-    val_dataset = CUB2011Dataset(
+    val_dataset = dataset_class(
         csv_path=csv_path,
         image_dir=image_dir,
         split='val',
@@ -261,7 +271,7 @@ def main():
     if args.use_wandb:
         try:
             import wandb
-            wandb.init(project="CUB-Upperbound", name=f"multimodal-{args.backbone_name}-{datetime.datetime.now().strftime('%m%d_%H%M')}", config=vars(args))
+            wandb.init(project=f"{dataset_name.upper()}-Upperbound", name=f"multimodal-{args.backbone_name}-{datetime.datetime.now().strftime('%m%d_%H%M')}", config=vars(args))
         except ImportError:
             tqdm.write("  ⚠️ wandb not installed. Disabling wandb logging.")
             args.use_wandb = False

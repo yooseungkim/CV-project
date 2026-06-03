@@ -291,8 +291,9 @@ def run_inference(image: Image.Image):
         attn_weights, size=(H_img, W_img), mode='bilinear', align_corners=False
     )
 
+    use_group_broadcasting = getattr(MODEL, "use_group_broadcasting", False)
     heatmap_gallery = []
-    for group in CONCEPT_GROUPS:
+    for group_idx, group in enumerate(CONCEPT_GROUPS):
         if group["type"] == "numerical":
             c_idx = group["flat_indices"][0]
             val = concept_vals[c_idx]
@@ -303,7 +304,8 @@ def run_inference(image: Image.Image):
             else:
                 orig_val = round(orig_val, 2)
             
-            hm = attn_upsampled[0, c_idx].cpu().numpy()
+            hm_idx = group_idx if use_group_broadcasting else c_idx
+            hm = attn_upsampled[0, hm_idx].cpu().numpy()
             name = f"{group['name']}: {orig_val}"
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
@@ -315,7 +317,8 @@ def run_inference(image: Image.Image):
             selected_class = group["classes"][max_idx]
             max_prob = probs[max_idx]
             
-            hm = attn_upsampled[0, max_c_idx].cpu().numpy()
+            hm_idx = group_idx if use_group_broadcasting else max_c_idx
+            hm = attn_upsampled[0, hm_idx].cpu().numpy()
             name = f"{group['name']}: {selected_class} ({max_prob:.2f})"
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
@@ -334,6 +337,53 @@ def run_inference(image: Image.Image):
     return prediction_text, concept_vals, heatmap_gallery, seg_pil, img_np, concept_logits_list, contrib_img
 
 
+def show_selected_concept_heatmap(select_data: gr.SelectData, image):
+    """Callback to render spatial Cross-Attention heatmap of clicked concept."""
+    if image is None or MODEL is None:
+        return None
+        
+    if not getattr(MODEL, "use_concept_attention", False):
+        return None
+        
+    img_tensor = TRANSFORM(image.convert('RGB')).unsqueeze(0).to(DEVICE)
+    MODEL.eval()
+    with torch.no_grad():
+        _, _, attn_weights = MODEL(img_tensor)
+        
+    img_np = _unnormalize_tensor(img_tensor.squeeze(0))
+    _, _, H_img, W_img = img_tensor.shape
+    
+    attn_upsampled = F.interpolate(
+        attn_weights, size=(H_img, W_img), mode='bilinear', align_corners=False
+    )
+    
+    idx = select_data.index
+    if idx < 0 or idx >= len(CONCEPT_GROUPS):
+        return None
+        
+    group = CONCEPT_GROUPS[idx]
+    use_group_broadcasting = getattr(MODEL, "use_group_broadcasting", False)
+    
+    if group["type"] == "numerical":
+        c_idx = group["flat_indices"][0]
+        hm_idx = idx if use_group_broadcasting else c_idx
+        hm = attn_upsampled[0, hm_idx].cpu().numpy()
+        name = group["name"]
+    else:
+        with torch.no_grad():
+            _, concept_logits, _ = MODEL(img_tensor)
+            concept_vals = MODEL.concept_activation(concept_logits).squeeze(0).cpu().tolist()
+        probs = [concept_vals[c_i] for c_i in group["flat_indices"]]
+        max_idx = np.argmax(probs)
+        max_c_idx = group["flat_indices"][max_idx]
+        hm_idx = idx if use_group_broadcasting else max_c_idx
+        hm = attn_upsampled[0, hm_idx].cpu().numpy()
+        name = f"{group['name']} ({group['classes'][max_idx]})"
+        
+    pil_img = _generate_single_heatmap(img_np, hm, name, alpha=0.5)
+    return pil_img
+
+
 def repredict_with_adjusted_concepts(original_logits, *component_values):
     """
     Re-run only the classifier head with user-adjusted concept values.
@@ -342,6 +392,8 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
     """
     if MODEL is None:
         return "No model loaded.", None
+
+    is_prob = getattr(MODEL, "use_probabilistic_cbm", False)
 
     # If original_logits is not populated (e.g. user clicked re-predict without running inference first)
     if not original_logits:
@@ -368,7 +420,10 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
             if abs(float(val) - orig_val) > 1e-4:
                 # User intervened! Override with slider value
                 norm_val = (float(val) - group["min"]) / (group["max"] - group["min"] + 1e-8)
-                norm_val = max(0.05, min(0.95, norm_val))
+                if is_prob:
+                    norm_val = max(0.001, min(0.999, norm_val))
+                else:
+                    norm_val = max(0.05, min(0.95, norm_val))
                 logits_mutated[0, c_idx] = math.log(norm_val / (1.0 - norm_val))
         else:
             # Categorical concept (Dropdown / Radio)
@@ -402,9 +457,9 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
                 
                 for cls_idx, cls_str in zip(flat_indices, group["classes"]):
                     if cls_str in selected_classes:
-                        p = 0.95
+                        p = 0.999 if is_prob else 0.95
                     else:
-                        p = 0.05
+                        p = 0.001 if is_prob else 0.05
                     logits_mutated[0, cls_idx] = math.log(p / (1.0 - p))
 
     # Evaluate using the mutated concept logits
@@ -563,6 +618,14 @@ def build_app() -> gr.Blocks:
                     interactive=False,
                     height=280
                 )
+                
+                gr.Markdown("### Selected Concept Heatmap")
+                concept_heatmap_output = gr.Image(
+                    label="Cross-Attention Overlay",
+                    type="pil",
+                    interactive=False,
+                    height=280
+                )
 
             # ==== Column 3: Heatmaps ====
             with gr.Column(scale=2):
@@ -588,6 +651,7 @@ def build_app() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=3, elem_classes="concept-slider-group"):
                 group_name_to_comp = {}
+                group_name_to_unc = {}
                 group_name_to_accordion = {}
                 num_cols = 3
                 cols_groups = [CONCEPT_GROUPS[i::num_cols] for i in range(num_cols)]
@@ -633,11 +697,25 @@ def build_app() -> gr.Blocks:
                                                 interactive=True,
                                                 elem_classes="compact-comp"
                                             )
+                                    
+                                    # Create uncertainty slider (hidden by default unless model is probabilistic)
+                                    is_prob = MODEL is not None and getattr(MODEL, "use_probabilistic_cbm", False)
+                                    unc_comp = gr.Slider(
+                                        minimum=0.0,
+                                        maximum=2.0,
+                                        value=0.0,
+                                        label="Uncertainty (σ)",
+                                        interactive=False,
+                                        visible=is_prob,
+                                        elem_classes="compact-comp"
+                                    )
                                     group_name_to_comp[group["name"]] = comp
+                                    group_name_to_unc[group["name"]] = unc_comp
                                     group_name_to_accordion[group["name"]] = accordion
                 
                 # Reconstruct concept_components and concept_accordions in the exact order of CONCEPT_GROUPS
                 concept_components = [group_name_to_comp[g["name"]] for g in CONCEPT_GROUPS]
+                uncertainty_components = [group_name_to_unc[g["name"]] for g in CONCEPT_GROUPS]
                 concept_accordions = [group_name_to_accordion[g["name"]] for g in CONCEPT_GROUPS]
 
             with gr.Column(scale=1):
@@ -660,6 +738,7 @@ def build_app() -> gr.Blocks:
                     gr.update(),
                     gr.update(),
                     *[gr.update() for _ in concept_components],
+                    *[gr.update() for _ in uncertainty_components],
                     *[gr.update() for _ in concept_accordions]
                 )
 
@@ -667,10 +746,22 @@ def build_app() -> gr.Blocks:
 
             # Build updates to reflect predicted values and accordion open/closed state
             component_updates = []
+            uncertainty_updates = []
             accordion_updates = []
+            
+            # Fetch uncertainty standard deviations if model is probabilistic
+            if MODEL is not None and getattr(MODEL, "use_probabilistic_cbm", False) and getattr(MODEL, "last_logvar", None) is not None:
+                std_vals = torch.exp(0.5 * MODEL.last_logvar).squeeze(0).cpu().tolist()
+            else:
+                std_vals = [0.0] * NUM_CONCEPTS
+                
             for group in CONCEPT_GROUPS:
+                flat_indices = group["flat_indices"]
+                group_std = float(np.mean([std_vals[idx] for idx in flat_indices]))
+                uncertainty_updates.append(gr.update(value=group_std))
+                
                 if group["type"] == "numerical":
-                    val = concept_vals[group["flat_indices"][0]]
+                    val = concept_vals[flat_indices[0]]
                     # Scale val [0, 1] to [min, max]
                     scaled_val = group["min"] + (group["max"] - group["min"]) * val
                     # Round value for clean display
@@ -682,7 +773,6 @@ def build_app() -> gr.Blocks:
                     accordion_updates.append(gr.update(open=False))
                 else:
                     # Categorical concept: select the highest probability class
-                    flat_indices = group["flat_indices"]
                     probs = [concept_vals[idx] for idx in flat_indices]
                     max_idx = np.argmax(probs)
                     
@@ -706,18 +796,24 @@ def build_app() -> gr.Blocks:
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_logits_list, gallery, seg_pil, contrib_img, *component_updates, *accordion_updates)
+            return (pred_text, concept_logits_list, gallery, seg_pil, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, contrib_output, *concept_components, *concept_accordions]
+            outputs=[prediction_output, concept_state, heatmap_gallery, seg_output, contrib_output, *concept_components, *uncertainty_components, *concept_accordions]
         )
 
         repredict_btn.click(
             fn=repredict_with_adjusted_concepts,
             inputs=[concept_state, *concept_components],
             outputs=[adjusted_prediction, contrib_output]
+        )
+        
+        heatmap_gallery.select(
+            fn=show_selected_concept_heatmap,
+            inputs=[input_image],
+            outputs=[concept_heatmap_output]
         )
 
     return app
@@ -774,6 +870,22 @@ def parse_app_args():
     parser.add_argument(
         '--use_group_broadcasting', action='store_true', default=False,
         help="Use GroupToConceptAttention layout (group queries → independent BCE classifiers based on concept_config)"
+    )
+    parser.add_argument(
+        '--use_gated_nam', type=str2bool, default=False,
+        help="Activate Gated Sparse NAM head"
+    )
+    parser.add_argument(
+        '--use_pairwise_nam', type=str2bool, default=False,
+        help="Activate Pairwise Interaction NAM^2 head"
+    )
+    parser.add_argument(
+        '--use_probabilistic_cbm', type=str2bool, default=False,
+        help="Convert Concept Extractor to Probabilistic"
+    )
+    parser.add_argument(
+        '--use_concept_attention', type=str2bool, default=False,
+        help="Activate Patch token-based Cross-Attention"
     )
     parser.add_argument(
         '--lora_r', type=int, default=8
@@ -972,6 +1084,10 @@ def main():
     use_group_broadcasting = getattr(args, 'use_group_broadcasting', False)
     use_dino_mask = False
     dino_mask_threshold = 0.35
+    use_gated_nam = getattr(args, 'use_gated_nam', False)
+    use_pairwise_nam = getattr(args, 'use_pairwise_nam', False)
+    use_probabilistic_cbm = getattr(args, 'use_probabilistic_cbm', False)
+    use_concept_attention = getattr(args, 'use_concept_attention', False)
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -991,11 +1107,22 @@ def main():
         if 'use_dino_mask' in checkpoint_args:
             use_dino_mask = checkpoint_args['use_dino_mask']
             dino_mask_threshold = checkpoint_args.get('dino_mask_threshold', 0.35)
-        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        if 'use_gated_nam' in checkpoint_args:
+            use_gated_nam = checkpoint_args['use_gated_nam']
+        elif 'use_nam_head' in checkpoint_args:
+            use_gated_nam = checkpoint_args['use_nam_head']
+        if 'use_pairwise_nam' in checkpoint_args:
+            use_pairwise_nam = checkpoint_args['use_pairwise_nam']
+        if 'use_probabilistic_cbm' in checkpoint_args:
+            use_probabilistic_cbm = checkpoint_args['use_probabilistic_cbm']
+        if 'use_concept_attention' in checkpoint_args:
+            use_concept_attention = checkpoint_args['use_concept_attention']
+        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
         ds_cfg = checkpoint_cfg.get('dataset', {})
+        tr_cfg = checkpoint_cfg.get('training', {})
         if 'use_lora' in bb_cfg:
             use_lora = bb_cfg['use_lora']
             lora_r = bb_cfg.get('lora_r', 8)
@@ -1012,7 +1139,17 @@ def main():
         if 'use_dino_mask' in bb_cfg:
             use_dino_mask = bb_cfg['use_dino_mask']
             dino_mask_threshold = bb_cfg.get('dino_mask_threshold', 0.35)
-        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}")
+        if 'use_gated_nam' in tr_cfg:
+            use_gated_nam = tr_cfg['use_gated_nam']
+        elif 'use_nam_head' in tr_cfg:
+            use_gated_nam = tr_cfg['use_nam_head']
+        if 'use_pairwise_nam' in tr_cfg:
+            use_pairwise_nam = tr_cfg['use_pairwise_nam']
+        if 'use_probabilistic_cbm' in tr_cfg:
+            use_probabilistic_cbm = tr_cfg['use_probabilistic_cbm']
+        if 'use_concept_attention' in bb_cfg:
+            use_concept_attention = bb_cfg['use_concept_attention']
+        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_dino_mask={use_dino_mask}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -1118,8 +1255,11 @@ def main():
         group_mapping=group_mapping,
         use_dino_mask=use_dino_mask,
         dino_mask_threshold=dino_mask_threshold,
-        use_nam_head=use_nam_head,
-        nam_hidden_dim=nam_hidden_dim
+        use_nam_head=use_nam_head or use_gated_nam,
+        nam_hidden_dim=nam_hidden_dim,
+        use_probabilistic_cbm=use_probabilistic_cbm,
+        use_concept_attention=use_concept_attention,
+        use_pairwise_nam=use_pairwise_nam
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

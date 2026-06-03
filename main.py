@@ -100,6 +100,12 @@ def parse_args():
     if "phase1_label_smoothing" in tr_cfg: flat_defaults["phase1_label_smoothing"] = tr_cfg["phase1_label_smoothing"]
     if "use_nam_head" in tr_cfg: flat_defaults["use_nam_head"] = tr_cfg["use_nam_head"]
     if "nam_hidden_dim" in tr_cfg: flat_defaults["nam_hidden_dim"] = tr_cfg["nam_hidden_dim"]
+    if "use_gated_nam" in tr_cfg: flat_defaults["use_gated_nam"] = tr_cfg["use_gated_nam"]
+    if "use_pairwise_nam" in tr_cfg: flat_defaults["use_pairwise_nam"] = tr_cfg["use_pairwise_nam"]
+    if "use_probabilistic_cbm" in tr_cfg: flat_defaults["use_probabilistic_cbm"] = tr_cfg["use_probabilistic_cbm"]
+    if "use_concept_attention" in bb_cfg: flat_defaults["use_concept_attention"] = bb_cfg["use_concept_attention"]
+    if "l1_lambda_gate" in tr_cfg: flat_defaults["l1_lambda_gate"] = tr_cfg["l1_lambda_gate"]
+    if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -199,6 +205,12 @@ def parse_args():
     parser.add_argument('--run_eval', type=str2bool, default=flat_defaults.get('run_eval', False), help="Automatically run evaluation (eval_cbm.py) after training finishes")
     parser.add_argument('--use_nam_head', type=str2bool, default=flat_defaults.get('use_nam_head', False), help="Use GatedSparseNAMHead instead of standard nn.Linear classifier head")
     parser.add_argument('--nam_hidden_dim', type=int, default=flat_defaults.get('nam_hidden_dim', 64), help="Hidden dimension for GatedSparseNAMHead subnetworks")
+    parser.add_argument('--use_gated_nam', type=str2bool, default=flat_defaults.get('use_gated_nam', False), help="Activate Gated Sparse NAM head")
+    parser.add_argument('--use_pairwise_nam', type=str2bool, default=flat_defaults.get('use_pairwise_nam', False), help="Activate Pairwise Interaction NAM^2 head")
+    parser.add_argument('--use_probabilistic_cbm', type=str2bool, default=flat_defaults.get('use_probabilistic_cbm', False), help="Convert Concept Extractor to Probabilistic")
+    parser.add_argument('--use_concept_attention', type=str2bool, default=flat_defaults.get('use_concept_attention', False), help="Activate Patch token-based Cross-Attention")
+    parser.add_argument('--l1_lambda_gate', type=float, default=flat_defaults.get('l1_lambda_gate', 0.01), help="L1 Regularization strength for Gating parameters")
+    parser.add_argument('--weight_decay_nam', type=float, default=flat_defaults.get('weight_decay_nam', 1e-2), help="L2 penalty for NAM subnetworks smoothing")
     
     args = parser.parse_args()
     return args, config_data
@@ -390,8 +402,11 @@ def main():
         group_mapping=group_mapping,
         use_dino_mask=args.use_dino_mask,
         dino_mask_threshold=args.dino_mask_threshold,
-        use_nam_head=args.use_nam_head,
-        nam_hidden_dim=args.nam_hidden_dim
+        use_nam_head=args.use_nam_head or args.use_gated_nam,
+        nam_hidden_dim=args.nam_hidden_dim,
+        use_probabilistic_cbm=args.use_probabilistic_cbm,
+        use_concept_attention=args.use_concept_attention,
+        use_pairwise_nam=args.use_pairwise_nam
     )
     
     if args.freeze_backbone:
@@ -679,6 +694,14 @@ def main():
         # Include latent_concepts if greater than zero
         if args.latent_concepts > 0:
             cmd.extend(["--latent_concepts", str(args.latent_concepts)])
+        if args.use_gated_nam or args.use_nam_head:
+            cmd.extend(["--use_gated_nam", "true"])
+        if args.use_pairwise_nam:
+            cmd.extend(["--use_pairwise_nam", "true"])
+        if args.use_probabilistic_cbm:
+            cmd.extend(["--use_probabilistic_cbm", "true"])
+        if args.use_concept_attention:
+            cmd.extend(["--use_concept_attention", "true"])
             
         tqdm.write(f"  Running: {' '.join(cmd)}")
         try:

@@ -15,6 +15,7 @@ backbone:
   use_group_broadcasting: true  # GroupToConceptAttention: 7 groups -> 28 independent BCE classifiers
   use_dino_mask: false     # Set to false for derm7pt because surrounding skin (background) contains crucial contextual diagnostic cues
   dino_mask_threshold: 0.35
+  use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
@@ -35,6 +36,11 @@ training:
   use_nam_head: true  # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
   nam_hidden_dim: 8  # Hidden dimension for parallel NAM sub-networks
   l1_warmup_epochs: 5  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
+  use_gated_nam: true  # Gated Sparse NAM head activation
+  use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
+  use_probabilistic_cbm: false  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  l1_lambda_gate: 0.01  # L1 Regularization strength on gates
+  weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
@@ -66,7 +72,10 @@ optimizer:
   phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
   phase3_lr: 0.00001  # Small joint learning rate for end-to-end Phase 3 tuning
   weight_decay: 0.05
-  concept_loss_type: "bce"  # BCEWithLogitsLoss is required for Group Broadcasting
+  concept_loss_type: "focal"  # Choices: ["focal", "bce"]
+  # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
+  focal_alpha: 0.95
+  focal_gamma: 2.5  # Focal loss focus exponent gamma
 
 # 5. Learning Rate Scheduler Options
 scheduler:

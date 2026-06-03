@@ -134,8 +134,10 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
         sample_group_errors.append(sorted_groups)
         
     # Translate GT concepts (probabilities in [0, 1]) to logit space (z = log(p / (1 - p)))
-    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
-    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    if getattr(model, "use_probabilistic_cbm", False):
+        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
+    else:
+        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
     gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
     
     # Create a copy of the predicted concept logits that we will mutate
@@ -184,8 +186,10 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, latent
         sample_concept_errors.append(sorted_indices)
         
     # Translate GT concepts (probabilities in [0, 1]) to logit space
-    # Soft Intervention: Clip p to [0.05, 0.95] (logit range [-2.94, +2.94]) to match CBM predicted logit scale and prevent linear head saturation
-    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    if getattr(model, "use_probabilistic_cbm", False):
+        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
+    else:
+        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
     gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
     
     # Evaluate at specific intervention percentages (0%, 10%, 20%, ..., 100% of concepts)
@@ -221,7 +225,10 @@ def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, con
     thresh_tensor = model.concept_thresholds.cpu()
     
     # Translate GT concepts (probabilities in [0, 1]) to logit space
-    p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
+    if getattr(model, "use_probabilistic_cbm", False):
+        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
+    else:
+        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
     gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
     
     # Create a copy of predicted concept logits
@@ -572,6 +579,41 @@ def main():
         print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
         print(f"  ----------------------------------------------------------")
     print(f"{BOLD}{GREEN}============================================================{RESET}\n")
+    
+    # 10. Export Active Pairwise NAM Interactions
+    if getattr(model, "use_pairwise_nam", False):
+        tqdm.write(f"\n{BOLD}{CYAN}[Interaction Logging]{RESET} Analyzing pairwise concept interactions...")
+        gates = model.classifier_head.pairwise_gates.detach().cpu().numpy()
+        pair_indices = model.classifier_head.pair_indices
+        concepts_list = test_dataset.config.get("concepts_flat", test_dataset.config.get("concepts", []))
+        
+        active_interactions = []
+        threshold = 1e-3
+        for idx, g_val in enumerate(gates):
+            if abs(g_val) > threshold:
+                i, j = pair_indices[idx]
+                name_i = concepts_list[i] if i < len(concepts_list) else f"Concept_{i}"
+                name_j = concepts_list[j] if j < len(concepts_list) else f"Concept_{j}"
+                active_interactions.append({
+                    "index": idx,
+                    "concept_i_idx": i,
+                    "concept_j_idx": j,
+                    "concept_i": name_i,
+                    "concept_j": name_j,
+                    "gate_weight": float(g_val)
+                })
+        
+        # Sort by absolute gate weight descending
+        active_interactions = sorted(active_interactions, key=lambda x: abs(x["gate_weight"]), reverse=True)
+        
+        export_path = "active_interactions.json"
+        with open(export_path, "w", encoding="utf-8") as f:
+            json.dump(active_interactions, f, indent=4)
+        tqdm.write(f"  {BOLD}{GREEN}[Export]{RESET} Exported {len(active_interactions)} active interaction pairs to {export_path}")
+        
+        tqdm.write(f"  Top 10 Active Concept Interaction Pairs:")
+        for item in active_interactions[:10]:
+            tqdm.write(f"     ├─ {item['concept_i']} <--> {item['concept_j']}: weight = {item['gate_weight']:.4f}")
 
 
 if __name__ == "__main__":

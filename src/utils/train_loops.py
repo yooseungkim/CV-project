@@ -152,18 +152,28 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             # Use raw logits with BCEWithLogitsLoss
             loss_c = concept_criterion(concept_logits[:, :num_concepts_supervised], smoothed_concepts)
             
+            if getattr(model, "use_probabilistic_cbm", False):
+                mean = model.last_mean
+                logvar = model.last_logvar
+                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
+                loss_c = loss_c + 0.001 * kl_loss
+            
             # Compute spatial orthogonality loss for the supervised concept attention maps
             if getattr(args, "ortho_lambda", 0.0) > 0.0:
-                supervised_attn = attn_weights[:, :num_concepts_supervised]
-                if concept_groups_indices is not None:
-                    # Aggregate attention maps to group level (mean of concepts in each group)
-                    group_attns = []
-                    for indices in concept_groups_indices:
-                        group_attn_agg = supervised_attn[:, indices].mean(dim=1)
-                        group_attns.append(group_attn_agg)
-                    attn_to_ortho = torch.stack(group_attns, dim=1)
+                if getattr(model, "use_group_broadcasting", False):
+                    # Under group broadcasting, attention maps are already at the group level
+                    attn_to_ortho = attn_weights
                 else:
-                    attn_to_ortho = supervised_attn
+                    supervised_attn = attn_weights[:, :num_concepts_supervised]
+                    if concept_groups_indices is not None:
+                        # Aggregate attention maps to group level (mean of concepts in each group)
+                        group_attns = []
+                        for indices in concept_groups_indices:
+                            group_attn_agg = supervised_attn[:, indices].mean(dim=1)
+                            group_attns.append(group_attn_agg)
+                        attn_to_ortho = torch.stack(group_attns, dim=1)
+                    else:
+                        attn_to_ortho = supervised_attn
                 
                 loss_ortho = calculate_orthogonality_loss(attn_to_ortho)
                 total_loss = loss_c + args.ortho_lambda * loss_ortho
@@ -205,17 +215,27 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 # BCEWithLogitsLoss with raw logits
                 v_loss_c = concept_criterion(v_concept_logits[:, :num_concepts_supervised], v_smoothed_concepts)
                 
+                if getattr(model, "use_probabilistic_cbm", False):
+                    mean = model.last_mean
+                    logvar = model.last_logvar
+                    kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
+                    v_loss_c = v_loss_c + 0.001 * kl_loss
+                
                 if getattr(args, "ortho_lambda", 0.0) > 0.0:
-                    v_supervised_attn = v_attn_weights[:, :num_concepts_supervised]
-                    if concept_groups_indices is not None:
-                        # Aggregate attention maps to group level
-                        v_group_attns = []
-                        for indices in concept_groups_indices:
-                            v_group_attn_agg = v_supervised_attn[:, indices].mean(dim=1)
-                            v_group_attns.append(v_group_attn_agg)
-                        v_attn_to_ortho = torch.stack(v_group_attns, dim=1)
+                    if getattr(model, "use_group_broadcasting", False):
+                        # Under group broadcasting, attention maps are already at the group level
+                        v_attn_to_ortho = v_attn_weights
                     else:
-                        v_attn_to_ortho = v_supervised_attn
+                        v_supervised_attn = v_attn_weights[:, :num_concepts_supervised]
+                        if concept_groups_indices is not None:
+                            # Aggregate attention maps to group level
+                            v_group_attns = []
+                            for indices in concept_groups_indices:
+                                v_group_attn_agg = v_supervised_attn[:, indices].mean(dim=1)
+                                v_group_attns.append(v_group_attn_agg)
+                            v_attn_to_ortho = torch.stack(v_group_attns, dim=1)
+                        else:
+                            v_attn_to_ortho = v_supervised_attn
                     
                     v_loss_ortho = calculate_orthogonality_loss(v_attn_to_ortho)
                     v_total_loss = v_loss_c + args.ortho_lambda * v_loss_ortho
@@ -250,6 +270,15 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         
         concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
         
+        # Determine separate concepts list for group-level heatmap visualization under group broadcasting
+        if getattr(model, "use_group_broadcasting", False):
+            if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+                heatmap_concepts_list = [info["name"] for info in train_dataset.concept_features_info]
+            else:
+                heatmap_concepts_list = resolved_config.get("concepts", [])
+        else:
+            heatmap_concepts_list = concepts_list
+            
         # struggling concepts는 마지막 epoch이거나 조기종료일 때만 출력하여 로그 노이즈 최소화
         is_last_epoch = (epoch == phase1_epochs - 1)
         
@@ -286,8 +315,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             num_samples = min(4, vis_images.size(0))
             heatmap_images = generate_concept_heatmaps(
                 image_tensor=vis_images[:num_samples],
-                attn_weights=vis_attn[:num_samples, :num_concepts_supervised],
-                concept_names=concepts_list
+                attn_weights=vis_attn[:num_samples, :len(heatmap_concepts_list)],
+                concept_names=heatmap_concepts_list
             )
             epoch_vis_dir = os.path.join("visualizations", run_name, f"phase1_epoch_{epoch + 1}")
             os.makedirs(epoch_vis_dir, exist_ok=True)
@@ -422,17 +451,38 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
     weight_decay = opt_cfg.get("weight_decay", 0.0)
     phase2_lr = args.phase2_lr if args.phase2_lr is not None else opt_cfg.get("phase2_lr", opt_cfg.get("head_lr", args.lr))
     
-    trainable_params = list(model.classifier_head.parameters())
-    if model.num_latent_concepts > 0:
-        trainable_params += list(model.latent_attention.parameters())
+    if getattr(args, "use_gated_nam", False) or getattr(args, "use_nam_head", False):
+        gates_params = []
+        subnet_params = []
+        for name, param in model.classifier_head.named_parameters():
+            if param.requires_grad:
+                if "gate" in name:
+                    gates_params.append(param)
+                else:
+                    subnet_params.append(param)
+        if model.num_latent_concepts > 0:
+            for param in model.latent_attention.parameters():
+                if param.requires_grad:
+                    subnet_params.append(param)
+                    
+        param_groups = [
+            {"params": subnet_params, "weight_decay": getattr(args, "weight_decay_nam", 1e-2)},
+            {"params": gates_params, "weight_decay": 0.0}
+        ]
+        tqdm.write(f"  {BOLD}{BLUE}[Optimizer Split]{RESET} Separate group: {len(subnet_params)} subnetwork tensors (WD={getattr(args, 'weight_decay_nam', 1e-2):.4f}), {len(gates_params)} gate tensors (WD=0.0)")
+    else:
+        trainable_params = list(model.classifier_head.parameters())
+        if model.num_latent_concepts > 0:
+            trainable_params += list(model.latent_attention.parameters())
+        param_groups = [{"params": trainable_params, "weight_decay": weight_decay}]
         
     if opt_type == "adamw":
-        optimizer = optim.AdamW(trainable_params, lr=phase2_lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(param_groups, lr=phase2_lr)
     elif opt_type == "sgd":
         momentum = opt_cfg.get("momentum", 0.9)
-        optimizer = optim.SGD(trainable_params, lr=phase2_lr, weight_decay=weight_decay, momentum=momentum)
+        optimizer = optim.SGD(param_groups, lr=phase2_lr, momentum=momentum)
     else:
-        optimizer = optim.Adam(trainable_params, lr=phase2_lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(param_groups, lr=phase2_lr)
         
     sched_cfg = config_data.get("scheduler", {})
     sched_type = sched_cfg.get("type", "none").lower()
@@ -468,7 +518,17 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             with torch.no_grad():
                 features = model.backbone(images)
                 if hasattr(model.supervised_attention, 'mlp'):
-                    supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        supervised_mean, supervised_logvar, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                        if model.training:
+                            std = torch.exp(0.5 * supervised_logvar)
+                            eps = torch.randn_like(std)
+                            supervised_logits = supervised_mean + std * eps
+                        else:
+                            supervised_logits = supervised_mean
+                    else:
+                        supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                    
                     k_val = supervised_topk_indices.size(1)
                     indices_transposed = supervised_topk_indices.permute(0, 2, 1) # [B, num_supervised_concepts, k]
                     weights_transposed = supervised_weights.permute(0, 2, 1) # [B, num_supervised_concepts, k]
@@ -485,7 +545,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                     gathered_features = gathered_flat.view(B_size, num_c, k_val, D_dim)
                     supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                 else:
-                    supervised_logits, _, supervised_features = model.supervised_attention(features)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        supervised_mean, supervised_logvar, _, supervised_features = model.supervised_attention(features)
+                        if model.training:
+                            std = torch.exp(0.5 * supervised_logvar)
+                            eps = torch.randn_like(std)
+                            supervised_logits = supervised_mean + std * eps
+                        else:
+                            supervised_logits = supervised_mean
+                    else:
+                        supervised_logits, _, supervised_features = model.supervised_attention(features)
                     
             # Apply scheduled sampling (concept noise injection) if enabled
             if getattr(args, "phase2_scheduled_sampling", False):
@@ -501,7 +570,17 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             # 레이턴트 컨셉은 그래디언트를 흘려주어야 하므로 no_grad 밖에서 계산
             if model.num_latent_concepts > 0:
                 if hasattr(model.latent_attention, 'mlp'):
-                    latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        latent_mean, latent_logvar, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                        if model.training:
+                            std_l = torch.exp(0.5 * latent_logvar)
+                            eps_l = torch.randn_like(std_l)
+                            latent_logits = latent_mean + std_l * eps_l
+                        else:
+                            latent_logits = latent_mean
+                    else:
+                        latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                    
                     k_val = latent_topk_indices.size(1)
                     indices_transposed = latent_topk_indices.permute(0, 2, 1) # [B, num_latent_concepts, k]
                     weights_transposed = latent_weights.permute(0, 2, 1) # [B, num_latent_concepts, k]
@@ -518,7 +597,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                     gathered_features = gathered_flat.view(B_size, num_c, k_val, D_dim)
                     latent_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                 else:
-                    latent_logits, _, latent_features = model.latent_attention(features)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        latent_mean, latent_logvar, _, latent_features = model.latent_attention(features)
+                        if model.training:
+                            std_l = torch.exp(0.5 * latent_logvar)
+                            eps_l = torch.randn_like(std_l)
+                            latent_logits = latent_mean + std_l * eps_l
+                        else:
+                            latent_logits = latent_mean
+                    else:
+                        latent_logits, _, latent_features = model.latent_attention(features)
                 concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
             else:
                 concept_logits = supervised_logits
@@ -555,17 +643,24 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 
             # L1 Lasso Regularization on classifier_head parameters to select high-information concepts
             # Apply linear warm-up scheduler to prevent early gating collapse
-            target_l1_lambda = getattr(args, "l1_lambda", 0.0)
-            warmup_epochs = getattr(args, "l1_warmup_epochs", 5)
-            if target_l1_lambda > 0:
+            if getattr(args, "use_gated_nam", False) or getattr(args, "use_nam_head", False):
+                target_l1_gate = getattr(args, "l1_lambda_gate", 0.01)
+                warmup_epochs = getattr(args, "l1_warmup_epochs", 5)
                 if warmup_epochs > 0 and epoch < warmup_epochs:
-                    current_l1_lambda = target_l1_lambda * (epoch / warmup_epochs)
+                    current_l1_gate = target_l1_gate * (epoch / warmup_epochs)
                 else:
-                    current_l1_lambda = target_l1_lambda
+                    current_l1_gate = target_l1_gate
                 
-                if hasattr(model.classifier_head, "get_sparsity_loss"):
-                    loss_t = loss_t + current_l1_lambda * model.classifier_head.get_sparsity_loss()
-                else:
+                loss_t = loss_t + current_l1_gate * model.classifier_head.get_sparsity_loss()
+            else:
+                target_l1_lambda = getattr(args, "l1_lambda", 0.0)
+                warmup_epochs = getattr(args, "l1_warmup_epochs", 5)
+                if target_l1_lambda > 0:
+                    if warmup_epochs > 0 and epoch < warmup_epochs:
+                        current_l1_lambda = target_l1_lambda * (epoch / warmup_epochs)
+                    else:
+                        current_l1_lambda = target_l1_lambda
+                    
                     l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
                     loss_t = loss_t + current_l1_lambda * l1_norm
                 
@@ -674,11 +769,17 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Backbone & Classifier Fine-Tuning (Concept Head Frozen){RESET}")
     tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
     
-    # 1. Freeze Concept Head (supervised + latent attention) — preserve Phase 1 learned attention
-    model.freeze_supervised_attention()
-    model.freeze_latent_attention()
-    tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Concept Head frozen: supervised & latent attention weights are fixed.")
-    
+    # 1. Conditionally freeze or unfreeze Concept Head in Phase 3
+    if args.freeze_backbone:
+        model.freeze_supervised_attention()
+        model.freeze_latent_attention()
+        tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Concept Head and Backbone frozen in Phase 3.")
+    else:
+        model.unfreeze_supervised_attention()
+        if model.num_latent_concepts > 0:
+            model.unfreeze_latent_attention()
+        tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Backbone and Concept Head unfrozen in Phase 3 to prevent Concept Drift.")
+        
     # 2. Unfreeze only LoRA backbone adapters + classifier head
     model.unfreeze_backbone()    # LoRA-active: only lora_A / lora_B params, pretrained weights stay frozen
     model.unfreeze_classifier()
@@ -692,25 +793,29 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     phase3_lr = args.phase3_lr if args.phase3_lr is not None else 1e-5
     phase3_epochs = args.phase3_epochs
     
-    # Use differential learning rates: phase3_lr for backbone, and 50x higher LR for classifier head
+    # Use differential learning rates: phase3_lr for backbone/concept head, and 50x higher LR for classifier head
     backbone_params = []
     head_params = []
+    concept_head_params = []
     for name, param in model.named_parameters():
         if param.requires_grad:
             if "backbone" in name:
                 backbone_params.append(param)
+            elif "supervised_attention" in name or "latent_attention" in name:
+                concept_head_params.append(param)
             else:
                 head_params.append(param)
-                
+                 
     param_groups = [
         {"params": backbone_params, "lr": phase3_lr},
+        {"params": concept_head_params, "lr": phase3_lr},
         {"params": head_params, "lr": phase3_lr * 50}  # 50x higher learning rate for classifier/gating parameters
     ]
     
     trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
-    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(backbone_params) + len(head_params)} tensors")
+    tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(backbone_params) + len(concept_head_params) + len(head_params)} tensors")
     tqdm.write(f"     └─ Modules: {', '.join(dict.fromkeys(n.split('.')[0] for n in trainable_names))}")
-    tqdm.write(f"     └─ Differential LRs: backbone={phase3_lr:.6f}, classifier_head={phase3_lr * 50:.6f}")
+    tqdm.write(f"     └─ Differential LRs: backbone={phase3_lr:.6f}, concept_head={phase3_lr:.6f}, classifier_head={phase3_lr * 50:.6f}")
     
     if opt_type == "adamw":
         optimizer = optim.AdamW(param_groups, weight_decay=weight_decay)
@@ -759,7 +864,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 features = features[0]
                 
             if model.backbone_name.startswith('resnet'):
-                supervised_logits, supervised_attn, supervised_features = model.supervised_attention(features)
+                if getattr(model, "use_probabilistic_cbm", False):
+                    supervised_mean, supervised_logvar, supervised_attn, supervised_features = model.supervised_attention(features)
+                    if model.training:
+                        std = torch.exp(0.5 * supervised_logvar)
+                        eps = torch.randn_like(std)
+                        supervised_logits = supervised_mean + std * eps
+                    else:
+                        supervised_logits = supervised_mean
+                else:
+                    supervised_logits, supervised_attn, supervised_features = model.supervised_attention(features)
                 
                 # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
                 if getattr(args, "phase2_scheduled_sampling", False):
@@ -771,7 +885,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     )
                     
                 if model.num_latent_concepts > 0:
-                    latent_logits, latent_attn, latent_features = model.latent_attention(features)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        latent_mean, latent_logvar, latent_attn, latent_features = model.latent_attention(features)
+                        if model.training:
+                            std_l = torch.exp(0.5 * latent_logvar)
+                            eps_l = torch.randn_like(std_l)
+                            latent_logits = latent_mean + std_l * eps_l
+                        else:
+                            latent_logits = latent_mean
+                    else:
+                        latent_logits, latent_attn, latent_features = model.latent_attention(features)
                     concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
                     attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
                 else:
@@ -782,7 +905,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 # ViT / DINOv2 backbones
                 if model.use_group_broadcasting:
                     # GroupToConceptAttention
-                    concept_logits, attn_weights, concept_features = model.supervised_attention(features)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        supervised_mean, supervised_logvar, attn_weights, concept_features = model.supervised_attention(features)
+                        if model.training:
+                            std = torch.exp(0.5 * supervised_logvar)
+                            eps = torch.randn_like(std)
+                            concept_logits = supervised_mean + std * eps
+                        else:
+                            concept_logits = supervised_mean
+                    else:
+                        concept_logits, attn_weights, concept_features = model.supervised_attention(features)
                     supervised_features = concept_features
                     
                     # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
@@ -794,9 +926,41 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                             epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
                         )
                     latent_features = None
+                elif getattr(model, "use_concept_attention", False):
+                    # ViTCrossAttentionLayer
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        supervised_mean, supervised_logvar, attn_weights, supervised_features = model.supervised_attention(features)
+                        if model.training:
+                            std = torch.exp(0.5 * supervised_logvar)
+                            eps = torch.randn_like(std)
+                            supervised_logits = supervised_mean + std * eps
+                        else:
+                            supervised_logits = supervised_mean
+                    else:
+                        supervised_logits, attn_weights, supervised_features = model.supervised_attention(features)
+                    
+                    # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
+                    if getattr(args, "phase2_scheduled_sampling", False):
+                        supervised_logits = inject_concept_noise(
+                            pred_logits=supervised_logits,
+                            gt_labels=concepts[:, :num_concepts_supervised],
+                            replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                            epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                        )
+                    concept_logits = supervised_logits
+                    latent_features = None
                 else:
                     # PatchWiseMLPConceptHead
-                    supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                    if getattr(model, "use_probabilistic_cbm", False):
+                        supervised_mean, supervised_logvar, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                        if model.training:
+                            std = torch.exp(0.5 * supervised_logvar)
+                            eps = torch.randn_like(std)
+                            supervised_logits = supervised_mean + std * eps
+                        else:
+                            supervised_logits = supervised_mean
+                    else:
+                        supervised_logits, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
                     
                     # Apply scheduled sampling (concept noise injection) if enabled in Phase 3
                     if getattr(args, "phase2_scheduled_sampling", False):
@@ -833,7 +997,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     supervised_features = torch.sum(gathered_features * weights_transposed.unsqueeze(-1), dim=2)
                     
                     if model.num_latent_concepts > 0:
-                        latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                        if getattr(model, "use_probabilistic_cbm", False):
+                            latent_mean, latent_logvar, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
+                            if model.training:
+                                std_l = torch.exp(0.5 * latent_logvar)
+                                eps_l = torch.randn_like(std_l)
+                                latent_logits = latent_mean + std_l * eps_l
+                            else:
+                                latent_logits = latent_mean
+                        else:
+                            latent_logits, latent_topk_indices, latent_weights = model.latent_attention(features, return_weights=True)
                         
                         latent_indices_transposed = latent_topk_indices.permute(0, 2, 1)
                         latent_weights_transposed = latent_weights.permute(0, 2, 1)
@@ -878,6 +1051,11 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             smoothed_concepts = apply_label_smoothing(concepts, epsilon=smooth_epsilon)
             
             loss_c = concept_criterion(supervised_logits, smoothed_concepts)
+            if getattr(model, "use_probabilistic_cbm", False):
+                mean = model.last_mean
+                logvar = model.last_logvar
+                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
+                loss_c = loss_c + 0.001 * kl_loss
             
             # 3. Latent Regularization Losses
             loss_latent_ortho = torch.tensor(0.0, device=device)
