@@ -599,6 +599,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
         tqdm.write(f"{BOLD}{MAGENTA}[Phase 2]{RESET} Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
         
+        # Track Active Gates if GatedSparseNAMHead is used
+        active_count = None
+        gate_mean_val = None
+        if hasattr(model.classifier_head, 'concept_gates'):
+            with torch.no_grad():
+                gates = model.classifier_head.concept_gates.detach().cpu()
+                active_count = (gates.abs() > 1e-3).sum().item()
+                gate_mean_val = gates.abs().mean().item()
+                tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
+        
         if scheduler is not None:
             scheduler.step()
             
@@ -625,6 +635,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 "val/target_loss": avg_val_loss_t,
                 "val/accuracy": avg_val_acc_t
             }
+            if active_count is not None:
+                log_dict.update({
+                    "val/active_gates": active_count,
+                    "val/gate_mean": gate_mean_val
+                })
             wandb.log(log_dict)
 
     # 💧 Phase 2 종료 후 드롭아웃 원복
@@ -894,6 +909,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         
         tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
         
+        # Track Active Gates if GatedSparseNAMHead is used
+        active_count = None
+        gate_mean_val = None
+        if hasattr(model.classifier_head, 'concept_gates'):
+            with torch.no_grad():
+                gates = model.classifier_head.concept_gates.detach().cpu()
+                active_count = (gates.abs() > 1e-3).sum().item()
+                gate_mean_val = gates.abs().mean().item()
+                tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
+        
         if scheduler is not None:
             scheduler.step()
             
@@ -922,4 +947,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 "val/joint_target_loss": avg_val_loss_t,
                 "val/joint_accuracy": avg_val_acc_t
             }
+            if active_count is not None:
+                log_dict.update({
+                    "val/active_gates": active_count,
+                    "val/gate_mean": gate_mean_val
+                })
             wandb.log(log_dict)
