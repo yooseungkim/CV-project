@@ -316,6 +316,11 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 log_dict.update(val_individual_accs)
             wandb.log(log_dict)
             
+    # Phase 1 루프 완료 후 (조기 종료되지 않고 완주한 경우에도) 베스트 가중치 복원
+    if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
+        tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 1 completed. Restoring best Phase 1 weights.")
+        model.load_state_dict(es_handler.best_weights)
+
     # ── Final Validation Optimal Threshold Search ─────────────────────────
     model.eval()
     all_val_logits = []
@@ -647,6 +652,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         model.dropout.p = original_dropout_p
         tqdm.write(f"  {BOLD}{YELLOW}[Dropout]{RESET} Restored dropout probability after Phase 2: {model.dropout.p}")
 
+    # Phase 2 루프 완료 후 (조기 종료되지 않고 완주한 경우에도) 베스트 가중치 복원
+    if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
+        tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 2 completed. Restoring best Phase 2 weights.")
+        model.load_state_dict(es_handler.best_weights)
+
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
     tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Backbone & Classifier Fine-Tuning (Concept Head Frozen){RESET}")
@@ -953,3 +963,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     "val/gate_mean": gate_mean_val
                 })
             wandb.log(log_dict)
+
+    # Phase 3 루프 완료 후 (조기 종료되지 않고 완주한 경우에도) 베스트 가중치 복원
+    if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
+        tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 3 completed. Restoring best Phase 3 weights.")
+        model.load_state_dict(es_handler.best_weights)

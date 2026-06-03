@@ -33,10 +33,10 @@ training:
   phase3_epochs: 10
   batch_size: 64  # Optimized for GPU memory & in-memory cache scaling
   lambda_c: 0.1  # Scale factor for concept loss
-  l1_lambda: 0.0001  # L1 Lasso Regularization for Phase 2 classifier head
+  l1_lambda: 0.001  # L1 Lasso Regularization for Phase 2 classifier head
   use_nam_head: false  # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
-  nam_hidden_dim: 64  # Hidden dimension for parallel NAM sub-networks
-  l1_warmup_epochs: 5  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
+  nam_hidden_dim: 8  # Hidden dimension for parallel NAM sub-networks
+  l1_warmup_epochs: 10  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
   phase2_dropout: 0.5  # Apply weaker dropout (p=0.05 instead of default 0.2) in Phase 2 for training stability
   
   # 🧪 Label Smoothing for Phase 1 Concept training

@@ -156,11 +156,28 @@ class Derm7PtDataset(BaseDataset):
             self.target_to_idx = {}
             self.config["num_classes"] = self.config.get("num_classes", 1)
 
-        self.transform = transform or transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        if transform is not None:
+            self.transform = transform
+        else:
+            if self.split == 'train':
+                # Advanced spatial data augmentations for training to prevent overfitting
+                # Strictly NO color jittering, since lesion color is a clinical diagnostic feature.
+                self.transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.RandomCrop((224, 224)),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomVerticalFlip(p=0.5),
+                    transforms.RandomRotation(degrees=15),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+            else:
+                # Static, deterministic transforms for validation/testing
+                self.transform = transforms.Compose([
+                    transforms.Resize((224, 224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
 
         # In-memory caching
         self.cache_in_memory = cache_in_memory
