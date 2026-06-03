@@ -124,6 +124,7 @@ def parse_args():
     
     # training parameters
     if "l1_lambda" in tr_cfg: flat_defaults["l1_lambda"] = tr_cfg["l1_lambda"]
+    if "l1_warmup_epochs" in tr_cfg: flat_defaults["l1_warmup_epochs"] = tr_cfg["l1_warmup_epochs"]
     if "phase3_epochs" in tr_cfg: flat_defaults["phase3_epochs"] = tr_cfg["phase3_epochs"]
     if "phase3_lr" in opt_cfg: flat_defaults["phase3_lr"] = opt_cfg["phase3_lr"]
     
@@ -166,6 +167,7 @@ def parse_args():
     parser.add_argument('--focal_gamma', type=float, default=flat_defaults.get('focal_gamma', 2.0), help="Gamma parameter for Focal Loss")
     parser.add_argument('--ortho_lambda', type=float, default=flat_defaults.get('ortho_lambda', 0.05), help="Orthogonality regularization loss multiplier for attention map separation")
     parser.add_argument('--l1_lambda', type=float, default=flat_defaults.get('l1_lambda', 0.0), help="L1 Lasso regularization multiplier for Phase 2 classifier")
+    parser.add_argument('--l1_warmup_epochs', type=int, default=flat_defaults.get('l1_warmup_epochs', 5), help="Number of warmup epochs for L1 sparsity regularization in Phase 2")
     parser.add_argument('--lambda_latent_ortho', type=float, default=flat_defaults.get('lambda_latent_ortho', 0.1), help="Orthogonal latent projection loss weight")
     parser.add_argument('--lambda_latent_l1', type=float, default=flat_defaults.get('lambda_latent_l1', 0.01), help="L1 latent activation sparsity loss weight")
     parser.add_argument('--batch_size', type=int, default=flat_defaults.get('batch_size', 16))

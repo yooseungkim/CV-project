@@ -549,13 +549,20 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 loss_t = loss_t + (args.lambda_latent_ortho * loss_latent_ortho) + (args.lambda_latent_l1 * loss_latent_l1)
                 
             # L1 Lasso Regularization on classifier_head parameters to select high-information concepts
-            l1_lambda = getattr(args, "l1_lambda", 0.0)
-            if l1_lambda > 0:
+            # Apply linear warm-up scheduler to prevent early gating collapse
+            target_l1_lambda = getattr(args, "l1_lambda", 0.0)
+            warmup_epochs = getattr(args, "l1_warmup_epochs", 5)
+            if target_l1_lambda > 0:
+                if warmup_epochs > 0 and epoch < warmup_epochs:
+                    current_l1_lambda = target_l1_lambda * (epoch / warmup_epochs)
+                else:
+                    current_l1_lambda = target_l1_lambda
+                
                 if hasattr(model.classifier_head, "get_sparsity_loss"):
-                    loss_t = loss_t + l1_lambda * model.classifier_head.get_sparsity_loss()
+                    loss_t = loss_t + current_l1_lambda * model.classifier_head.get_sparsity_loss()
                 else:
                     l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
-                    loss_t = loss_t + l1_lambda * l1_norm
+                    loss_t = loss_t + current_l1_lambda * l1_norm
                 
             loss_t.backward()
             optimizer.step()
