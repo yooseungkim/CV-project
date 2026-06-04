@@ -6,15 +6,15 @@
 backbone:
   backbone_type: "timm"
   # backbone_name: "vit_base_patch14_dinov2"
-  backbone_name: "resnet50"
+  backbone_name: "convnext_tiny"
   freeze_backbone: false
   freeze_head: false
-  use_lora: true          # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
+  use_lora: false          # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
   lora_r: 16             # LoRA rank dimension
   lora_alpha: 16.0        # LoRA scaling factor alpha
-  use_cosine_attention: true  # L2 Cosine Attention for DINOv2 border-patch suppression (default: off)
+  use_cosine_attention: false  # L2 Cosine Attention for DINOv2 border-patch suppression (default: off)
   use_group_broadcasting: false  # GroupToConceptAttention: 7 groups -> 28 independent BCE classifiers
-  use_concept_attention: true  # Patch token based Cross-Attention (instead of GAP/MLP)
+  use_concept_attention: false  # Patch token based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
@@ -22,7 +22,7 @@ dataset:
   csv_path: "data/derm7pt/meta/meta.csv"
   image_dir: "data/derm7pt/images"
   concept_config_path: "data/derm7pt/concept_config.json"
-  use_concept_groups: false  # Disable GroupSoftmax to let independent BCE mapping work
+  use_concept_groups: true  # Disable GroupSoftmax to let independent BCE mapping work
 
 # 3. Core Training Hyperparameters
 training:
@@ -74,8 +74,8 @@ training:
 # 4. Optimizer Configurations
 optimizer:
   type: "adamw"
-  backbone_lr: 0.00001  # Differential LR
-  phase1_lr: 0.0005
+  backbone_lr: 0.0002  # Differential LR
+  phase1_lr: 0.001
   phase2_lr: 0.001  # Larger LR for latent representation learning in Phase 2
   phase3_lr: 0.00001  # Small joint learning rate for end-to-end Phase 3 tuning
   weight_decay: 0.05
@@ -84,7 +84,7 @@ optimizer:
   # focal_alpha: 0.95 
   # focal_gamma: 2.5  # Focal loss focus exponent gamma
   asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
-  asl_gamma_neg: 2.5    # easy negative gradient noise 강력 억제
+  asl_gamma_neg: 3.0    # easy negative gradient noise 강력 억제
   asl_alpha_pos: 1.5   # positive 샘플에 static weight 부여
   asl_clip: 0.05 
 

@@ -641,7 +641,7 @@ class UniversalFlexibleCBM(nn.Module):
                 )
 
         # 1. Initialize Backbone based on architecture
-        if self.backbone_name.startswith('resnet'):
+        if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
             # Load CNN backbone
             self.backbone = timm.create_model(
                 backbone_name, 
@@ -650,8 +650,8 @@ class UniversalFlexibleCBM(nn.Module):
                 global_pool=''
             )
             
-            # Apply True 14x14 Spatial Surgery to preserve spatial detail (beaks, eyes, etc.)
-            if hasattr(self.backbone, 'layer4'):
+            # Apply True 14x14 Spatial Surgery to preserve spatial detail (beaks, eyes, etc.) - ResNet only
+            if self.backbone_name.startswith('resnet') and hasattr(self.backbone, 'layer4'):
                 try:
                     # For ResNet18/34 (BasicBlock): stride is in conv1
                     if hasattr(self.backbone.layer4[0], 'conv1') and self.backbone.layer4[0].conv1.stride == (2, 2):
@@ -680,7 +680,7 @@ class UniversalFlexibleCBM(nn.Module):
             # Dynamic Feature Dimension Inference
             feature_dim, _, _ = self._infer_feature_dim()
             
-            # Layer Construction for ResNet
+            # Layer Construction for ResNet/ConvNeXt
             print(f"{BOLD}{BLUE}[Concept Head]{RESET} ConceptAttentionLayer ({feature_dim} -> {num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
             self.supervised_attention = ConceptAttentionLayer(
                 feature_dim=feature_dim, 
@@ -754,7 +754,7 @@ class UniversalFlexibleCBM(nn.Module):
                     probabilistic=use_probabilistic_cbm
                 )
         else:
-            raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet and ViT backbones are supported.")
+            raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet, ConvNeXt, and ViT backbones are supported.")
 
         # Common CBM classification/activation layers
         if use_group_broadcasting:
@@ -872,7 +872,7 @@ class UniversalFlexibleCBM(nn.Module):
             if isinstance(features_flat, tuple):
                 features_flat = features_flat[0]
             
-            if self.backbone_name.startswith('resnet'):
+            if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
                 _, C_feat, H_feat, W_feat = features_flat.shape
                 features = features_flat.view(B, M, C_feat, H_feat, W_feat)
                 features = torch.cat([features[:, 0], features[:, 1]], dim=2) # [B, C_feat, 2 * H_feat, W_feat]
@@ -881,11 +881,11 @@ class UniversalFlexibleCBM(nn.Module):
                 features = features_flat.view(B, M, N_patches, D)
                 features = torch.cat([features[:, 0], features[:, 1]], dim=1) # [B, 2 * N_patches, D]
         else:
-            features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, 196, embed_dim] (ViT)
+            features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet/ConvNeXt) or [B, 196, embed_dim] (ViT)
             if isinstance(features, tuple):
                 features = features[0]
             
-        if self.backbone_name.startswith('resnet'):
+        if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
             # ResNet still uses spatial attention conv
             if self.use_probabilistic_cbm:
                 supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)
