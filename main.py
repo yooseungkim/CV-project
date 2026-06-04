@@ -110,6 +110,7 @@ def parse_args():
     if "pcbm_asymmetric_kl_weight" in tr_cfg: flat_defaults["pcbm_asymmetric_kl_weight"] = tr_cfg["pcbm_asymmetric_kl_weight"]
     if "use_concept_attention" in bb_cfg: flat_defaults["use_concept_attention"] = bb_cfg["use_concept_attention"]
     if "l1_lambda_gate" in tr_cfg: flat_defaults["l1_lambda_gate"] = tr_cfg["l1_lambda_gate"]
+    if "latent_penalty_scale" in tr_cfg: flat_defaults["latent_penalty_scale"] = tr_cfg["latent_penalty_scale"]
     if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
     if "use_cb_loss" in tr_cfg: flat_defaults["use_cb_loss"] = tr_cfg["use_cb_loss"]
     if "cb_beta" in tr_cfg: flat_defaults["cb_beta"] = tr_cfg["cb_beta"]
@@ -229,6 +230,7 @@ def parse_args():
     parser.add_argument('--pcbm_asymmetric_kl_weight', type=float, default=flat_defaults.get('pcbm_asymmetric_kl_weight', 0.1), help="PCBM asymmetric KL weight multiplier for positive samples (0.0 to disable positive KL penalty)")
     parser.add_argument('--use_concept_attention', type=str2bool, default=flat_defaults.get('use_concept_attention', False), help="Activate Patch token-based Cross-Attention")
     parser.add_argument('--l1_lambda_gate', type=float, default=flat_defaults.get('l1_lambda_gate', 0.01), help="L1 Regularization strength for Gating parameters")
+    parser.add_argument('--latent_penalty_scale', type=float, default=flat_defaults.get('latent_penalty_scale', 1.0), help="Multiplier for L1 penalty on latent concept gates")
     parser.add_argument('--weight_decay_nam', type=float, default=flat_defaults.get('weight_decay_nam', 1e-2), help="L2 penalty for NAM subnetworks smoothing")
     parser.add_argument('--use_cb_loss', type=str2bool, default=flat_defaults.get('use_cb_loss', True), help="Use Class-Balanced Loss weighting based on CVPR 2019")
     parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")

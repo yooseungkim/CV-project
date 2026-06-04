@@ -724,7 +724,8 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 else:
                     current_l1_gate = target_l1_gate
                 
-                loss_t = loss_t + current_l1_gate * model.classifier_head.get_sparsity_loss()
+                latent_penalty_scale = getattr(args, "latent_penalty_scale", 1.0)
+                loss_t = loss_t + current_l1_gate * model.classifier_head.get_sparsity_loss(latent_penalty_scale=latent_penalty_scale)
             else:
                 target_l1_lambda = getattr(args, "l1_lambda", 0.0)
                 warmup_epochs = getattr(args, "l1_warmup_epochs", 5)
@@ -1274,7 +1275,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             l1_lambda = getattr(args, "l1_lambda", 0.0)
             if l1_lambda > 0:
                 if hasattr(model.classifier_head, "get_sparsity_loss"):
-                    total_loss = total_loss + l1_lambda * model.classifier_head.get_sparsity_loss()
+                    latent_penalty_scale = getattr(args, "latent_penalty_scale", 1.0)
+                    total_loss = total_loss + l1_lambda * model.classifier_head.get_sparsity_loss(latent_penalty_scale=latent_penalty_scale)
                 else:
                     l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
                     total_loss = total_loss + l1_lambda * l1_norm

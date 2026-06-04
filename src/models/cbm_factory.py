@@ -140,10 +140,10 @@ class GatedSparseNAMHead(nn.Module):
             
         return supervised_out
 
-    def get_sparsity_loss(self) -> torch.Tensor:
+    def get_sparsity_loss(self, latent_penalty_scale: float = 1.0) -> torch.Tensor:
         loss = torch.sum(torch.abs(self.concept_gates))
         if self.num_latent_concepts > 0 and self.latent_gates is not None:
-            loss = loss + torch.sum(torch.abs(self.latent_gates))
+            loss = loss + latent_penalty_scale * torch.sum(torch.abs(self.latent_gates))
         if self.use_pairwise_nam:
             loss = loss + torch.sum(torch.abs(self.pairwise_gates))
         return loss
