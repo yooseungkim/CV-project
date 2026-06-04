@@ -263,6 +263,8 @@ def run_inference(image: Image.Image):
 
     use_group_broadcasting = getattr(MODEL, "use_group_broadcasting", False)
     heatmap_gallery = []
+    heatmap_arrays = []
+    heatmap_names = []
     for group_idx, group in enumerate(CONCEPT_GROUPS):
         if group["type"] == "numerical":
             c_idx = group["flat_indices"][0]
@@ -279,6 +281,8 @@ def run_inference(image: Image.Image):
             name = f"{group['name']}: {orig_val}"
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
+            heatmap_arrays.append(hm)
+            heatmap_names.append(name)
         else:
             # Categorical concept
             probs = [concept_vals[idx] for idx in group["flat_indices"]]
@@ -292,12 +296,66 @@ def run_inference(image: Image.Image):
             name = f"{group['name']}: {selected_class} ({max_prob:.2f})"
             pil_img = _generate_single_heatmap(img_np, hm, name)
             heatmap_gallery.append((pil_img, name))
+            heatmap_arrays.append(hm)
+            heatmap_names.append(name)
+
+    # 1. Generate the grid image containing all heatmaps
+    num_heatmaps = len(heatmap_arrays)
+    if num_heatmaps > 0:
+        cols = 4
+        rows = math.ceil(num_heatmaps / cols)
+        
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+        if rows == 1 and cols == 1:
+            axes = np.array([axes])
+        else:
+            axes = axes.flatten()
+            
+        for i in range(len(axes)):
+            if i < num_heatmaps:
+                hm = heatmap_arrays[i]
+                name = heatmap_names[i]
+                h_min, h_max = hm.min(), hm.max()
+                if h_max > h_min:
+                    hm_norm = (hm - h_min) / (h_max - h_min + 1e-8)
+                else:
+                    hm_norm = np.zeros_like(hm)
+                    
+                axes[i].imshow(img_np)
+                axes[i].imshow(hm_norm, cmap='jet', alpha=0.5)
+                axes[i].set_title(name, fontsize=10, fontweight='bold', pad=6)
+                axes[i].axis('off')
+            else:
+                axes[i].axis('off')
+                
+        plt.tight_layout()
+        os.makedirs("scratch", exist_ok=True)
+        grid_path = "scratch/heatmap_grid.png"
+        plt.savefig(grid_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        
+        # 2. Package everything into a ZIP file
+        import zipfile
+        zip_path = "scratch/all_heatmaps.zip"
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            zipf.write(grid_path, arcname="heatmap_grid.png")
+            for idx, (pil_img, name) in enumerate(heatmap_gallery):
+                # Sanitize name for filename
+                clean_name = "".join([c if c.isalnum() or c in (' ', '_', '-') else '_' for c in name])
+                clean_name = clean_name.replace(" ", "_")
+                temp_path = f"scratch/temp_heatmap_{idx}_{clean_name}.png"
+                pil_img.save(temp_path)
+                zipf.write(temp_path, arcname=f"individual_heatmaps/{clean_name}.png")
+                os.remove(temp_path)
+    else:
+        grid_path = None
+        zip_path = None
 
     concept_logits_list = concept_logits.squeeze(0).cpu().tolist()
 
     contrib_img = plot_concept_contributions(MODEL, concept_logits, CONCEPT_NAMES, target_class_idx)
 
-    return prediction_text, concept_vals, heatmap_gallery, img_np, concept_logits_list, contrib_img
+    return prediction_text, concept_vals, heatmap_gallery, img_np, concept_logits_list, contrib_img, grid_path, zip_path
 
 
 def repredict_with_adjusted_concepts(original_state, *args):
@@ -635,9 +693,19 @@ def build_app() -> gr.Blocks:
                     label="Per-concept attention maps",
                     columns=4,
                     rows=2,
-                    height=600,
+                    height=520,
                     object_fit="contain"
                 )
+                gr.Markdown("### Download Heatmaps")
+                with gr.Row():
+                    grid_download = gr.File(
+                        label="Download Heatmap Grid (PNG)",
+                        interactive=False
+                    )
+                    zip_download = gr.File(
+                        label="Download All Heatmaps (ZIP)",
+                        interactive=False
+                    )
 
         gr.Markdown("---")
 
@@ -737,12 +805,14 @@ def build_app() -> gr.Blocks:
                     gr.update(),
                     [],
                     gr.update(),
+                    gr.update(),
+                    gr.update(),
                     *[gr.update() for _ in concept_components],
                     *[gr.update() for _ in uncertainty_components],
                     *[gr.update() for _ in concept_accordions]
                 )
 
-            pred_text, concept_vals, gallery, _, concept_logits_list, contrib_img = run_inference(image)
+            pred_text, concept_vals, gallery, _, concept_logits_list, contrib_img, grid_path, zip_path = run_inference(image)
 
             # Build updates to reflect predicted values and accordion open/closed state
             component_updates = []
@@ -798,12 +868,12 @@ def build_app() -> gr.Blocks:
                     component_updates.append(gr.update(value=selected_cls))
 
             state_dict = {"logits": concept_logits_list, "logvars": concept_logvars_list}
-            return (pred_text, state_dict, gallery, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
+            return (pred_text, state_dict, gallery, contrib_img, grid_path, zip_path, *component_updates, *uncertainty_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
             inputs=[input_image],
-            outputs=[prediction_output, concept_state, heatmap_gallery, contrib_output, *concept_components, *uncertainty_components, *concept_accordions]
+            outputs=[prediction_output, concept_state, heatmap_gallery, contrib_output, grid_download, zip_download, *concept_components, *uncertainty_components, *concept_accordions]
         )
 
         repredict_btn.click(
