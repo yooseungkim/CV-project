@@ -416,7 +416,14 @@ class ViTCrossAttentionLayer(nn.Module):
 
         # Reshape attention weights: [B, num_concepts, N] -> [B, num_concepts, sqrt(N), sqrt(N)]
         H_attn = int(math.sqrt(N))
-        attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, H_attn)
+        if H_attn * H_attn == N:
+            attn_weights_2d = attn_weights.view(B, self.num_concepts, H_attn, H_attn)
+        else:
+            N_single = N // 2
+            H_attn_single = int(math.sqrt(N_single))
+            attn_clinic = attn_weights[:, :, :N_single].view(B, self.num_concepts, H_attn_single, H_attn_single)
+            attn_derm = attn_weights[:, :, N_single:].view(B, self.num_concepts, H_attn_single, H_attn_single)
+            attn_weights_2d = torch.cat([attn_clinic, attn_derm], dim=3)
 
         if self.probabilistic:
             return concept_mean, concept_logvar, attn_weights_2d, attn_out
@@ -485,7 +492,14 @@ class GroupToConceptAttention(nn.Module):
 
         # Reshape attention maps to 2D grid for visualization
         H_attn = int(math.sqrt(N))
-        attn_weights_2d = attn_weights.view(B, self.num_groups, H_attn, H_attn)  # [B, 28, H, H]
+        if H_attn * H_attn == N:
+            attn_weights_2d = attn_weights.view(B, self.num_groups, H_attn, H_attn)  # [B, 28, H, H]
+        else:
+            N_single = N // 2
+            H_attn_single = int(math.sqrt(N_single))
+            attn_clinic = attn_weights[:, :, :N_single].view(B, self.num_groups, H_attn_single, H_attn_single)
+            attn_derm = attn_weights[:, :, N_single:].view(B, self.num_groups, H_attn_single, H_attn_single)
+            attn_weights_2d = torch.cat([attn_clinic, attn_derm], dim=3)
 
         # ── Step 2: Attention Broadcasting (28 groups → 312 concepts) ─────────────
         concept_features = group_features[:, self.group_mapping, :]  # [B, 312, D]
@@ -597,6 +611,7 @@ class UniversalFlexibleCBM(nn.Module):
         use_probabilistic_cbm: bool = False,
         use_concept_attention: bool = False,
         use_pairwise_nam: bool = False,
+        use_multimodal: bool = False,
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -610,6 +625,7 @@ class UniversalFlexibleCBM(nn.Module):
         self.use_probabilistic_cbm = use_probabilistic_cbm
         self.use_concept_attention = use_concept_attention
         self.use_pairwise_nam = use_pairwise_nam
+        self.use_multimodal = use_multimodal
         
         # Placeholders for VAE loss calculation
         self.last_mean = None
@@ -847,10 +863,27 @@ class UniversalFlexibleCBM(nn.Module):
         return C, H, W
 
     def forward(self, x: torch.Tensor, return_features: bool = False, stochastic: bool = False):
-        # Input tensor shape x: [B, 3, H, W]
-        features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, 196, embed_dim] (ViT)
-        if isinstance(features, tuple):
-            features = features[0]
+        # Input tensor shape x: [B, 3, H, W] or [B, 2, 3, H, W] (multimodal)
+        is_multimodal = (x.dim() == 5)
+        if is_multimodal:
+            B, M, C, H, W = x.shape
+            x_flat = x.view(B * M, C, H, W)
+            features_flat = self.backbone(x_flat)
+            if isinstance(features_flat, tuple):
+                features_flat = features_flat[0]
+            
+            if self.backbone_name.startswith('resnet'):
+                _, C_feat, H_feat, W_feat = features_flat.shape
+                features = features_flat.view(B, M, C_feat, H_feat, W_feat)
+                features = torch.cat([features[:, 0], features[:, 1]], dim=2) # [B, C_feat, 2 * H_feat, W_feat]
+            else:
+                _, N_patches, D = features_flat.shape
+                features = features_flat.view(B, M, N_patches, D)
+                features = torch.cat([features[:, 0], features[:, 1]], dim=1) # [B, 2 * N_patches, D]
+        else:
+            features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, 196, embed_dim] (ViT)
+            if isinstance(features, tuple):
+                features = features[0]
             
         if self.backbone_name.startswith('resnet'):
             # ResNet still uses spatial attention conv
@@ -950,8 +983,17 @@ class UniversalFlexibleCBM(nn.Module):
                 from torchvision.transforms.functional import gaussian_blur
                 sparse_latent_maps = torch.zeros(B, self.num_latent_concepts, N_patches, device=device)
                 sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
-                sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
-                latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                if H_attn * H_attn == N_patches:
+                    sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
+                    latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                else:
+                    N_single = N_patches // 2
+                    H_attn_single = int(math.sqrt(N_single))
+                    sparse_l_clinic = sparse_latent_maps[:, :, :N_single].view(B, self.num_latent_concepts, H_attn_single, H_attn_single)
+                    sparse_l_derm = sparse_latent_maps[:, :, N_single:].view(B, self.num_latent_concepts, H_attn_single, H_attn_single)
+                    l_attn_clinic = gaussian_blur(sparse_l_clinic, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                    l_attn_derm = gaussian_blur(sparse_l_derm, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                    latent_attn = torch.cat([l_attn_clinic, l_attn_derm], dim=3)
 
                 latent_flat_indices = latent_indices_transposed.reshape(B, self.num_latent_concepts * k_val)
                 latent_gathered_flat = torch.gather(
@@ -998,10 +1040,19 @@ class UniversalFlexibleCBM(nn.Module):
             sparse_maps = torch.zeros(B, self.num_supervised_concepts, N_patches, device=device)
             # Scatter dynamic softmax weights to each top-k patch position
             sparse_maps.scatter_(2, indices_transposed, weights_transposed)
-            sparse_maps = sparse_maps.view(B, self.num_supervised_concepts, H_attn, H_attn)
             
             from torchvision.transforms.functional import gaussian_blur
-            supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+            if H_attn * H_attn == N_patches:
+                sparse_maps = sparse_maps.view(B, self.num_supervised_concepts, H_attn, H_attn)
+                supervised_attn = gaussian_blur(sparse_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+            else:
+                N_single = N_patches // 2
+                H_attn_single = int(math.sqrt(N_single))
+                sparse_maps_clinic = sparse_maps[:, :, :N_single].view(B, self.num_supervised_concepts, H_attn_single, H_attn_single)
+                sparse_maps_derm = sparse_maps[:, :, N_single:].view(B, self.num_supervised_concepts, H_attn_single, H_attn_single)
+                attn_clinic = gaussian_blur(sparse_maps_clinic, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                attn_derm = gaussian_blur(sparse_maps_derm, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                supervised_attn = torch.cat([attn_clinic, attn_derm], dim=3)
             
             # Memory-Efficient Top-k Gathering along dim=1 (N_patches) using flattened indices [B, C * k]
             flat_indices = indices_transposed.reshape(B, self.num_supervised_concepts * k_val)
@@ -1034,8 +1085,17 @@ class UniversalFlexibleCBM(nn.Module):
                 
                 sparse_latent_maps = torch.zeros(B, self.num_latent_concepts, N_patches, device=device)
                 sparse_latent_maps.scatter_(2, latent_indices_transposed, latent_weights_transposed)
-                sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
-                latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                if H_attn * H_attn == N_patches:
+                    sparse_latent_maps = sparse_latent_maps.view(B, self.num_latent_concepts, H_attn, H_attn)
+                    latent_attn = gaussian_blur(sparse_latent_maps, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                else:
+                    N_single = N_patches // 2
+                    H_attn_single = int(math.sqrt(N_single))
+                    sparse_l_clinic = sparse_latent_maps[:, :, :N_single].view(B, self.num_latent_concepts, H_attn_single, H_attn_single)
+                    sparse_l_derm = sparse_latent_maps[:, :, N_single:].view(B, self.num_latent_concepts, H_attn_single, H_attn_single)
+                    l_attn_clinic = gaussian_blur(sparse_l_clinic, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                    l_attn_derm = gaussian_blur(sparse_l_derm, kernel_size=[3, 3], sigma=[1.0, 1.0])
+                    latent_attn = torch.cat([l_attn_clinic, l_attn_derm], dim=3)
                 
                 latent_flat_indices = latent_indices_transposed.reshape(B, self.num_latent_concepts * k_val)
                 latent_gathered_flat = torch.gather(

@@ -34,7 +34,7 @@ def parse_args():
 
 def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     """Helper to calculate Top-K accuracy for target classes."""
-    maxk = max(topk)
+    maxk = min(outputs.shape[-1], max(topk))
     batch_size = targets.size(0)
     if outputs.shape[-1] <= 1:
         preds = (outputs > 0.0).float()

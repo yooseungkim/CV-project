@@ -42,6 +42,7 @@ TARGET_CLASSES: list[str] = []
 NUM_CONCEPTS: int = 0
 NUM_CLASSES: int = 1
 USE_CONCEPT_GROUPS = True
+DATASET_NAME = "derm7pt"
 
 def is_group_exclusive(group_name: str) -> bool:
     """Helper to check if a specific concept group is mutually exclusive (Softmax).
@@ -659,9 +660,20 @@ def build_app() -> gr.Blocks:
             # ==== Column 1: Input ====
             with gr.Column(scale=1):
                 gr.Markdown("### Input Image")
+                
+                # Determine image upload label based on dataset
+                if "cub" in DATASET_NAME.lower():
+                    image_label = "Upload a bird image"
+                elif "derm" in DATASET_NAME.lower():
+                    image_label = "Upload a dermoscopy image"
+                elif "milk" in DATASET_NAME.lower():
+                    image_label = "Upload a milk bottle image"
+                else:
+                    image_label = "Upload an image"
+                    
                 input_image = gr.Image(
                     type="pil",
-                    label="Upload a dermoscopy image",
+                    label=image_label,
                     height=280
                 )
                 run_btn = gr.Button(
@@ -959,7 +971,7 @@ def parse_app_args():
     return parser.parse_args()
 
 def main():
-    global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES
+    global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES, DATASET_NAME
 
     # Pre-warm matplotlib to prevent first-run slow renderer/font cache loading
     try:
@@ -997,6 +1009,26 @@ def main():
                         ckpt_args.update(ckpt_config["training"])
                     if "backbone" in ckpt_config and isinstance(ckpt_config["backbone"], dict):
                         ckpt_args.update(ckpt_config["backbone"])
+                
+                # Auto-detect dataset name
+                global DATASET_NAME
+                detected_ds = ckpt_args.get("dataset") or ckpt_args.get("name") or ckpt_args.get("dataset_name")
+                if detected_ds:
+                    DATASET_NAME = str(detected_ds).lower()
+                    print(f"[Config] Auto-detected dataset from checkpoint: {DATASET_NAME}")
+                else:
+                    # Fallback detection
+                    if ckpt_args.get("num_classes") in [5, 20]:
+                        DATASET_NAME = "derm7pt"
+                    elif ckpt_args.get("num_classes") == 200:
+                        DATASET_NAME = "cub"
+                    elif "derm7pt" in str(ckpt_args.get("concept_config_path", "")).lower():
+                        DATASET_NAME = "derm7pt"
+                    elif "cub" in str(ckpt_args.get("concept_config_path", "")).lower():
+                        DATASET_NAME = "cub"
+                    else:
+                        DATASET_NAME = "milk10k"
+                    print(f"[Config] Fallback-detected dataset: {DATASET_NAME}")
                 
                 # 1. Auto-detect num_classes
                 if "num_classes" in ckpt_args:
@@ -1105,7 +1137,7 @@ def main():
     if args.target_classes:
         TARGET_CLASSES = [c.strip() for c in args.target_classes.split(',')]
     elif NUM_CLASSES > 1:
-        if NUM_CLASSES == 20:
+        if NUM_CLASSES in [5, 20]:
             try:
                 from src.data.derm7pt import Derm7PtDataset
                 dataset = Derm7PtDataset(cache_in_memory=False)

@@ -18,7 +18,8 @@ class Derm7PtDataset(BaseDataset):
             ],
             "target_col": 'diagnosis',
             "default_csv_path": 'data/derm7pt/meta/meta.csv',
-            "default_image_dir": 'data/derm7pt/images'
+            "default_image_dir": 'data/derm7pt/images',
+            "use_multimodal": False
         }
 
     def __init__(
@@ -52,6 +53,7 @@ class Derm7PtDataset(BaseDataset):
 
         # Initialize config
         self.config = config or self.get_default_config()
+        self.use_multimodal = self.config.get("use_multimodal", False)
         
         # Determine paths
         resolved_csv = csv_path or self.config.get("default_csv_path") or "data/derm7pt/meta/meta.csv"
@@ -63,6 +65,34 @@ class Derm7PtDataset(BaseDataset):
             self.df = pd.DataFrame()
         else:
             full_df = pd.read_csv(resolved_csv)
+            
+            # Apply diagnosis mapping to consolidate 20 classes into 5 classes
+            self.diagnosis_mapping = {
+                'clark nevus': 'Nevus',
+                'reed or spitz nevus': 'Nevus',
+                'dermal nevus': 'Nevus',
+                'blue nevus': 'Nevus',
+                'congenital nevus': 'Nevus',
+                'combined nevus': 'Nevus',
+                'recurrent nevus': 'Nevus',
+                'melanoma (less than 0.76 mm)': 'Melanoma',
+                'melanoma (in situ)': 'Melanoma',
+                'melanoma (0.76 to 1.5 mm)': 'Melanoma',
+                'melanoma (more than 1.5 mm)': 'Melanoma',
+                'melanoma metastasis': 'Melanoma',
+                'melanoma': 'Melanoma',
+                'basal cell carcinoma': 'BCC',
+                'seborrheic keratosis': 'SK',
+                'vascular lesion': 'MISC',
+                'lentigo': 'MISC',
+                'dermatofibroma': 'MISC',
+                'melanosis': 'MISC',
+                'miscellaneous': 'MISC'
+            }
+            target_col = self.config.get("target_col", "diagnosis")
+            if target_col in full_df.columns:
+                full_df[target_col] = full_df[target_col].map(self.diagnosis_mapping)
+
             
             # Load suggested indexes for the given split
             meta_dir = os.path.dirname(resolved_csv)
@@ -90,6 +120,13 @@ class Derm7PtDataset(BaseDataset):
                     self.df = shuffled_df.iloc[train_end:val_end].reset_index(drop=True)
                 else:
                     self.df = shuffled_df.iloc[val_end:].reset_index(drop=True)
+
+            # Filter out any rows where clinic or derm filenames contain 'bis'
+            if 'clinic' in self.df.columns and 'derm' in self.df.columns:
+                before_len = len(self.df)
+                self.df = self.df[~(self.df['clinic'].str.contains('bis', case=False, na=False) | self.df['derm'].str.contains('bis', case=False, na=False))].reset_index(drop=True)
+                print(f"Filtered out 'bis' images for {self.split} split. Rows before: {before_len}, Rows after: {len(self.df)}")
+
 
         # Load concept config if path is provided in config dict
         concept_config_path = self.config.get("concept_config_path")
@@ -197,29 +234,65 @@ class Derm7PtDataset(BaseDataset):
 
     def _load_sample(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.dummy_mode:
-            img_tensor = torch.rand(3, 224, 224)
-            img_tensor = self.transform(transforms.ToPILImage()(img_tensor)) if self.transform else img_tensor
+            if getattr(self, 'use_multimodal', False):
+                img_t1 = torch.rand(3, 224, 224)
+                img_t2 = torch.rand(3, 224, 224)
+                if self.transform:
+                    img_t1 = self.transform(transforms.ToPILImage()(img_t1))
+                    img_t2 = self.transform(transforms.ToPILImage()(img_t2))
+                image = torch.stack([img_t1, img_t2], dim=0)
+            else:
+                img_tensor = torch.rand(3, 224, 224)
+                image = self.transform(transforms.ToPILImage()(img_tensor)) if self.transform else img_tensor
+                
             concepts = torch.rand(self.config.get("num_concepts", len(self.concept_cols)))
             num_classes = self.config.get("num_classes", 1)
             if num_classes == 1:
                 target = torch.randint(0, 2, (1,)).float()
             else:
                 target = torch.randint(0, num_classes, (1,)).float()
-            return img_tensor, concepts, target
+            return image, concepts, target
             
         row = self.df.iloc[idx]
         
-        # Determine image path
-        img_name = row.get(self.image_type, row.get('derm'))
-        img_path = os.path.join(self.image_dir, str(img_name))
-        
-        try:
-            image = Image.open(img_path).convert('RGB')
-        except FileNotFoundError:
-            image = Image.new('RGB', (224, 224), color=(0, 0, 0))
+        if getattr(self, 'use_multimodal', False):
+            # Load clinical image
+            clinic_name = row.get('clinic')
+            clinic_path = os.path.join(self.image_dir, str(clinic_name)) if pd.notna(clinic_name) else ""
+            try:
+                img_clinic = Image.open(clinic_path).convert('RGB') if clinic_path and os.path.exists(clinic_path) else Image.new('RGB', (224, 224), color=(0, 0, 0))
+            except Exception:
+                img_clinic = Image.new('RGB', (224, 224), color=(0, 0, 0))
+                
+            # Load dermoscopic image
+            derm_name = row.get('derm')
+            derm_path = os.path.join(self.image_dir, str(derm_name)) if pd.notna(derm_name) else ""
+            try:
+                img_derm = Image.open(derm_path).convert('RGB') if derm_path and os.path.exists(derm_path) else Image.new('RGB', (224, 224), color=(0, 0, 0))
+            except Exception:
+                img_derm = Image.new('RGB', (224, 224), color=(0, 0, 0))
+                
+            if self.transform:
+                img_clinic = self.transform(img_clinic)
+                img_derm = self.transform(img_derm)
+            else:
+                transform_to_tensor = transforms.ToTensor()
+                img_clinic = transform_to_tensor(img_clinic)
+                img_derm = transform_to_tensor(img_derm)
+                
+            image = torch.stack([img_clinic, img_derm], dim=0) # shape: [2, 3, H, W]
+        else:
+            # Determine image path
+            img_name = row.get(self.image_type, row.get('derm'))
+            img_path = os.path.join(self.image_dir, str(img_name))
             
-        if self.transform:
-            image = self.transform(image)
+            try:
+                image = Image.open(img_path).convert('RGB')
+            except FileNotFoundError:
+                image = Image.new('RGB', (224, 224), color=(0, 0, 0))
+                
+            if self.transform:
+                image = self.transform(image)
             
         # Process concept variables dynamically
         if self.concept_features_info is not None:

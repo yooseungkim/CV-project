@@ -25,9 +25,9 @@ dataset:
 
 # 3. Core Training Hyperparameters
 training:
-  phase1_epochs: 20
-  phase2_epochs: 30
-  phase3_epochs: 10  # Joint end-to-end parameter tuning
+  phase1_epochs: 30
+  phase2_epochs: 50
+  phase3_epochs: 0  # Joint end-to-end parameter tuning
   batch_size: 64  # Optimized for derm7pt split sizes
   lambda_c: 0.1  # Scale factor for concept loss
   l1_lambda: 0.02  # L1 Lasso Regularization for Phase 2 classifier head (with Sparsity)
@@ -38,12 +38,14 @@ training:
   use_pairwise_nam: true  # NAM^2 (Pairwise Interaction) activation
   use_probabilistic_cbm: true  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
   pcbm_beta: 0.001              # Target weight coefficient beta for KL penalty
-  pcbm_beta_warmup_epochs: 10   # Number of epochs for KL beta warm-up (beta = 0.0)
-  pcbm_beta_anneal_epochs: 10   # Number of epochs for KL beta linear annealing/ramp-up
+  pcbm_beta_warmup_epochs: 5   # Number of epochs for KL beta warm-up (beta = 0.0)
+  pcbm_beta_anneal_epochs: 5   # Number of epochs for KL beta linear annealing/ramp-up
   pcbm_beta_min: 0.0001         # Starting KL beta value after warm-up
   pcbm_asymmetric_kl_weight: 0.1 # Weight multiplier for positive samples to avoid Gamma Trap / positive suppression
   l1_lambda_gate: 0.01  # L1 Regularization strength on gates
   weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
+  use_cb_loss: true     # Use CVPR 2019 Class-Balanced Loss weighting
+  cb_beta: 0.999
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
@@ -51,11 +53,12 @@ training:
   
   # 🛠️ Scheduled Sampling (Noise Injection) for Phase 2 Classifier training
   # Prevents co-adaptation and shortcut learning to prediction noise.
-  phase2_scheduled_sampling: false
+  phase2_scheduled_sampling: true
   scheduled_sampling_prob: 0.3
   scheduled_sampling_epsilon: 0.05
-  latent_concepts: 30  # Number of unsupervised latent concepts to append to the bottleneck
-  num_classes: 20  # 20 unique diagnoses in derm7pt
+  latent_concepts: 15  # Number of unsupervised latent concepts to append to the bottleneck
+  latent_penalty_scale: 4.0
+  num_classes: 5  # 5 consolidated major diagnoses in derm7pt
   use_dynamic_threshold: true  # Dynamic validation thresholding optimization
   save_dir: "checkpoints"
   resume_checkpoint: null
@@ -72,13 +75,17 @@ optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
   phase1_lr: 0.0005
-  phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
+  phase2_lr: 0.001  # Larger LR for latent representation learning in Phase 2
   phase3_lr: 0.00001  # Small joint learning rate for end-to-end Phase 3 tuning
   weight_decay: 0.05
-  concept_loss_type: "focal"  # Choices: ["focal", "bce"]
+  concept_loss_type: "asl"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
-  focal_alpha: 0.95
-  focal_gamma: 2.5  # Focal loss focus exponent gamma
+  # focal_alpha: 0.95 
+  # focal_gamma: 2.5  # Focal loss focus exponent gamma
+  asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
+  asl_gamma_neg: 2.5    # easy negative gradient noise 강력 억제
+  asl_alpha_pos: 1.5   # positive 샘플에 static weight 부여
+  asl_clip: 0.05 
 
 # 5. Learning Rate Scheduler Options
 scheduler:
@@ -89,9 +96,9 @@ scheduler:
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true
-  phase1_monitor: "val_concept_balanced_acc"
+  phase1_monitor: "val_concept_f1"
   phase1_patience: 5
-  phase2_monitor: "val_acc"
+  phase2_monitor: "val_joint_loss"
   phase2_patience: 7
   phase3_monitor: "val_acc"
   phase3_patience: 5

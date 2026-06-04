@@ -74,6 +74,7 @@ def parse_args():
     if "use_concept_groups" in ds_cfg: flat_defaults["use_concept_groups"] = ds_cfg["use_concept_groups"]
     if "filter_rare_concepts" in ds_cfg: flat_defaults["filter_rare_concepts"] = ds_cfg["filter_rare_concepts"]
     if "use_paper_preprocessing" in ds_cfg: flat_defaults["use_paper_preprocessing"] = ds_cfg["use_paper_preprocessing"]
+    if "use_multimodal" in ds_cfg: flat_defaults["use_multimodal"] = ds_cfg["use_multimodal"]
     
     # training
     tr_cfg = config_data.get("training", {})
