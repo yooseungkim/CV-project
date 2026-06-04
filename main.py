@@ -94,6 +94,7 @@ def parse_args():
     if "run_eval" in tr_cfg: flat_defaults["run_eval"] = tr_cfg["run_eval"]
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
+    if "phase2_dropout" in tr_cfg: flat_defaults["phase2_dropout"] = tr_cfg["phase2_dropout"]
     if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
     if "phase2_scheduled_sampling" in tr_cfg: flat_defaults["phase2_scheduled_sampling"] = tr_cfg["phase2_scheduled_sampling"]
     if "scheduled_sampling_prob" in tr_cfg: flat_defaults["scheduled_sampling_prob"] = tr_cfg["scheduled_sampling_prob"]
