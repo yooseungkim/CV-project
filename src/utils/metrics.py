@@ -32,7 +32,7 @@ def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: tor
         return 0.0
     return (correct / total).item()
 
-def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold = 0.0) -> dict:
+def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold = 0.0, beta = 2.0) -> dict:
     """Calculates Balanced Accuracy, True Positive Rate (TPR), and True Negative Rate (TNR)
     across all concepts to robustly evaluate models, dynamically adapting to mutually exclusive groups.
     
@@ -96,11 +96,18 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
         torch.where(has_pos, tpr, torch.where(has_neg, tnr, torch.ones_like(tpr)))
     )
     
-    # Calculate precision and F1-score for concepts
+    # Calculate precision, F1-score and F-beta score for concepts
     precision = torch.where(tp + fp > 0, tp / (tp + fp + 1e-8), torch.zeros_like(tp))
     f1_scores = torch.where(
         tp + fp + fn > 0,
         (2 * tp) / (2 * tp + fp + fn + 1e-8),
+        torch.zeros_like(tp)
+    )
+    
+    beta_sq = beta ** 2
+    f_beta_scores = torch.where(
+        tp + fp + fn > 0,
+        (1.0 + beta_sq) * tp / ((1.0 + beta_sq) * tp + beta_sq * fn + fp + 1e-8),
         torch.zeros_like(tp)
     )
     
@@ -112,7 +119,9 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
         "tnr": tnr.mean().item(),
         "individual_tnr": tnr,
         "mean_f1": f1_scores.mean().item(),
-        "individual_f1": f1_scores
+        "individual_f1": f1_scores,
+        "mean_f_beta": f_beta_scores.mean().item(),
+        "individual_f_beta": f_beta_scores
     }
     return metrics
 
@@ -150,26 +159,24 @@ def find_optimal_concept_thresholds(
             best_j = -1.0
             best_thresh = 0.0
             
-            # For each group, we search for a shared threshold that maximizes the average group weighted Youden's J: 2 * TPR + TNR
+            # For each group, we search for a shared threshold that maximizes the average group F2-score (beta=2.0)
             for thresh in candidate_thresholds:
                 # Calculate metrics for this specific group under candidate threshold
                 # We can construct a temp threshold tensor
                 temp_thresh = torch.tensor([thresh] * num_concepts, device=concept_logits.device)
-                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh)
+                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh, beta=2.0)
                 
-                # Get the group average score: 2 * TPR + TNR
-                g_tpr = metrics["individual_tpr"][start_idx : start_idx + num_feats].mean().item()
-                g_tnr = metrics["individual_tnr"][start_idx : start_idx + num_feats].mean().item()
-                group_score = 2.0 * g_tpr + g_tnr
+                # Get the group average F2-score
+                group_f2 = metrics["individual_f_beta"][start_idx : start_idx + num_feats].mean().item()
                 
-                if group_score > best_j:
-                    best_j = group_score
+                if group_f2 > best_j:
+                    best_j = group_f2
                     best_thresh = thresh.item()
                     
             for idx in range(start_idx, start_idx + num_feats):
                 optimal_thresholds[idx] = best_thresh
     else:
-        # Binary fallback: independent Youden J search per concept (weighted: 2 * TPR + TNR)
+        # Binary fallback: independent F2-score optimization per concept (beta=2.0)
         for c in range(num_concepts):
             best_j = -1.0
             best_thresh = 0.0
@@ -190,14 +197,12 @@ def find_optimal_concept_thresholds(
                 fp = (preds * (1 - c_targets)).sum()
                 fn = ((1 - preds) * c_targets).sum()
                 
-                tpr = tp / (tp + fn + 1e-8)
-                tnr = tn / (tn + fp + 1e-8)
+                # F2-score: beta^2 = 4.0 -> F2 = (5 * TP) / (5 * TP + 4 * FN + FP)
+                f2_score = (5.0 * tp) / (5.0 * tp + 4.0 * fn + fp + 1e-8)
+                f2_val = f2_score.item()
                 
-                # Weighted Youden's J = 2 * TPR + TNR
-                j_stat = (2.0 * tpr + tnr).item()
-                
-                if j_stat > best_j:
-                    best_j = j_stat
+                if f2_val > best_j:
+                    best_j = f2_val
                     best_thresh = thresh.item()
                     
             optimal_thresholds[c] = best_thresh

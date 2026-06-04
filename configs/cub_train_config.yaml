@@ -48,7 +48,7 @@ training:
   l1_lambda_gate: 0.01  # L1 Regularization strength on gates
   weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
   use_cb_loss: true     # Use CVPR 2019 Class-Balanced Loss weighting
-  cb_beta: 0.99        # Beta parameter for CB-Loss effective number of samples
+  cb_beta: 0.995        # Beta parameter for CB-Loss effective number of samples
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
@@ -76,7 +76,7 @@ training:
 optimizer:
   type: "adamw"
   backbone_lr: 0.00001  # Differential LR
-  phase1_lr: 0.0005
+  phase1_lr: 0.001
   phase2_lr: 0.01  # Larger LR for latent representation learning in Phase 2
   phase3_lr: 0.00001
   weight_decay: 0.05
@@ -85,8 +85,8 @@ optimizer:
   # focal_alpha: 0.95 
   # focal_gamma: 2.5  # Focal loss focus exponent gamma
   asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
-  asl_gamma_neg: 3.0    # easy negative gradient noise 강력 억제
-  asl_alpha_pos: 1.2    # positive 샘플에 static weight 부여
+  asl_gamma_neg: 2.5    # easy negative gradient noise 강력 억제
+  asl_alpha_pos: 1.5    # positive 샘플에 static weight 부여
   asl_clip: 0.05        # 비대칭 클리핑 threshold
   ortho_lambda: 0.0  # Orthogonality loss coefficient to force attention map separation
 
