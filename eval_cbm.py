@@ -11,6 +11,7 @@ import numpy as np
 
 from src.data.cub import CUB2011Dataset
 from src.data.derm7pt import Derm7PtDataset
+from src.data.milk10k import MILK10KDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.metrics import calculate_accuracy, calculate_concept_metrics
 
@@ -416,6 +417,11 @@ def main():
         csv_path = checkpoint_args.get('csv_path', 'data/derm7pt/meta/meta.csv')
         image_dir = checkpoint_args.get('image_dir', 'data/derm7pt/images')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/derm7pt/concept_config.json')
+    elif dataset_name == 'milk10k':
+        dataset_class = MILK10KDataset
+        csv_path = checkpoint_args.get('csv_path', 'data/MILK10K/MILK10k_Training_Metadata.csv')
+        image_dir = checkpoint_args.get('image_dir', 'data/MILK10K/MILK10k_Training_Input/MILK10k_Training_Input')
+        concept_config_path = checkpoint_args.get('concept_config_path', 'data/MILK10K/concept_config.json')
     else:
         dataset_class = CUB2011Dataset
         csv_path = checkpoint_args.get('csv_path', 'data/CUB_200_2011/images.txt')
