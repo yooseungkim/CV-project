@@ -40,8 +40,15 @@ training:
   use_gated_nam: true  # Gated Sparse NAM head activation
   use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
   use_probabilistic_cbm: true  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  pcbm_beta: 0.001              # Target weight coefficient beta for KL penalty
+  pcbm_beta_warmup_epochs: 5   # Number of epochs for KL beta warm-up (beta = 0.0)
+  pcbm_beta_anneal_epochs: 5   # Number of epochs for KL beta linear annealing/ramp-up
+  pcbm_beta_min: 0.0001         # Starting KL beta value after warm-up
+  pcbm_asymmetric_kl_weight: 0.1 # Weight multiplier for positive samples to avoid Gamma Trap / positive suppression
   l1_lambda_gate: 0.01  # L1 Regularization strength on gates
   weight_decay_nam: 1e-2  # L2 Penalty for NAM sub-networks smoothing
+  use_cb_loss: true     # Use CVPR 2019 Class-Balanced Loss weighting
+  cb_beta: 0.999        # Beta parameter for CB-Loss effective number of samples
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.

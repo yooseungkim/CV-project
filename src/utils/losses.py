@@ -76,13 +76,16 @@ class AsymmetricLossWithWeight(nn.Module):
     """
     def __init__(self, gamma_pos: float = 0.0, gamma_neg: float = 4.0,
                  alpha_pos: float = 1.2, clip: float = 0.05,
-                 reduction: str = 'mean'):
+                 reduction: str = 'mean', cb_pos_weight: torch.Tensor = None,
+                 cb_neg_weight: torch.Tensor = None):
         super().__init__()
         self.gamma_pos = gamma_pos
         self.gamma_neg = gamma_neg
         self.alpha_pos = alpha_pos
         self.clip = clip
         self.reduction = reduction
+        self.cb_pos_weight = cb_pos_weight
+        self.cb_neg_weight = cb_neg_weight
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.sigmoid(logits)
@@ -103,6 +106,12 @@ class AsymmetricLossWithWeight(nn.Module):
         pos_loss = -targets * pos_log * ((1.0 - pos_probs) ** self.gamma_pos)
         neg_loss = -(1.0 - targets) * neg_log * (probs ** self.gamma_neg)
 
+        # Class-Balanced weighting
+        if self.cb_pos_weight is not None:
+            pos_loss = self.cb_pos_weight * pos_loss
+        if self.cb_neg_weight is not None:
+            neg_loss = self.cb_neg_weight * neg_loss
+
         # alpha_pos 가중치: positive에 static weight 부여
         loss = self.alpha_pos * pos_loss + neg_loss
 
@@ -116,7 +125,8 @@ class GroupCrossEntropyLoss(nn.Module):
     def __init__(self, groups_info: list[tuple[int, int]], lambda_ce: float = 0.1, loss_type: str = 'bce',
                  focal_alpha = None, focal_gamma: float = 2.0,
                  asl_gamma_pos: float = 0.0, asl_gamma_neg: float = 4.0,
-                 asl_alpha_pos: float = 1.2, asl_clip: float = 0.05):
+                 asl_alpha_pos: float = 1.2, asl_clip: float = 0.05,
+                 cb_pos_weight: torch.Tensor = None, cb_neg_weight: torch.Tensor = None):
         """Robust Group-level Softmax Cross Entropy Loss with Loss Scale Balancing.
         Supports BCE, Sigmoid Focal Loss, and ASL for the Sigmoid/1D fallback categories.
         """
@@ -130,6 +140,8 @@ class GroupCrossEntropyLoss(nn.Module):
         self.asl_gamma_neg = asl_gamma_neg
         self.asl_alpha_pos = asl_alpha_pos
         self.asl_clip = asl_clip
+        self.cb_pos_weight = cb_pos_weight
+        self.cb_neg_weight = cb_neg_weight
         
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         loss = 0.0
@@ -147,6 +159,17 @@ class GroupCrossEntropyLoss(nn.Module):
                 
                 # Apply PyTorch's native cross_entropy supporting Soft Targets
                 group_loss = F.cross_entropy(group_logits, group_targets_normalized, reduction='none')
+                
+                # Apply Class-Balanced Loss weighting for softmax groups
+                if self.cb_pos_weight is not None:
+                    group_cb_pos = self.cb_pos_weight[start_idx : start_idx + num_feats]
+                    sum_group_cb = group_cb_pos.sum()
+                    if sum_group_cb > 0:
+                        norm_cb_pos = num_feats * group_cb_pos / sum_group_cb
+                    else:
+                        norm_cb_pos = torch.ones_like(group_cb_pos)
+                    sample_weight = (group_targets_normalized * norm_cb_pos.view(1, -1)).sum(dim=-1)
+                    group_loss = sample_weight * group_loss
                 
                 # Mask out samples that do not have annotations for this group
                 mask = (target_sum.squeeze(-1) > 0.0).float()
@@ -166,6 +189,12 @@ class GroupCrossEntropyLoss(nn.Module):
                     neg_log = torch.clamp(neg_probs, min=1e-8).log()
                     pos_loss = -group_targets * pos_log * ((1.0 - probs) ** self.asl_gamma_pos)
                     neg_loss = -(1.0 - group_targets) * neg_log * (probs ** self.asl_gamma_neg)
+                    
+                    if self.cb_pos_weight is not None:
+                        pos_loss = self.cb_pos_weight[start_idx] * pos_loss
+                    if self.cb_neg_weight is not None:
+                        neg_loss = self.cb_neg_weight[start_idx] * neg_loss
+                        
                     asl_loss = self.asl_alpha_pos * pos_loss + neg_loss
                     loss += asl_loss.mean()
                     active_groups += 1
@@ -176,6 +205,12 @@ class GroupCrossEntropyLoss(nn.Module):
                     p_t = probs * group_targets + (1 - probs) * (1 - group_targets)
                     focal_loss = ((1 - p_t) ** self.focal_gamma) * bce_loss
                     
+                    if self.cb_pos_weight is not None and self.cb_neg_weight is not None:
+                        w_pos = self.cb_pos_weight[start_idx]
+                        w_neg = self.cb_neg_weight[start_idx]
+                        cb_weight = group_targets * w_pos + (1.0 - group_targets) * w_neg
+                        focal_loss = cb_weight * focal_loss
+                        
                     if self.focal_alpha is not None:
                         # Extract alpha value for this specific concept dimension
                         if isinstance(self.focal_alpha, torch.Tensor):
@@ -189,7 +224,14 @@ class GroupCrossEntropyLoss(nn.Module):
                     active_groups += 1
                 else:
                     # Standard BCE Loss fallback
-                    loss += F.binary_cross_entropy_with_logits(group_logits.squeeze(-1), group_targets.squeeze(-1))
+                    bce_loss_raw = F.binary_cross_entropy_with_logits(group_logits.squeeze(-1), group_targets.squeeze(-1), reduction='none')
+                    if self.cb_pos_weight is not None and self.cb_neg_weight is not None:
+                        w_pos = self.cb_pos_weight[start_idx]
+                        w_neg = self.cb_neg_weight[start_idx]
+                        cb_weight = group_targets.squeeze(-1) * w_pos + (1.0 - group_targets.squeeze(-1)) * w_neg
+                        loss += (bce_loss_raw * cb_weight).mean()
+                    else:
+                        loss += bce_loss_raw.mean()
                     active_groups += 1
                 
         return loss / (active_groups + 1e-8)

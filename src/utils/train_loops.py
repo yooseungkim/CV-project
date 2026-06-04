@@ -133,6 +133,24 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     es_handler = EarlyStopping(patience=phase1_patience, min_delta=0.0, monitor=phase1_monitor)
     
     for epoch in range(phase1_epochs):
+        # Calculate current beta for PCBM KL Divergence
+        warmup_epochs = getattr(args, "pcbm_beta_warmup_epochs", 10)
+        anneal_epochs = getattr(args, "pcbm_beta_anneal_epochs", 10)
+        target_beta = getattr(args, "pcbm_beta", 0.001)
+        beta_min = getattr(args, "pcbm_beta_min", 0.0001)
+        
+        if epoch < warmup_epochs:
+            current_beta = 0.0
+        else:
+            if epoch >= warmup_epochs + anneal_epochs:
+                current_beta = target_beta
+            else:
+                ratio = (epoch - warmup_epochs) / anneal_epochs
+                current_beta = beta_min + (target_beta - beta_min) * ratio
+                
+        if getattr(model, "use_probabilistic_cbm", False):
+            tqdm.write(f"  {BOLD}{CYAN}[PCBM Beta]{RESET} Epoch {epoch+1} KL Weight Beta: {current_beta:.6f}")
+
         model.train()
         total_loss_c = 0.0
         total_acc_c = 0.0
@@ -155,8 +173,32 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             if getattr(model, "use_probabilistic_cbm", False):
                 mean = model.last_mean
                 logvar = model.last_logvar
-                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
-                loss_c = loss_c + 0.001 * kl_loss
+                kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
+                
+                # Filter out ignored/missing concepts (< 0.0, e.g. -1)
+                valid_mask = (concepts >= 0.0)
+                pos_mask = (concepts > 0.5) & valid_mask
+                neg_mask = (concepts <= 0.5) & valid_mask
+                
+                # Inverse frequency weighting to balance positive/negative components and prevent negative bias dominance
+                pos_sum = (kl_loss_raw * pos_mask.float()).sum(dim=0)
+                neg_sum = (kl_loss_raw * neg_mask.float()).sum(dim=0)
+                
+                P_c = pos_mask.sum(dim=0).float()
+                N_c = neg_mask.sum(dim=0).float()
+                
+                # Prevent division by zero to avoid NaN generation in torch.where
+                P_c_safe = torch.where(P_c > 0, P_c, torch.ones_like(P_c))
+                N_c_safe = torch.where(N_c > 0, N_c, torch.ones_like(N_c))
+                
+                avg_kl_pos = torch.where(P_c > 0, pos_sum / P_c_safe, torch.zeros_like(pos_sum))
+                avg_kl_neg = torch.where(N_c > 0, neg_sum / N_c_safe, torch.zeros_like(neg_sum))
+                
+                asym_weight = getattr(args, "pcbm_asymmetric_kl_weight", 0.1)
+                kl_loss_per_concept = avg_kl_neg + asym_weight * avg_kl_pos
+                kl_loss = kl_loss_per_concept.mean()
+                
+                loss_c = loss_c + current_beta * kl_loss
             
             # Compute spatial orthogonality loss for the supervised concept attention maps
             if getattr(args, "ortho_lambda", 0.0) > 0.0:
@@ -218,8 +260,32 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 if getattr(model, "use_probabilistic_cbm", False):
                     mean = model.last_mean
                     logvar = model.last_logvar
-                    kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
-                    v_loss_c = v_loss_c + 0.001 * kl_loss
+                    kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
+                    
+                    # Filter out ignored/missing concepts (< 0.0, e.g. -1)
+                    valid_mask = (val_concepts >= 0.0)
+                    pos_mask = (val_concepts > 0.5) & valid_mask
+                    neg_mask = (val_concepts <= 0.5) & valid_mask
+                    
+                    # Inverse frequency weighting to balance positive/negative components and prevent negative bias dominance
+                    pos_sum = (kl_loss_raw * pos_mask.float()).sum(dim=0)
+                    neg_sum = (kl_loss_raw * neg_mask.float()).sum(dim=0)
+                    
+                    P_c = pos_mask.sum(dim=0).float()
+                    N_c = neg_mask.sum(dim=0).float()
+                    
+                    # Prevent division by zero to avoid NaN generation in torch.where
+                    P_c_safe = torch.where(P_c > 0, P_c, torch.ones_like(P_c))
+                    N_c_safe = torch.where(N_c > 0, N_c, torch.ones_like(N_c))
+                    
+                    avg_kl_pos = torch.where(P_c > 0, pos_sum / P_c_safe, torch.zeros_like(pos_sum))
+                    avg_kl_neg = torch.where(N_c > 0, neg_sum / N_c_safe, torch.zeros_like(neg_sum))
+                    
+                    asym_weight = getattr(args, "pcbm_asymmetric_kl_weight", 0.1)
+                    kl_loss_per_concept = avg_kl_neg + asym_weight * avg_kl_pos
+                    kl_loss = kl_loss_per_concept.mean()
+                    
+                    v_loss_c = v_loss_c + current_beta * kl_loss
                 
                 if getattr(args, "ortho_lambda", 0.0) > 0.0:
                     if getattr(model, "use_group_broadcasting", False):
@@ -678,6 +744,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                             model.classifier_head.concept_gates
                         )
                     )
+            if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+                with torch.no_grad():
+                    threshold = 0.05
+                    model.classifier_head.latent_gates.copy_(
+                        torch.where(
+                            model.classifier_head.latent_gates.abs() < threshold,
+                            torch.zeros_like(model.classifier_head.latent_gates),
+                            model.classifier_head.latent_gates
+                        )
+                    )
             
             total_loss_t += loss_t.item()
             total_acc_t += calculate_accuracy(class_logits.detach(), targets)
@@ -720,6 +796,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 active_count = (gates.abs() > 0.0).sum().item()
                 gate_mean_val = gates.abs().mean().item()
                 tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
+        if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+            with torch.no_grad():
+                l_gates = model.classifier_head.latent_gates.detach().cpu()
+                active_l_count = (l_gates.abs() > 0.0).sum().item()
+                tqdm.write(f"  {BOLD}{CYAN}[NAM Latent Gating]{RESET} Active Latent Gates: {active_l_count}/{l_gates.size(0)} | Latent Mean: {l_gates.abs().mean().item():.4f}")
         
         if scheduler is not None:
             scheduler.step()
@@ -769,6 +850,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             gates = model.classifier_head.concept_gates.detach().cpu()
             final_active_count = (gates.abs() > 0.0).sum().item()
             tqdm.write(f"  {BOLD}{GREEN}[NAM Gating Post-Phase 2]{RESET} Final Active Gates (threshold=0.05): {final_active_count}/{gates.size(0)}")
+    if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+        with torch.no_grad():
+            l_gates = model.classifier_head.latent_gates.detach().cpu()
+            final_l_active = (l_gates.abs() > 0.0).sum().item()
+            tqdm.write(f"  {BOLD}{GREEN}[NAM Latent Gating Post-Phase 2]{RESET} Final Active Latent Gates (threshold=0.05): {final_l_active}/{l_gates.size(0)}")
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
@@ -850,6 +936,24 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}")
         
     for epoch in range(phase3_epochs):
+        # Calculate current beta for PCBM KL Divergence
+        warmup_epochs = getattr(args, "pcbm_beta_warmup_epochs", 10)
+        anneal_epochs = getattr(args, "pcbm_beta_anneal_epochs", 10)
+        target_beta = getattr(args, "pcbm_beta", 0.001)
+        beta_min = getattr(args, "pcbm_beta_min", 0.0001)
+        
+        if epoch < warmup_epochs:
+            current_beta = 0.0
+        else:
+            if epoch >= warmup_epochs + anneal_epochs:
+                current_beta = target_beta
+            else:
+                ratio = (epoch - warmup_epochs) / anneal_epochs
+                current_beta = beta_min + (target_beta - beta_min) * ratio
+                
+        if getattr(model, "use_probabilistic_cbm", False):
+            tqdm.write(f"  {BOLD}{CYAN}[PCBM Beta]{RESET} Epoch {epoch+1} KL Weight Beta: {current_beta:.6f}")
+
         model.train()
         total_loss_joint = 0.0
         total_loss_t = 0.0
@@ -872,6 +976,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             if model.backbone_name.startswith('resnet'):
                 if getattr(model, "use_probabilistic_cbm", False):
                     supervised_mean, supervised_logvar, supervised_attn, supervised_features = model.supervised_attention(features)
+                    model.last_mean = supervised_mean
+                    model.last_logvar = supervised_logvar
                     if model.training:
                         std = torch.exp(0.5 * supervised_logvar)
                         eps = torch.randn_like(std)
@@ -913,6 +1019,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     # GroupToConceptAttention
                     if getattr(model, "use_probabilistic_cbm", False):
                         supervised_mean, supervised_logvar, attn_weights, concept_features = model.supervised_attention(features)
+                        model.last_mean = supervised_mean
+                        model.last_logvar = supervised_logvar
                         if model.training:
                             std = torch.exp(0.5 * supervised_logvar)
                             eps = torch.randn_like(std)
@@ -936,6 +1044,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     # ViTCrossAttentionLayer
                     if getattr(model, "use_probabilistic_cbm", False):
                         supervised_mean, supervised_logvar, attn_weights, supervised_features = model.supervised_attention(features)
+                        model.last_mean = supervised_mean
+                        model.last_logvar = supervised_logvar
                         if model.training:
                             std = torch.exp(0.5 * supervised_logvar)
                             eps = torch.randn_like(std)
@@ -1003,6 +1113,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     # PatchWiseMLPConceptHead
                     if getattr(model, "use_probabilistic_cbm", False):
                         supervised_mean, supervised_logvar, supervised_topk_indices, supervised_weights = model.supervised_attention(features, return_weights=True)
+                        model.last_mean = supervised_mean
+                        model.last_logvar = supervised_logvar
                         if model.training:
                             std = torch.exp(0.5 * supervised_logvar)
                             eps = torch.randn_like(std)
@@ -1104,8 +1216,32 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             if getattr(model, "use_probabilistic_cbm", False):
                 mean = model.last_mean
                 logvar = model.last_logvar
-                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim=-1).mean()
-                loss_c = loss_c + 0.001 * kl_loss
+                kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
+                
+                # Filter out ignored/missing concepts (< 0.0, e.g. -1)
+                valid_mask = (concepts >= 0.0)
+                pos_mask = (concepts > 0.5) & valid_mask
+                neg_mask = (concepts <= 0.5) & valid_mask
+                
+                # Inverse frequency weighting to balance positive/negative components and prevent negative bias dominance
+                pos_sum = (kl_loss_raw * pos_mask.float()).sum(dim=0)
+                neg_sum = (kl_loss_raw * neg_mask.float()).sum(dim=0)
+                
+                P_c = pos_mask.sum(dim=0).float()
+                N_c = neg_mask.sum(dim=0).float()
+                
+                # Prevent division by zero to avoid NaN generation in torch.where
+                P_c_safe = torch.where(P_c > 0, P_c, torch.ones_like(P_c))
+                N_c_safe = torch.where(N_c > 0, N_c, torch.ones_like(N_c))
+                
+                avg_kl_pos = torch.where(P_c > 0, pos_sum / P_c_safe, torch.zeros_like(pos_sum))
+                avg_kl_neg = torch.where(N_c > 0, neg_sum / N_c_safe, torch.zeros_like(neg_sum))
+                
+                asym_weight = getattr(args, "pcbm_asymmetric_kl_weight", 0.1)
+                kl_loss_per_concept = avg_kl_neg + asym_weight * avg_kl_pos
+                kl_loss = kl_loss_per_concept.mean()
+                
+                loss_c = loss_c + current_beta * kl_loss
             
             # 3. Latent Regularization Losses
             loss_latent_ortho = torch.tensor(0.0, device=device)
@@ -1148,6 +1284,16 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                             model.classifier_head.concept_gates.abs() < threshold,
                             torch.zeros_like(model.classifier_head.concept_gates),
                             model.classifier_head.concept_gates
+                        )
+                    )
+            if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+                with torch.no_grad():
+                    threshold = 0.05
+                    model.classifier_head.latent_gates.copy_(
+                        torch.where(
+                            model.classifier_head.latent_gates.abs() < threshold,
+                            torch.zeros_like(model.classifier_head.latent_gates),
+                            model.classifier_head.latent_gates
                         )
                     )
             
@@ -1195,6 +1341,11 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 active_count = (gates.abs() > 0.0).sum().item()
                 gate_mean_val = gates.abs().mean().item()
                 tqdm.write(f"  {BOLD}{CYAN}[NAM Gating]{RESET} Active Gates: {active_count}/{gates.size(0)} | Gate Mean: {gate_mean_val:.4f}")
+        if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+            with torch.no_grad():
+                l_gates = model.classifier_head.latent_gates.detach().cpu()
+                active_l_count = (l_gates.abs() > 0.0).sum().item()
+                tqdm.write(f"  {BOLD}{CYAN}[NAM Latent Gating]{RESET} Active Latent Gates: {active_l_count}/{l_gates.size(0)} | Latent Mean: {l_gates.abs().mean().item():.4f}")
         
         if scheduler is not None:
             scheduler.step()
@@ -1241,3 +1392,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             gates = model.classifier_head.concept_gates.detach().cpu()
             final_active_count = (gates.abs() > 0.0).sum().item()
             tqdm.write(f"  {BOLD}{GREEN}[NAM Gating Post-Phase 3]{RESET} Final Active Gates (threshold=0.05): {final_active_count}/{gates.size(0)}")
+    if hasattr(model.classifier_head, 'latent_gates') and model.classifier_head.latent_gates is not None:
+        with torch.no_grad():
+            l_gates = model.classifier_head.latent_gates.detach().cpu()
+            final_l_active = (l_gates.abs() > 0.0).sum().item()
+            tqdm.write(f"  {BOLD}{GREEN}[NAM Latent Gating Post-Phase 3]{RESET} Final Active Latent Gates (threshold=0.05): {final_l_active}/{l_gates.size(0)}")

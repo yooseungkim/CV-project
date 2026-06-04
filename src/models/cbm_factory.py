@@ -46,8 +46,10 @@ class GatedSparseNAMHead(nn.Module):
         
         if self.num_latent_concepts > 0:
             self.latent_linear = nn.Linear(num_latent_concepts, num_classes)
+            self.latent_gates = nn.Parameter(torch.ones(num_latent_concepts))
         else:
             self.latent_linear = None
+            self.latent_gates = None
 
         # Weight Initialization
         nn.init.kaiming_uniform_(self.conv1.weight, a=math.sqrt(5))
@@ -131,6 +133,8 @@ class GatedSparseNAMHead(nn.Module):
             
         if self.num_latent_concepts > 0 and self.latent_linear is not None:
             latent_x = x[:, self.num_concepts:]
+            if self.latent_gates is not None:
+                latent_x = latent_x * self.latent_gates.view(1, -1)
             latent_out = self.latent_linear(latent_x)
             return supervised_out + latent_out
             
@@ -138,6 +142,8 @@ class GatedSparseNAMHead(nn.Module):
 
     def get_sparsity_loss(self) -> torch.Tensor:
         loss = torch.sum(torch.abs(self.concept_gates))
+        if self.num_latent_concepts > 0 and self.latent_gates is not None:
+            loss = loss + torch.sum(torch.abs(self.latent_gates))
         if self.use_pairwise_nam:
             loss = loss + torch.sum(torch.abs(self.pairwise_gates))
         return loss
@@ -768,6 +774,17 @@ class UniversalFlexibleCBM(nn.Module):
         # If 'concept_thresholds' is not in the loaded state_dict, inject it to prevent strict loading errors
         if 'concept_thresholds' not in state_dict:
             state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
+            
+        # Backward compatibility for concept_gates and latent_gates
+        if hasattr(self.classifier_head, 'concept_gates'):
+            key = 'classifier_head.concept_gates'
+            if key not in state_dict:
+                state_dict[key] = torch.ones(self.classifier_head.num_concepts)
+        if hasattr(self.classifier_head, 'latent_gates') and self.classifier_head.latent_gates is not None:
+            key = 'classifier_head.latent_gates'
+            if key not in state_dict:
+                state_dict[key] = torch.ones(self.classifier_head.num_latent_concepts)
+                
         ret = super().load_state_dict(state_dict, strict=strict)
         
         # Post-load Gated NAM concept gates pruning (threshold = 0.05)
@@ -785,6 +802,23 @@ class UniversalFlexibleCBM(nn.Module):
                 print(f"[Gated NAM Pruning] Pruned gates with absolute value <= 0.05")
                 print(f"  Original active gates (>0.0): {original_active} / {total_gates}")
                 print(f"  Final remaining gates (>0.05): {final_active} / {total_gates}")
+                
+        # Post-load Gated NAM latent gates pruning (threshold = 0.05)
+        if hasattr(self.classifier_head, 'latent_gates') and self.classifier_head.latent_gates is not None:
+            with torch.no_grad():
+                l_gates = self.classifier_head.latent_gates
+                l_total_gates = l_gates.numel()
+                l_original_active = (l_gates.abs() > 0.0).sum().item()
+                
+                # Zero out gates <= 0.05
+                l_pruned_mask = l_gates.abs() <= 0.05
+                l_gates[l_pruned_mask] = 0.0
+                
+                l_final_active = (l_gates.abs() > 0.0).sum().item()
+                print(f"[Gated NAM Latent Pruning] Pruned latent gates with absolute value <= 0.05")
+                print(f"  Original active latent gates (>0.0): {l_original_active} / {l_total_gates}")
+                print(f"  Final remaining latent gates (>0.05): {l_final_active} / {l_total_gates}")
+                
         return ret
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:

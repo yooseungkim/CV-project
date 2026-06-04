@@ -154,3 +154,91 @@ class EarlyStopping:
             
     def save_checkpoint(self, model: nn.Module):
         self.best_weights = copy.deepcopy(model.state_dict())
+
+
+def calculate_class_balanced_weights(dataset, num_concepts_supervised, beta=0.999):
+    """
+    Calculates Class-Balanced loss weights for each concept based on the effective number of samples.
+    Ref: Class-Balanced Loss Based on Effective Number of Samples (CVPR 2019)
+    """
+    import pandas as pd
+    num_samples = len(dataset)
+    if num_samples == 0:
+        return torch.ones(num_concepts_supervised), torch.ones(num_concepts_supervised)
+        
+    if getattr(dataset, "_cache_populated", False) and dataset._cache is not None:
+        concepts = torch.stack([sample[1][:num_concepts_supervised] for sample in dataset._cache], dim=0)
+    elif hasattr(dataset, "concept_matrix") and dataset.concept_matrix is not None:
+        image_idxs = dataset.df['image_idx'].values
+        concepts = torch.tensor(dataset.concept_matrix[image_idxs, :num_concepts_supervised], dtype=torch.float32)
+    elif hasattr(dataset, "df") and not dataset.df.empty:
+        concepts_list = []
+        for idx in range(num_samples):
+            row = dataset.df.iloc[idx]
+            if dataset.concept_features_info is not None:
+                concept_vals = []
+                for info in dataset.concept_features_info:
+                    name = info["name"]
+                    val = row.get(name)
+                    if info["type"] == "categorical":
+                        classes = info["classes"]
+                        one_hot = [0.0] * len(classes)
+                        if pd.notna(val):
+                            try:
+                                if len(classes) > 0:
+                                    target_type = type(classes[0])
+                                    val_typed = target_type(val)
+                                    if val_typed in classes:
+                                        val_idx = classes.index(val_typed)
+                                        one_hot[val_idx] = 1.0
+                            except (ValueError, TypeError):
+                                pass
+                        concept_vals.extend(one_hot)
+                    else:
+                        min_val = info["min"]
+                        max_val = info["max"]
+                        if pd.isna(val):
+                            scaled_val = 0.5
+                        else:
+                            try:
+                                val_float = float(val)
+                                denom = max_val - min_val
+                                if denom == 0:
+                                    scaled_val = 0.0
+                                else:
+                                    scaled_val = (val_float - min_val) / denom
+                                    scaled_val = max(0.0, min(1.0, scaled_val))
+                            except (ValueError, TypeError):
+                                scaled_val = 0.5
+                        concept_vals.append(scaled_val)
+                concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
+            else:
+                concept_vals = [float(row.get(col, 0.0)) for col in dataset.concept_cols]
+                concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
+        concepts = torch.stack(concepts_list, dim=0)[:, :num_concepts_supervised]
+    else:
+        concepts = torch.zeros((num_samples, num_concepts_supervised))
+
+    # Calculate positives and negatives counts per concept
+    pos_counts = (concepts > 0.5).sum(dim=0).float()
+    neg_counts = (concepts <= 0.5).sum(dim=0).float()
+
+    # CB-Loss Formula: (1 - beta) / (1 - beta^n)
+    pos_counts_safe = torch.clamp(pos_counts, min=0.0)
+    neg_counts_safe = torch.clamp(neg_counts, min=0.0)
+    
+    w_pos = (1.0 - beta) / (1.0 - torch.pow(beta, pos_counts_safe) + 1e-8)
+    w_neg = (1.0 - beta) / (1.0 - torch.pow(beta, neg_counts_safe) + 1e-8)
+    
+    # If counts are 0, default to weight of 1.0
+    w_pos = torch.where(pos_counts > 0, w_pos, torch.ones_like(w_pos))
+    w_neg = torch.where(neg_counts > 0, w_neg, torch.ones_like(w_neg))
+
+    # Normalize weights so that w_pos + w_neg = 2.0 for each concept to preserve loss scale
+    sum_w = w_pos + w_neg
+    sum_w = torch.where(sum_w > 0, sum_w, torch.ones_like(sum_w) * 2.0)
+    
+    cb_pos_weight = 2.0 * w_pos / sum_w
+    cb_neg_weight = 2.0 * w_neg / sum_w
+
+    return cb_pos_weight, cb_neg_weight

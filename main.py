@@ -3,6 +3,7 @@ import os
 import datetime
 import copy
 import torch
+torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -102,9 +103,16 @@ def parse_args():
     if "use_gated_nam" in tr_cfg: flat_defaults["use_gated_nam"] = tr_cfg["use_gated_nam"]
     if "use_pairwise_nam" in tr_cfg: flat_defaults["use_pairwise_nam"] = tr_cfg["use_pairwise_nam"]
     if "use_probabilistic_cbm" in tr_cfg: flat_defaults["use_probabilistic_cbm"] = tr_cfg["use_probabilistic_cbm"]
+    if "pcbm_beta" in tr_cfg: flat_defaults["pcbm_beta"] = tr_cfg["pcbm_beta"]
+    if "pcbm_beta_warmup_epochs" in tr_cfg: flat_defaults["pcbm_beta_warmup_epochs"] = tr_cfg["pcbm_beta_warmup_epochs"]
+    if "pcbm_beta_anneal_epochs" in tr_cfg: flat_defaults["pcbm_beta_anneal_epochs"] = tr_cfg["pcbm_beta_anneal_epochs"]
+    if "pcbm_beta_min" in tr_cfg: flat_defaults["pcbm_beta_min"] = tr_cfg["pcbm_beta_min"]
+    if "pcbm_asymmetric_kl_weight" in tr_cfg: flat_defaults["pcbm_asymmetric_kl_weight"] = tr_cfg["pcbm_asymmetric_kl_weight"]
     if "use_concept_attention" in bb_cfg: flat_defaults["use_concept_attention"] = bb_cfg["use_concept_attention"]
     if "l1_lambda_gate" in tr_cfg: flat_defaults["l1_lambda_gate"] = tr_cfg["l1_lambda_gate"]
     if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
+    if "use_cb_loss" in tr_cfg: flat_defaults["use_cb_loss"] = tr_cfg["use_cb_loss"]
+    if "cb_beta" in tr_cfg: flat_defaults["cb_beta"] = tr_cfg["cb_beta"]
     
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
@@ -214,9 +222,16 @@ def parse_args():
     parser.add_argument('--use_gated_nam', type=str2bool, default=flat_defaults.get('use_gated_nam', False), help="Activate Gated Sparse NAM head")
     parser.add_argument('--use_pairwise_nam', type=str2bool, default=flat_defaults.get('use_pairwise_nam', False), help="Activate Pairwise Interaction NAM^2 head")
     parser.add_argument('--use_probabilistic_cbm', type=str2bool, default=flat_defaults.get('use_probabilistic_cbm', False), help="Convert Concept Extractor to Probabilistic")
+    parser.add_argument('--pcbm_beta', type=float, default=flat_defaults.get('pcbm_beta', 0.001), help="PCBM target KL Divergence loss weight beta")
+    parser.add_argument('--pcbm_beta_warmup_epochs', type=int, default=flat_defaults.get('pcbm_beta_warmup_epochs', 10), help="PCBM epochs for KL beta warmup (beta=0.0 during warmup)")
+    parser.add_argument('--pcbm_beta_anneal_epochs', type=int, default=flat_defaults.get('pcbm_beta_anneal_epochs', 10), help="PCBM epochs for KL beta annealing/ramp-up")
+    parser.add_argument('--pcbm_beta_min', type=float, default=flat_defaults.get('pcbm_beta_min', 0.0001), help="PCBM starting beta value after warmup")
+    parser.add_argument('--pcbm_asymmetric_kl_weight', type=float, default=flat_defaults.get('pcbm_asymmetric_kl_weight', 0.1), help="PCBM asymmetric KL weight multiplier for positive samples (0.0 to disable positive KL penalty)")
     parser.add_argument('--use_concept_attention', type=str2bool, default=flat_defaults.get('use_concept_attention', False), help="Activate Patch token-based Cross-Attention")
     parser.add_argument('--l1_lambda_gate', type=float, default=flat_defaults.get('l1_lambda_gate', 0.01), help="L1 Regularization strength for Gating parameters")
     parser.add_argument('--weight_decay_nam', type=float, default=flat_defaults.get('weight_decay_nam', 1e-2), help="L2 penalty for NAM subnetworks smoothing")
+    parser.add_argument('--use_cb_loss', type=str2bool, default=flat_defaults.get('use_cb_loss', True), help="Use Class-Balanced Loss weighting based on CVPR 2019")
+    parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")
     
     args = parser.parse_args()
     return args, config_data
@@ -472,6 +487,15 @@ def main():
     model.to(device)
 
     # 3. Loss & Optimizer Setup
+    cb_pos_weight = None
+    cb_neg_weight = None
+    if getattr(args, 'use_cb_loss', True):
+        from src.utils.helpers import calculate_class_balanced_weights
+        cb_pos, cb_neg = calculate_class_balanced_weights(train_dataset, num_concepts_supervised, beta=getattr(args, 'cb_beta', 0.999))
+        cb_pos_weight = cb_pos.to(device)
+        cb_neg_weight = cb_neg.to(device)
+        tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} Class-Balanced Loss weighting enabled (beta={getattr(args, 'cb_beta', 0.999)})")
+
     if getattr(args, 'use_group_broadcasting', False):
         pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised).to(device)
         tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} BCEWithLogitsLoss (Group Broadcasting mode) with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
@@ -500,7 +524,9 @@ def main():
             asl_gamma_pos=args.asl_gamma_pos,
             asl_gamma_neg=args.asl_gamma_neg,
             asl_alpha_pos=args.asl_alpha_pos,
-            asl_clip=args.asl_clip
+            asl_clip=args.asl_clip,
+            cb_pos_weight=cb_pos_weight,
+            cb_neg_weight=cb_neg_weight
         )
     elif args.concept_loss_type == 'asl':
         tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} Asymmetric Loss (gamma_pos={args.asl_gamma_pos}, gamma_neg={args.asl_gamma_neg}, alpha_pos={args.asl_alpha_pos}, clip={args.asl_clip})")
@@ -508,7 +534,9 @@ def main():
             gamma_pos=args.asl_gamma_pos,
             gamma_neg=args.asl_gamma_neg,
             alpha_pos=args.asl_alpha_pos,
-            clip=args.asl_clip
+            clip=args.asl_clip,
+            cb_pos_weight=cb_pos_weight,
+            cb_neg_weight=cb_neg_weight
         )
     elif args.concept_loss_type == 'focal':
         if isinstance(args.focal_alpha, str) and args.focal_alpha.lower() == 'dynamic':
