@@ -326,13 +326,15 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             avg_val_acc_c = val_metrics["mean_balanced_acc"]
             val_tpr = val_metrics["tpr"]
             val_tnr = val_metrics["tnr"]
+            val_f1 = val_metrics["mean_f1"]
         else:
             avg_val_acc_c = 0.0
             val_tpr = 0.0
             val_tnr = 0.0
+            val_f1 = 0.0
             
         # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
-        tqdm.write(f"[Phase 1] Epoch {epoch+1:02d}/{phase1_epochs:02d} | Train Concept Loss: {avg_loss_c:.4f} | Val Concept Loss: {avg_val_loss_c:.4f} | Val Concept Balanced Acc: {avg_val_acc_c * 100:.2f}% | TPR: {val_tpr * 100:.2f}% | TNR: {val_tnr * 100:.2f}%")
+        tqdm.write(f"[Phase 1] Epoch {epoch+1:02d}/{phase1_epochs:02d} | Train Concept Loss: {avg_loss_c:.4f} | Val Concept Loss: {avg_val_loss_c:.4f} | Val Concept Balanced Acc: {avg_val_acc_c * 100:.2f}% | TPR: {val_tpr * 100:.2f}% | TNR: {val_tnr * 100:.2f}% | F1-Score: {val_f1 * 100:.2f}%")
         
         concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
         
@@ -352,6 +354,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         monitor_metric = es_handler.monitor.lower()
         if "loss" in monitor_metric:
             monitor_score = avg_val_loss_c
+        elif "f1" in monitor_metric:
+            monitor_score = val_f1
         elif "acc" in monitor_metric or "accuracy" in monitor_metric:
             monitor_score = avg_val_acc_c
         else:
@@ -405,7 +409,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 "val/concept_loss": avg_val_loss_c,
                 "val/concept_accuracy": avg_val_acc_c,
                 "val/concept_tpr": val_tpr,
-                "val/concept_tnr": val_tnr
+                "val/concept_tnr": val_tnr,
+                "val/concept_f1": val_f1
             }
             if 'val_individual_accs' in locals():
                 log_dict.update(val_individual_accs)
@@ -486,7 +491,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     tqdm.write(f"\n{BOLD}{CYAN}[Comparison]{RESET} Phase 1 Validation side-by-side comparison:")
     tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% --> {opt_metrics['mean_balanced_acc']*100:.2f}% (J-Optimal)")
     tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% --> {opt_metrics['tpr']*100:.2f}% (J-Optimal)")
-    tqdm.write(f"   └─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   ├─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (J-Optimal)")
+    tqdm.write(f"   └─ Concept Mean F1-Score          : {std_metrics['mean_f1']*100:.2f}% --> {opt_metrics['mean_f1']*100:.2f}% (J-Optimal)")
     tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}\n")
 
 def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):

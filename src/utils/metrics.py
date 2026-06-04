@@ -96,11 +96,23 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
         torch.where(has_pos, tpr, torch.where(has_neg, tnr, torch.ones_like(tpr)))
     )
     
+    # Calculate precision and F1-score for concepts
+    precision = torch.where(tp + fp > 0, tp / (tp + fp + 1e-8), torch.zeros_like(tp))
+    f1_scores = torch.where(
+        tp + fp + fn > 0,
+        (2 * tp) / (2 * tp + fp + fn + 1e-8),
+        torch.zeros_like(tp)
+    )
+    
     metrics = {
         "mean_balanced_acc": balanced_accs.mean().item(),
         "individual_balanced_acc": balanced_accs,
         "tpr": tpr.mean().item(),
-        "tnr": tnr.mean().item()
+        "individual_tpr": tpr,
+        "tnr": tnr.mean().item(),
+        "individual_tnr": tnr,
+        "mean_f1": f1_scores.mean().item(),
+        "individual_f1": f1_scores
     }
     return metrics
 
@@ -138,24 +150,26 @@ def find_optimal_concept_thresholds(
             best_j = -1.0
             best_thresh = 0.0
             
-            # For each group, we search for a shared threshold that maximizes the average group balanced accuracy
+            # For each group, we search for a shared threshold that maximizes the average group weighted Youden's J: 2 * TPR + TNR
             for thresh in candidate_thresholds:
                 # Calculate metrics for this specific group under candidate threshold
                 # We can construct a temp threshold tensor
                 temp_thresh = torch.tensor([thresh] * num_concepts, device=concept_logits.device)
                 metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh)
                 
-                # Get the individual balanced acc for the active columns of this group
-                group_bal_acc = metrics["individual_balanced_acc"][start_idx : start_idx + num_feats].mean().item()
+                # Get the group average score: 2 * TPR + TNR
+                g_tpr = metrics["individual_tpr"][start_idx : start_idx + num_feats].mean().item()
+                g_tnr = metrics["individual_tnr"][start_idx : start_idx + num_feats].mean().item()
+                group_score = 2.0 * g_tpr + g_tnr
                 
-                if group_bal_acc > best_j:
-                    best_j = group_bal_acc
+                if group_score > best_j:
+                    best_j = group_score
                     best_thresh = thresh.item()
                     
             for idx in range(start_idx, start_idx + num_feats):
                 optimal_thresholds[idx] = best_thresh
     else:
-        # Binary fallback: independent Youden J search per concept
+        # Binary fallback: independent Youden J search per concept (weighted: 2 * TPR + TNR)
         for c in range(num_concepts):
             best_j = -1.0
             best_thresh = 0.0
@@ -179,8 +193,8 @@ def find_optimal_concept_thresholds(
                 tpr = tp / (tp + fn + 1e-8)
                 tnr = tn / (tn + fp + 1e-8)
                 
-                # Youden's J = TPR + TNR - 1 (maximizing J is equivalent to maximizing Balanced Accuracy)
-                j_stat = (tpr + tnr - 1.0).item()
+                # Weighted Youden's J = 2 * TPR + TNR
+                j_stat = (2.0 * tpr + tnr).item()
                 
                 if j_stat > best_j:
                     best_j = j_stat

@@ -496,6 +496,7 @@ def main():
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
+    tqdm.write(f"   Concept Mean F1-Score          : {concept_metrics.get('mean_f1', 0.0)*100:.2f}%")
     
     # 6. Run Group-level Test-Time Intervention (TTI)
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
