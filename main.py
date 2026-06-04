@@ -73,6 +73,7 @@ def parse_args():
     if "concept_config_path" in ds_cfg: flat_defaults["concept_config_path"] = ds_cfg["concept_config_path"]
     if "use_concept_groups" in ds_cfg: flat_defaults["use_concept_groups"] = ds_cfg["use_concept_groups"]
     if "filter_rare_concepts" in ds_cfg: flat_defaults["filter_rare_concepts"] = ds_cfg["filter_rare_concepts"]
+    if "use_paper_preprocessing" in ds_cfg: flat_defaults["use_paper_preprocessing"] = ds_cfg["use_paper_preprocessing"]
     
     # training
     tr_cfg = config_data.get("training", {})
@@ -111,6 +112,7 @@ def parse_args():
     if "use_concept_attention" in bb_cfg: flat_defaults["use_concept_attention"] = bb_cfg["use_concept_attention"]
     if "l1_lambda_gate" in tr_cfg: flat_defaults["l1_lambda_gate"] = tr_cfg["l1_lambda_gate"]
     if "latent_penalty_scale" in tr_cfg: flat_defaults["latent_penalty_scale"] = tr_cfg["latent_penalty_scale"]
+
     if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
     if "use_cb_loss" in tr_cfg: flat_defaults["use_cb_loss"] = tr_cfg["use_cb_loss"]
     if "cb_beta" in tr_cfg: flat_defaults["cb_beta"] = tr_cfg["cb_beta"]
@@ -203,6 +205,7 @@ def parse_args():
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_concept_groups', type=str_or_bool, default=flat_defaults.get('use_concept_groups', True), help="Toggle Group-level Softmax and GroupCrossEntropyLoss (True/False, or comma-separated list of concept names to group)")
     parser.add_argument('--filter_rare_concepts', type=str2bool, default=flat_defaults.get('filter_rare_concepts', False), help="Filter out concepts with occurrence frequency < 1%%")
+    parser.add_argument('--use_paper_preprocessing', type=str2bool, default=flat_defaults.get('use_paper_preprocessing', False), help="Align preprocessing (majority voting, sparseness filter, 80-20 train-val split) with the paper")
     parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
@@ -231,6 +234,7 @@ def parse_args():
     parser.add_argument('--use_concept_attention', type=str2bool, default=flat_defaults.get('use_concept_attention', False), help="Activate Patch token-based Cross-Attention")
     parser.add_argument('--l1_lambda_gate', type=float, default=flat_defaults.get('l1_lambda_gate', 0.01), help="L1 Regularization strength for Gating parameters")
     parser.add_argument('--latent_penalty_scale', type=float, default=flat_defaults.get('latent_penalty_scale', 1.0), help="Multiplier for L1 penalty on latent concept gates")
+
     parser.add_argument('--weight_decay_nam', type=float, default=flat_defaults.get('weight_decay_nam', 1e-2), help="L2 penalty for NAM subnetworks smoothing")
     parser.add_argument('--use_cb_loss', type=str2bool, default=flat_defaults.get('use_cb_loss', True), help="Use Class-Balanced Loss weighting based on CVPR 2019")
     parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")
@@ -267,6 +271,7 @@ def main():
         dataset_config["concept_config_path"] = args.concept_config_path
 
     dataset_config["filter_rare_concepts"] = getattr(args, "filter_rare_concepts", False)
+    dataset_config["use_paper_preprocessing"] = getattr(args, "use_paper_preprocessing", False)
 
     # Apply CLI overrides if present
     if args.concept_cols:
@@ -430,6 +435,7 @@ def main():
         use_concept_attention=args.use_concept_attention,
         use_pairwise_nam=args.use_pairwise_nam
     )
+
     
     if args.freeze_backbone:
         model.freeze_backbone()

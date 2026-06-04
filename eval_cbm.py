@@ -101,6 +101,52 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
 
 
+def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
+    """
+    Vectorized translation of ground truth probabilities to logit space with soft intervention.
+    For mutually exclusive categorical groups, if one class is positive (value=1.0),
+    we perform a soft intervention:
+    - The positive class gets probability p_pos (0.999 for prob, 0.95 for non-prob).
+    - The other classes in the group split the remaining probability (1 - p_pos)
+      equally so that the group sum is 1.0, making their probabilities close to 0.
+    For numerical concepts, we just use standard clipping.
+    """
+    p_pos = 0.999 if use_probabilistic else 0.95
+    p_neg_default = 0.001 if use_probabilistic else 0.05
+    
+    p_custom = gt_concepts.clone()
+    
+    for group in concept_groups:
+        indices = group["flat_indices"]
+        M = len(indices)
+        if M > 1:
+            group_gt = gt_concepts[:, indices]  # [N, M]
+            # Find the argmax and max values for each sample
+            max_vals, correct_idxs = torch.max(group_gt, dim=1)  # [N], [N]
+            
+            # Create a tensor of shape [N, M] filled with p_others
+            p_others = (1.0 - p_pos) / (M - 1)
+            group_custom = torch.full_like(group_gt, p_others)
+            
+            # Set the correct class to p_pos
+            group_custom.scatter_(1, correct_idxs.unsqueeze(1), p_pos)
+            
+            # For samples where max_val <= 0.5 (no positive class), fallback to clamped original GT
+            is_positive = (max_vals > 0.5).unsqueeze(1)  # [N, 1]
+            group_fallback = torch.clamp(group_gt, min=p_neg_default, max=p_pos)
+            
+            # Combine based on whether a positive class exists
+            p_custom[:, indices] = torch.where(is_positive, group_custom, group_fallback)
+        else:
+            # Numerical concept
+            c_idx = indices[0]
+            p_custom[:, c_idx] = torch.clamp(gt_concepts[:, c_idx], min=p_neg_default, max=p_pos)
+            
+    p_custom = torch.clamp(p_custom, min=1e-6, max=1.0 - 1e-6)
+    gt_logits = torch.log(p_custom / (1.0 - p_custom))
+    return gt_logits
+
+
 def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
     """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
@@ -133,12 +179,8 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
         sorted_groups = [g_idx for g_idx, _ in sorted(group_errors, key=lambda x: x[1], reverse=True)]
         sample_group_errors.append(sorted_groups)
         
-    # Translate GT concepts (probabilities in [0, 1]) to logit space (z = log(p / (1 - p)))
-    if getattr(model, "use_probabilistic_cbm", False):
-        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
-    else:
-        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
-    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
+    gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
     
     # Create a copy of the predicted concept logits that we will mutate
     logits_mutated = concept_logits.clone()
@@ -163,7 +205,7 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     return group_tti_accuracies
 
 
-def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, latent_concepts, device):
+def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
     """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
     num_samples, num_supervised = gt_concepts.shape
@@ -185,12 +227,8 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, latent
         sorted_indices = torch.argsort(errors, descending=True).tolist()
         sample_concept_errors.append(sorted_indices)
         
-    # Translate GT concepts (probabilities in [0, 1]) to logit space
-    if getattr(model, "use_probabilistic_cbm", False):
-        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
-    else:
-        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
-    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
+    gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
     
     # Evaluate at specific intervention percentages (0%, 10%, 20%, ..., 100% of concepts)
     percentages = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
@@ -224,12 +262,8 @@ def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, con
     # Get optimal validation thresholds in logit space
     thresh_tensor = model.concept_thresholds.cpu()
     
-    # Translate GT concepts (probabilities in [0, 1]) to logit space
-    if getattr(model, "use_probabilistic_cbm", False):
-        p_clipped = torch.clamp(gt_concepts, min=0.001, max=0.999)
-    else:
-        p_clipped = torch.clamp(gt_concepts, min=0.05, max=0.95)
-    gt_logits = torch.log(p_clipped / (1.0 - p_clipped))
+    # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
+    gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
     
     # Create a copy of predicted concept logits
     logits_mutated = concept_logits.clone()
@@ -305,6 +339,9 @@ def main():
     filter_rare_concepts = checkpoint_args.get('filter_rare_concepts', False)
     if not filter_rare_concepts:
         filter_rare_concepts = checkpoint_config.get('dataset', {}).get('filter_rare_concepts', False)
+    use_paper_preprocessing = checkpoint_args.get('use_paper_preprocessing', False)
+    if not use_paper_preprocessing:
+        use_paper_preprocessing = checkpoint_config.get('dataset', {}).get('use_paper_preprocessing', False)
         
     use_nam_head = False
     nam_hidden_dim = 64
@@ -368,6 +405,7 @@ def main():
     tqdm.write(f"     ├─ use_concept_attention: {use_concept_attention}")
     tqdm.write(f"     ├─ use_probabilistic_cbm: {use_probabilistic_cbm}")
     tqdm.write(f"     ├─ filter_rare_concepts: {filter_rare_concepts}")
+    tqdm.write(f"     ├─ use_paper_preprocessing: {use_paper_preprocessing}")
     tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
     tqdm.write(f"     ├─ use_pairwise_nam: {use_pairwise_nam}")
     tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
@@ -383,7 +421,7 @@ def main():
         csv_path = checkpoint_args.get('csv_path', 'data/CUB_200_2011/images.txt')
         image_dir = checkpoint_args.get('image_dir', 'data/CUB_200_2011/images')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/CUB_200_2011/concept_config.json')
-        if filter_rare_concepts:
+        if filter_rare_concepts or use_paper_preprocessing:
             filtered_path = concept_config_path.replace(".json", "_filtered.json")
             if os.path.exists(filtered_path):
                 concept_config_path = filtered_path
@@ -392,6 +430,7 @@ def main():
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
     dataset_config["filter_rare_concepts"] = filter_rare_concepts
+    dataset_config["use_paper_preprocessing"] = use_paper_preprocessing
     
     # Load test split
     test_dataset = dataset_class(
@@ -549,6 +588,7 @@ def main():
         concept_logits, 
         gt_concepts, 
         gt_targets, 
+        concept_groups, 
         latent_concepts, 
         device
     )

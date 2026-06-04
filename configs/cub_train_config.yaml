@@ -21,9 +21,10 @@ dataset:
   csv_path: "data/CUB_200_2011/images.txt"
   image_dir: "data/CUB_200_2011/images"
   concept_config_path: "data/CUB_200_2011/concept_config.json"
-  # use_concept_groups: true  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
-  use_concept_groups: ["has_bill_shape", "has_bill_length", "has_eye_color", "has_leg_color"]
-  filter_rare_concepts: true  # Automatically filter out sparse concepts whose global occurrence frequency is < 1%
+  use_concept_groups: true  # Toggle Mutually Exclusive Group-level Softmax and group concept loss
+  # use_concept_groups: ["has_bill_shape", "has_bill_length", "has_eye_color", "has_leg_color"]
+  filter_rare_concepts: false  # Automatically filter out sparse concepts whose global occurrence frequency is < 1%
+  use_paper_preprocessing: true  # Align preprocessing (majority voting, sparseness filter, 80-20 train-val split) with the paper
 
 # 3. Core Training Hyperparameters
 training:
@@ -87,9 +88,9 @@ optimizer:
   # focal_gamma: 2.5  # Focal loss focus exponent gamma
   asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
   asl_gamma_neg: 2.5    # easy negative gradient noise 강력 억제
-  asl_alpha_pos: 1.5    # positive 샘플에 static weight 부여
+  asl_alpha_pos: 2.0    # positive 샘플에 static weight 부여
   asl_clip: 0.05        # 비대칭 클리핑 threshold
-  ortho_lambda: 0.0  # Orthogonality loss coefficient to force attention map separation
+  ortho_lambda: 0.01  # Orthogonality loss coefficient to force attention map separation
 
 scheduler:
   phase1_type: "cosine_with_warmup" 

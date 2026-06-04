@@ -90,7 +90,9 @@ def _generate_single_heatmap(
     plt.savefig(buf, format='png', bbox_inches='tight', dpi=120)
     buf.seek(0)
     plt.close(fig)
-    return Image.open(buf)
+    pil_img = Image.open(buf)
+    pil_img.load()
+    return pil_img
 
 
 def str2bool(v):
@@ -189,6 +191,7 @@ def plot_concept_contributions(model, concept_logits_tensor, concept_names, targ
     plt.savefig(buf, format='png', bbox_inches='tight')
     buf.seek(0)
     img = Image.open(buf)
+    img.load()
     plt.close(fig)
     return img
 
@@ -212,11 +215,19 @@ def run_inference(image: Image.Image):
     # Preprocess
     img_tensor = TRANSFORM(image.convert('RGB')).unsqueeze(0).to(DEVICE)
 
+    # Print input details
+    print(f"[Debug Inference] Input image: size={image.size}, mode={image.mode}")
+    print(f"[Debug Inference] img_tensor: shape={img_tensor.shape}, min={img_tensor.min().item():.4f}, max={img_tensor.max().item():.4f}, mean={img_tensor.mean().item():.4f}, has_nan={torch.isnan(img_tensor).any().item()}")
+
     # Forward pass (extract intermediate representations)
     MODEL.eval()
     with torch.no_grad():
         class_logits, concept_logits, attn_weights = MODEL(img_tensor)
         concept_probs = MODEL.concept_activation(concept_logits)  # [1, num_concepts]
+
+    # Print output details
+    print(f"[Debug Inference] class_logits: shape={class_logits.shape}, min={class_logits.min().item():.4f}, max={class_logits.max().item():.4f}, mean={class_logits.mean().item():.4f}, has_nan={torch.isnan(class_logits).any().item()}")
+    print(f"[Debug Inference] concept_logits: shape={concept_logits.shape}, min={concept_logits.min().item():.4f}, max={concept_logits.max().item():.4f}, mean={concept_logits.mean().item():.4f}, has_nan={torch.isnan(concept_logits).any().item()}")
 
     # Prediction result
     if NUM_CLASSES == 1:
@@ -235,6 +246,7 @@ def run_inference(image: Image.Image):
             name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
             marker = ">" if i == 0 else " "
             lines.append(f"{marker} **{name}**: {p:.4f}")
+            print(f"[Debug Inference] Top-{i+1} Class: {idx} ({name}) prob={p:.4f}")
         prediction_text = "\n".join(lines)
         target_class_idx = top_idxs[0].item()
 
@@ -288,54 +300,7 @@ def run_inference(image: Image.Image):
     return prediction_text, concept_vals, heatmap_gallery, img_np, concept_logits_list, contrib_img
 
 
-def show_selected_concept_heatmap(select_data: gr.SelectData, image):
-    """Callback to render spatial Cross-Attention heatmap of clicked concept."""
-    if image is None or MODEL is None:
-        return None
-        
-    if not getattr(MODEL, "use_concept_attention", False):
-        return None
-        
-    img_tensor = TRANSFORM(image.convert('RGB')).unsqueeze(0).to(DEVICE)
-    MODEL.eval()
-    with torch.no_grad():
-        _, _, attn_weights = MODEL(img_tensor)
-        
-    img_np = _unnormalize_tensor(img_tensor.squeeze(0))
-    _, _, H_img, W_img = img_tensor.shape
-    
-    attn_upsampled = F.interpolate(
-        attn_weights, size=(H_img, W_img), mode='bilinear', align_corners=False
-    )
-    
-    idx = select_data.index
-    if idx < 0 or idx >= len(CONCEPT_GROUPS):
-        return None
-        
-    group = CONCEPT_GROUPS[idx]
-    use_group_broadcasting = getattr(MODEL, "use_group_broadcasting", False)
-    
-    if group["type"] == "numerical":
-        c_idx = group["flat_indices"][0]
-        hm_idx = idx if use_group_broadcasting else c_idx
-        hm = attn_upsampled[0, hm_idx].cpu().numpy()
-        name = group["name"]
-    else:
-        with torch.no_grad():
-            _, concept_logits, _ = MODEL(img_tensor)
-            concept_vals = MODEL.concept_activation(concept_logits).squeeze(0).cpu().tolist()
-        probs = [concept_vals[c_i] for c_i in group["flat_indices"]]
-        max_idx = np.argmax(probs)
-        max_c_idx = group["flat_indices"][max_idx]
-        hm_idx = idx if use_group_broadcasting else max_c_idx
-        hm = attn_upsampled[0, hm_idx].cpu().numpy()
-        name = f"{group['name']} ({group['classes'][max_idx]})"
-        
-    pil_img = _generate_single_heatmap(img_np, hm, name, alpha=0.5)
-    return pil_img
-
-
-def repredict_with_adjusted_concepts(original_logits, *component_values):
+def repredict_with_adjusted_concepts(original_state, *args):
     """
     Re-run only the classifier head with user-adjusted concept values.
     This is the human-in-the-loop intervention point.
@@ -346,18 +311,36 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
 
     is_prob = getattr(MODEL, "use_probabilistic_cbm", False)
 
-    # If original_logits is not populated (e.g. user clicked re-predict without running inference first)
-    if not original_logits:
-        # Fallback to default raw logits corresponding to probability 0.5 (logit 0.0)
+    # Decode original_state (dict, list, or empty)
+    if not original_state:
         original_logits = [0.0] * (NUM_CONCEPTS + (getattr(MODEL, "num_latent_concepts", 0) or 0))
+        original_logvars = [-2.0] * len(original_logits)
+    elif isinstance(original_state, dict):
+        original_logits = original_state.get("logits", [])
+        original_logvars = original_state.get("logvars", [])
+    else:
+        # Fallback if original_state is just a list of logits
+        original_logits = original_state
+        original_logvars = [-2.0] * len(original_logits)
 
-    # Reconstruct concept logits by preserving original soft predicted values unless explicitly modified by user
+    if len(original_logvars) < len(original_logits):
+        original_logvars = original_logvars + [-2.0] * (len(original_logits) - len(original_logvars))
+
+    # Reconstruct concept logits/logvars by preserving original values unless modified
     logits_mutated = torch.tensor(
         [original_logits], dtype=torch.float32, device=DEVICE
     )
+    logvars_mutated = torch.tensor(
+        [original_logvars], dtype=torch.float32, device=DEVICE
+    )
+
+    num_groups = len(CONCEPT_GROUPS)
+    component_values = args[:num_groups]
+    uncertainty_values = args[num_groups:] if is_prob else [0.0] * num_groups
 
     for i, group in enumerate(CONCEPT_GROUPS):
         val = component_values[i]
+        unc_val = uncertainty_values[i] if is_prob else None
         flat_indices = group["flat_indices"]
 
         if group["type"] == "numerical":
@@ -376,12 +359,16 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
                 else:
                     norm_val = max(0.05, min(0.95, norm_val))
                 logits_mutated[0, c_idx] = math.log(norm_val / (1.0 - norm_val))
+                
+            if is_prob and unc_val is not None:
+                orig_std = math.exp(0.5 * original_logvars[c_idx])
+                if abs(float(unc_val) - orig_std) > 1e-4:
+                    safe_unc_val = max(1e-6, float(unc_val))
+                    logvars_mutated[0, c_idx] = 2.0 * math.log(safe_unc_val)
         else:
             # Categorical concept (Dropdown / Radio)
-            # Find the original predicted probability distribution for this group
             group_logits = [original_logits[idx] for idx in flat_indices]
             
-            # Check if group is exclusive
             is_exclusive = is_group_exclusive(group["name"])
             if is_exclusive and len(flat_indices) > 1:
                 # Softmax
@@ -393,13 +380,7 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
                 group_probs = [1.0 / (1.0 + math.exp(-l)) for l in group_logits]
                 
             max_idx = np.argmax(group_probs)
-            max_prob = group_probs[max_idx]
-            
-            # Determine what the original UI display value was
-            if max_prob <= 0.5:
-                orig_selected_cls = "Not Visible / Occluded"
-            else:
-                orig_selected_cls = group["classes"][max_idx]
+            orig_selected_cls = group["classes"][max_idx]
                 
             # If the user changed the choice, we intervene and override!
             if val != orig_selected_cls:
@@ -413,29 +394,79 @@ def repredict_with_adjusted_concepts(original_logits, *component_values):
                         p = 0.001 if is_prob else 0.05
                     logits_mutated[0, cls_idx] = math.log(p / (1.0 - p))
 
+            if is_prob and unc_val is not None:
+                group_stds = [math.exp(0.5 * original_logvars[idx]) for idx in flat_indices]
+                orig_group_std = float(np.mean(group_stds))
+                if abs(float(unc_val) - orig_group_std) > 1e-4:
+                    safe_unc_val = max(1e-6, float(unc_val))
+                    new_logvar = 2.0 * math.log(safe_unc_val)
+                    for idx in flat_indices:
+                        logvars_mutated[0, idx] = new_logvar
+
     # Evaluate using the mutated concept logits
     MODEL.eval()
     with torch.no_grad():
-        class_logits = MODEL.classifier_head(logits_mutated)
-
-    if NUM_CLASSES == 1:
-        prob = torch.sigmoid(class_logits).item()
-        pred_label = "Malignant" if prob >= 0.5 else "Benign"
-        pred_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
-        target_class_idx = 0
-    else:
-        probs = torch.softmax(class_logits, dim=-1).squeeze(0)
-        top_k = min(3, NUM_CLASSES)
-        top_probs, top_idxs = probs.topk(top_k)
-        lines = []
-        for i in range(top_k):
-            idx = top_idxs[i].item()
-            p = top_probs[i].item()
-            name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
-            marker = ">" if i == 0 else " "
-            lines.append(f"{marker} **{name}**: {p:.4f}")
-        pred_text = "\n".join(lines)
-        target_class_idx = top_idxs[0].item()
+        if is_prob:
+            # Perform Monte Carlo sampling to propagate uncertainty through the classifier head
+            num_samples = 50
+            std = torch.exp(0.5 * logvars_mutated)  # [1, num_concepts]
+            
+            accum_probs = None
+            for _ in range(num_samples):
+                eps = torch.randn_like(std)
+                sampled_logits = logits_mutated + std * eps
+                class_logits_sample = MODEL.classifier_head(sampled_logits)
+                
+                if NUM_CLASSES == 1:
+                    probs_sample = torch.sigmoid(class_logits_sample)
+                else:
+                    probs_sample = torch.softmax(class_logits_sample, dim=-1)
+                    
+                if accum_probs is None:
+                    accum_probs = probs_sample
+                else:
+                    accum_probs += probs_sample
+                    
+            avg_probs = accum_probs / num_samples
+            
+            if NUM_CLASSES == 1:
+                prob = avg_probs.item()
+                pred_label = "Malignant" if prob >= 0.5 else "Benign"
+                pred_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
+                target_class_idx = 0
+            else:
+                probs = avg_probs.squeeze(0)
+                top_k = min(3, NUM_CLASSES)
+                top_probs, top_idxs = probs.topk(top_k)
+                lines = []
+                for i in range(top_k):
+                    idx = top_idxs[i].item()
+                    p = top_probs[i].item()
+                    name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
+                    marker = ">" if i == 0 else " "
+                    lines.append(f"{marker} **{name}**: {p:.4f}")
+                pred_text = "\n".join(lines)
+                target_class_idx = top_idxs[0].item()
+        else:
+            class_logits = MODEL.classifier_head(logits_mutated)
+            if NUM_CLASSES == 1:
+                prob = torch.sigmoid(class_logits).item()
+                pred_label = "Malignant" if prob >= 0.5 else "Benign"
+                pred_text = f"**{pred_label}** (Malignancy probability: {prob:.4f})"
+                target_class_idx = 0
+            else:
+                probs = torch.softmax(class_logits, dim=-1).squeeze(0)
+                top_k = min(3, NUM_CLASSES)
+                top_probs, top_idxs = probs.topk(top_k)
+                lines = []
+                for i in range(top_k):
+                    idx = top_idxs[i].item()
+                    p = top_probs[i].item()
+                    name = TARGET_CLASSES[idx] if idx < len(TARGET_CLASSES) else f"Class {idx}"
+                    marker = ">" if i == 0 else " "
+                    lines.append(f"{marker} **{name}**: {p:.4f}")
+                pred_text = "\n".join(lines)
+                target_class_idx = top_idxs[0].item()
 
     contrib_img = plot_concept_contributions(MODEL, logits_mutated, CONCEPT_NAMES, target_class_idx)
     return pred_text, contrib_img
@@ -469,10 +500,43 @@ APP_CSS = """
 /* Extremely tight & compact concept intervention container */
 .concept-slider-group {
     max-height: 380px !important;
-    overflow-y: auto;
+    overflow-y: auto !important;
+    overflow-x: auto !important;
     padding: 4px !important;
     background-color: #f8fafc !important;
     border: 1px solid #e2e8f0 !important;
+}
+/* Grid layout to keep the 5 columns side-by-side without squishing them */
+.columns-container {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(210px, 1fr)) !important;
+    gap: 6px !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+}
+.columns-container > div {
+    display: flex !important;
+    flex-direction: column !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+}
+/* Compact accordion summary with no-wrap and alignment */
+.concept-slider-group details summary,
+.concept-slider-group .accordion-trigger,
+.concept-slider-group summary {
+    font-size: 0.72rem !important;
+    padding: 3px 6px !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    white-space: nowrap !important;
+}
+.concept-slider-group details summary span,
+.concept-slider-group .accordion-trigger span {
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    max-width: 160px !important;
 }
 /* Reduce vertical spacing between sliders */
 .concept-slider-group .compact-comp {
@@ -563,14 +627,6 @@ def build_app() -> gr.Blocks:
                     interactive=False,
                     height=280
                 )
-                
-                gr.Markdown("### Selected Concept Heatmap")
-                concept_heatmap_output = gr.Image(
-                    label="Cross-Attention Overlay",
-                    type="pil",
-                    interactive=False,
-                    height=280
-                )
 
             # ==== Column 3: Heatmaps ====
             with gr.Column(scale=2):
@@ -579,7 +635,7 @@ def build_app() -> gr.Blocks:
                     label="Per-concept attention maps",
                     columns=4,
                     rows=2,
-                    height=360,
+                    height=600,
                     object_fit="contain"
                 )
 
@@ -598,10 +654,10 @@ def build_app() -> gr.Blocks:
                 group_name_to_comp = {}
                 group_name_to_unc = {}
                 group_name_to_accordion = {}
-                num_cols = 3
+                num_cols = 5
                 cols_groups = [CONCEPT_GROUPS[i::num_cols] for i in range(num_cols)]
                 
-                with gr.Row():
+                with gr.Row(elem_classes="columns-container"):
                     for col_idx in range(num_cols):
                         with gr.Column():
                             for group in cols_groups[col_idx]:
@@ -622,7 +678,7 @@ def build_app() -> gr.Blocks:
                                     else:
                                         # Categorical Concept Component
                                         choices = group["classes"] + ["Not Visible / Occluded"]
-                                        default_val = "Not Visible / Occluded"
+                                        default_val = group["classes"][0]
                                         if len(group["classes"]) <= 3:
                                             comp = gr.Radio(
                                                 choices=choices,
@@ -650,7 +706,7 @@ def build_app() -> gr.Blocks:
                                         maximum=2.0,
                                         value=0.0,
                                         label="Uncertainty (σ)",
-                                        interactive=False,
+                                        interactive=True,
                                         visible=is_prob,
                                         elem_classes="compact-comp"
                                     )
@@ -696,8 +752,10 @@ def build_app() -> gr.Blocks:
             # Fetch uncertainty standard deviations if model is probabilistic
             if MODEL is not None and getattr(MODEL, "use_probabilistic_cbm", False) and getattr(MODEL, "last_logvar", None) is not None:
                 std_vals = torch.exp(0.5 * MODEL.last_logvar).squeeze(0).cpu().tolist()
+                concept_logvars_list = MODEL.last_logvar.squeeze(0).cpu().tolist()
             else:
                 std_vals = [0.0] * NUM_CONCEPTS
+                concept_logvars_list = [0.0] * NUM_CONCEPTS
                 
             for group in CONCEPT_GROUPS:
                 flat_indices = group["flat_indices"]
@@ -731,16 +789,16 @@ def build_app() -> gr.Blocks:
                         g_threshold = 0.0  # Fallback to logit 0.0
                     
                     # Intervene (open Accordion) if predicted max logit is below threshold + 0.30 logit margin
+                    selected_cls = group["classes"][max_idx]
                     if max_logit <= (g_threshold + 0.30):
-                        selected_cls = "Not Visible / Occluded"
                         accordion_updates.append(gr.update(open=True))
                     else:
-                        selected_cls = group["classes"][max_idx]
                         accordion_updates.append(gr.update(open=False))
                     
                     component_updates.append(gr.update(value=selected_cls))
 
-            return (pred_text, concept_logits_list, gallery, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
+            state_dict = {"logits": concept_logits_list, "logvars": concept_logvars_list}
+            return (pred_text, state_dict, gallery, contrib_img, *component_updates, *uncertainty_updates, *accordion_updates)
 
         run_btn.click(
             fn=on_inference,
@@ -750,14 +808,8 @@ def build_app() -> gr.Blocks:
 
         repredict_btn.click(
             fn=repredict_with_adjusted_concepts,
-            inputs=[concept_state, *concept_components],
+            inputs=[concept_state, *concept_components, *uncertainty_components],
             outputs=[adjusted_prediction, contrib_output]
-        )
-        
-        heatmap_gallery.select(
-            fn=show_selected_concept_heatmap,
-            inputs=[input_image],
-            outputs=[concept_heatmap_output]
         )
 
     return app
@@ -839,6 +891,17 @@ def parse_app_args():
 def main():
     global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES
 
+    # Pre-warm matplotlib to prevent first-run slow renderer/font cache loading
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(1, 1, figsize=(1, 1))
+        plt.close(fig)
+        print("[Config] Matplotlib pre-warmed successfully.")
+    except Exception as e:
+        print(f"[Config] Matplotlib pre-warming failed: {e}")
+
     args = parse_app_args()
 
     # Load checkpoint first to inspect dimensions and metadata for dynamic concept filtering
@@ -853,9 +916,30 @@ def main():
                 
             use_filtered = False
             if isinstance(loaded_checkpoint, dict):
-                if loaded_checkpoint.get("args", {}).get("filter_rare_concepts", False):
-                    use_filtered = True
-                elif loaded_checkpoint.get("config", {}).get("dataset", {}).get("filter_rare_concepts", False):
+                ckpt_args = loaded_checkpoint.get("args", {})
+                ckpt_config = loaded_checkpoint.get("config", {})
+                
+                # Check for config key structure
+                if ckpt_config and isinstance(ckpt_config, dict):
+                    if "dataset" in ckpt_config and isinstance(ckpt_config["dataset"], dict):
+                        ckpt_args.update(ckpt_config["dataset"])
+                    if "training" in ckpt_config and isinstance(ckpt_config["training"], dict):
+                        ckpt_args.update(ckpt_config["training"])
+                    if "backbone" in ckpt_config and isinstance(ckpt_config["backbone"], dict):
+                        ckpt_args.update(ckpt_config["backbone"])
+                
+                # 1. Auto-detect num_classes
+                if "num_classes" in ckpt_args:
+                    args.num_classes = ckpt_args["num_classes"]
+                    print(f"[Config] Auto-detected num_classes from checkpoint: {args.num_classes}")
+                    
+                # 2. Auto-detect concept_config_path
+                if "concept_config_path" in ckpt_args:
+                    args.concept_config_path = ckpt_args["concept_config_path"]
+                    print(f"[Config] Auto-detected concept_config_path from checkpoint: {args.concept_config_path}")
+                
+                # 3. Auto-detect filtering settings
+                if ckpt_args.get("filter_rare_concepts", False) or ckpt_args.get("use_paper_preprocessing", False):
                     use_filtered = True
                     
             if not use_filtered and "classifier_head.weight" in state_dict:
@@ -876,6 +960,27 @@ def main():
                         
             if use_filtered:
                 filtered_path = args.concept_config_path.replace(".json", "_filtered.json")
+                if not os.path.exists(filtered_path):
+                    print(f"[Config] Filtered config not found at {filtered_path}. Generating it dynamically by instantiating dataset...")
+                    try:
+                        from src.data.cub import CUB2011Dataset
+                        _ = CUB2011Dataset(
+                            split='test',
+                            config={
+                                "num_concepts": 312,
+                                "num_classes": 200,
+                                "concepts": [],
+                                "target_col": 'class_id',
+                                "default_csv_path": 'data/CUB_200_2011/images.txt',
+                                "default_image_dir": 'data/CUB_200_2011/images',
+                                "filter_rare_concepts": False,
+                                "use_paper_preprocessing": True,
+                                "concept_config_path": args.concept_config_path
+                            }
+                        )
+                    except Exception as ex:
+                        print(f"[Config] Failed to generate filtered concept configuration: {ex}")
+                
                 if os.path.exists(filtered_path):
                     print(f"[Config] Automatically redirecting concept config to: {filtered_path}")
                     args.concept_config_path = filtered_path
@@ -1222,8 +1327,8 @@ def main():
         return migrated
 
     old_keys = {k for k in state_dict if ".cross_attention." in k}
-    if old_keys:
-        print(f"[Migration] Checkpoint contains {len(old_keys)} legacy MHA key(s). Running migration...")
+    if old_keys and use_cosine_attention:
+        print(f"[Migration] Checkpoint contains {len(old_keys)} legacy MHA key(s) and use_cosine_attention is True. Running migration...")
         state_dict = _migrate_state_dict(state_dict)
         print("[Migration] State-dict migration complete.")
 

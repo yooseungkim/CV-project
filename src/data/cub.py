@@ -16,7 +16,8 @@ class CUB2011Dataset(BaseDataset):
             "target_col": 'class_id',
             "default_csv_path": 'data/CUB_200_2011/images.txt',
             "default_image_dir": 'data/CUB_200_2011/images',
-            "filter_rare_concepts": False
+            "filter_rare_concepts": False,
+            "use_paper_preprocessing": False
         }
 
     def __init__(
@@ -45,6 +46,7 @@ class CUB2011Dataset(BaseDataset):
         # Initialize config
         self.config = config or self.get_default_config()
         self.filter_rare_concepts = self.config.get("filter_rare_concepts", False)
+        self.use_paper_preprocessing = self.config.get("use_paper_preprocessing", False)
         
         # Determine paths
         resolved_csv = csv_path or self.config.get("default_csv_path") or "data/CUB_200_2011/images.txt"
@@ -84,17 +86,31 @@ class CUB2011Dataset(BaseDataset):
             train_raw = merged[merged['is_train'] == 1].reset_index(drop=True)
             test_val_raw = merged[merged['is_train'] == 0].reset_index(drop=True)
             
-            # Deterministic split of test set into 50% val and 50% test
-            shuffled_test_val = test_val_raw.sample(frac=1.0, random_state=42).reset_index(drop=True)
-            n_test_val = len(shuffled_test_val)
-            val_end = n_test_val // 2
-            
-            if self.split == 'train':
-                self.df = train_raw
-            elif self.split == 'val':
-                self.df = shuffled_test_val.iloc[:val_end].reset_index(drop=True)
-            else:  # test
-                self.df = shuffled_test_val.iloc[val_end:].reset_index(drop=True)
+            if self.use_paper_preprocessing:
+                # Randomly split 20% of the official train set to make a validation set
+                # Use random_state=42 for determinism
+                shuffled_train = train_raw.sample(frac=1.0, random_state=42).reset_index(drop=True)
+                n_train = len(shuffled_train)
+                val_size = int(n_train * 0.2)
+                
+                if self.split == 'train':
+                    self.df = shuffled_train.iloc[val_size:].reset_index(drop=True)
+                elif self.split == 'val':
+                    self.df = shuffled_train.iloc[:val_size].reset_index(drop=True)
+                else:  # test
+                    self.df = test_val_raw
+            else:
+                # Deterministic split of test set into 50% val and 50% test (legacy/default)
+                shuffled_test_val = test_val_raw.sample(frac=1.0, random_state=42).reset_index(drop=True)
+                n_test_val = len(shuffled_test_val)
+                val_end = n_test_val // 2
+                
+                if self.split == 'train':
+                    self.df = train_raw
+                elif self.split == 'val':
+                    self.df = shuffled_test_val.iloc[:val_end].reset_index(drop=True)
+                else:  # test
+                    self.df = shuffled_test_val.iloc[val_end:].reset_index(drop=True)
                 
             self.df['image_idx'] = self.df['image_id'] - 1
             print(f"Successfully loaded CUB split [{self.split}] (size: {len(self.df)})")
@@ -108,14 +124,38 @@ class CUB2011Dataset(BaseDataset):
                     names=['image_id', 'attribute_id', 'is_present']
                 )
                 # Reshape attributes perfectly into concept presence matrix
-                self.concept_matrix = attr_df['is_present'].values.reshape(11788, 312)
+                self.concept_matrix = attr_df['is_present'].values.reshape(11788, 312).copy()
             else:
                 print(f"Warning: attributes file not found at {attr_file}. Using dummy concepts.")
                 import numpy as np
                 self.concept_matrix = np.zeros((11788, 312))
 
-            # Filter rare concepts (< 1% global frequency) if enabled
-            if self.filter_rare_concepts:
+            # Filter rare concepts (< 1% global frequency) or run CBM Paper Preprocessing
+            if self.use_paper_preprocessing:
+                import numpy as np
+                # Class-level majority voting
+                # self.concept_matrix has shape [11788, 312]
+                class_ids = labels_df['class_id'].values - 1  # 0-indexed
+                
+                # Step 1: Compute class-level concepts (majority voting: mean >= 0.5)
+                class_concepts = np.zeros((200, 312))
+                for class_id in range(200):
+                    class_mask = (class_ids == class_id)
+                    if class_mask.sum() > 0:
+                        class_concepts[class_id] = (self.concept_matrix[class_mask].mean(axis=0) >= 0.5).astype(float)
+                
+                # Step 2: Overwrite instance-level concepts with majority-voted class-level concepts
+                for class_id in range(200):
+                    class_mask = (class_ids == class_id)
+                    if class_mask.sum() > 0:
+                        self.concept_matrix[class_mask] = class_concepts[class_id]
+                
+                # Step 3: Keep concepts present in at least 10 classes after majority voting
+                valid_concepts_mask = (class_concepts.sum(axis=0) >= 10)
+                self.valid_indices = np.where(valid_concepts_mask)[0]
+                print(f"CBM Paper Preprocessing: keeping {len(self.valid_indices)} out of 312 concepts (present in >= 10 classes after majority voting).")
+                self.concept_matrix = self.concept_matrix[:, self.valid_indices]
+            elif self.filter_rare_concepts:
                 import numpy as np
                 freqs = np.mean(self.concept_matrix, axis=0)
                 self.valid_indices = np.where(freqs >= 0.01)[0]
@@ -200,7 +240,7 @@ class CUB2011Dataset(BaseDataset):
             self.config["concepts_flat"] = self.concepts_flat
 
             # Save the filtered concept config to disk for Gradio and eval compatibility
-            if self.filter_rare_concepts and not self.dummy_mode and not is_already_filtered:
+            if (self.filter_rare_concepts or self.use_paper_preprocessing) and not self.dummy_mode and not is_already_filtered:
                 filtered_path = concept_config_path.replace(".json", "_filtered.json")
                 try:
                     with open(filtered_path, 'w', encoding='utf-8') as f:
