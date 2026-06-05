@@ -3,6 +3,7 @@ import copy
 import argparse
 import torch
 import torch.nn as nn
+from torch.utils.data import Subset
 from tqdm import tqdm
 
 def str2bool(v):
@@ -47,28 +48,47 @@ def get_dataset_choices():
             choices.append(item.lower())
     return list(set(choices + default_choices))
 
+def unwrap_subset(dataset):
+    """Return the base dataset and absolute row indices for nested torch Subsets."""
+    indices = None
+    current_dataset = dataset
+    while isinstance(current_dataset, Subset):
+        current_indices = [int(i) for i in current_dataset.indices]
+        if indices is None:
+            indices = current_indices
+        else:
+            indices = [current_indices[i] for i in indices]
+        current_dataset = current_dataset.dataset
+    return current_dataset, indices
+
 def calculate_pos_weights(dataset, num_concepts_supervised):
     """Calculates the ratio of negative to positive samples for each concept to balance BCE loss."""
     import pandas as pd
     num_samples = len(dataset)
     if num_samples == 0:
         return torch.ones(num_concepts_supervised)
+    base_dataset, subset_indices = unwrap_subset(dataset)
         
     # Attempt to use cached concepts if available
-    if getattr(dataset, "_cache_populated", False) and dataset._cache is not None:
-        concepts = torch.stack([sample[1][:num_concepts_supervised] for sample in dataset._cache], dim=0)
-    elif hasattr(dataset, "concept_matrix") and dataset.concept_matrix is not None:
+    if subset_indices is None and getattr(base_dataset, "_cache_populated", False) and base_dataset._cache is not None:
+        concepts = torch.stack([sample[1][:num_concepts_supervised] for sample in base_dataset._cache], dim=0)
+    elif hasattr(base_dataset, "concept_matrix") and base_dataset.concept_matrix is not None:
         # CUB Dataset
-        image_idxs = dataset.df['image_idx'].values
-        concepts = torch.tensor(dataset.concept_matrix[image_idxs, :num_concepts_supervised], dtype=torch.float32)
-    elif hasattr(dataset, "df") and not dataset.df.empty:
+        df = base_dataset.df.iloc[subset_indices] if subset_indices is not None else base_dataset.df
+        image_idxs = df['image_idx'].values
+        concepts = torch.tensor(base_dataset.concept_matrix[image_idxs, :num_concepts_supervised], dtype=torch.float32)
+    elif hasattr(base_dataset, "concepts_data"):
+        indices = subset_indices if subset_indices is not None else list(range(len(base_dataset)))
+        concepts = torch.tensor(base_dataset.concepts_data[indices, :num_concepts_supervised], dtype=torch.float32)
+    elif hasattr(base_dataset, "df") and not base_dataset.df.empty:
         # MILK10K or Derm7pt
+        df = base_dataset.df.iloc[subset_indices] if subset_indices is not None else base_dataset.df
         concepts_list = []
-        for idx in range(num_samples):
-            row = dataset.df.iloc[idx]
-            if dataset.concept_features_info is not None:
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            if base_dataset.concept_features_info is not None:
                 concept_vals = []
-                for info in dataset.concept_features_info:
+                for info in base_dataset.concept_features_info:
                     name = info["name"]
                     val = row.get(name)
                     if info["type"] == "categorical":
@@ -104,7 +124,7 @@ def calculate_pos_weights(dataset, num_concepts_supervised):
                         concept_vals.append(scaled_val)
                 concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
             else:
-                concept_vals = [float(row.get(col, 0.0)) for col in dataset.concept_cols]
+                concept_vals = [float(row.get(col, 0.0)) for col in base_dataset.concept_cols]
                 concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
         concepts = torch.stack(concepts_list, dim=0)[:, :num_concepts_supervised]
     else:
@@ -165,19 +185,25 @@ def calculate_class_balanced_weights(dataset, num_concepts_supervised, beta=0.99
     num_samples = len(dataset)
     if num_samples == 0:
         return torch.ones(num_concepts_supervised), torch.ones(num_concepts_supervised)
+    base_dataset, subset_indices = unwrap_subset(dataset)
         
-    if getattr(dataset, "_cache_populated", False) and dataset._cache is not None:
-        concepts = torch.stack([sample[1][:num_concepts_supervised] for sample in dataset._cache], dim=0)
-    elif hasattr(dataset, "concept_matrix") and dataset.concept_matrix is not None:
-        image_idxs = dataset.df['image_idx'].values
-        concepts = torch.tensor(dataset.concept_matrix[image_idxs, :num_concepts_supervised], dtype=torch.float32)
-    elif hasattr(dataset, "df") and not dataset.df.empty:
+    if subset_indices is None and getattr(base_dataset, "_cache_populated", False) and base_dataset._cache is not None:
+        concepts = torch.stack([sample[1][:num_concepts_supervised] for sample in base_dataset._cache], dim=0)
+    elif hasattr(base_dataset, "concept_matrix") and base_dataset.concept_matrix is not None:
+        df = base_dataset.df.iloc[subset_indices] if subset_indices is not None else base_dataset.df
+        image_idxs = df['image_idx'].values
+        concepts = torch.tensor(base_dataset.concept_matrix[image_idxs, :num_concepts_supervised], dtype=torch.float32)
+    elif hasattr(base_dataset, "concepts_data"):
+        indices = subset_indices if subset_indices is not None else list(range(len(base_dataset)))
+        concepts = torch.tensor(base_dataset.concepts_data[indices, :num_concepts_supervised], dtype=torch.float32)
+    elif hasattr(base_dataset, "df") and not base_dataset.df.empty:
+        df = base_dataset.df.iloc[subset_indices] if subset_indices is not None else base_dataset.df
         concepts_list = []
-        for idx in range(num_samples):
-            row = dataset.df.iloc[idx]
-            if dataset.concept_features_info is not None:
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            if base_dataset.concept_features_info is not None:
                 concept_vals = []
-                for info in dataset.concept_features_info:
+                for info in base_dataset.concept_features_info:
                     name = info["name"]
                     val = row.get(name)
                     if info["type"] == "categorical":
@@ -213,7 +239,7 @@ def calculate_class_balanced_weights(dataset, num_concepts_supervised, beta=0.99
                         concept_vals.append(scaled_val)
                 concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
             else:
-                concept_vals = [float(row.get(col, 0.0)) for col in dataset.concept_cols]
+                concept_vals = [float(row.get(col, 0.0)) for col in base_dataset.concept_cols]
                 concepts_list.append(torch.tensor(concept_vals, dtype=torch.float32))
         concepts = torch.stack(concepts_list, dim=0)[:, :num_concepts_supervised]
     else:

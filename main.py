@@ -17,9 +17,10 @@ from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy, ca
 from src.utils.visualization import generate_concept_heatmaps
 
 # Modularized utility, loss, and training loop imports
-from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos_weights, get_dataset_choices
+from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos_weights, get_dataset_choices, unwrap_subset
 from src.utils.losses import SigmoidFocalLoss, AsymmetricLossWithWeight, GroupCrossEntropyLoss
 from src.utils.train_loops import PHASE_MONITORS, train_phase1, train_phase2, train_phase3, validate_monitor_name
+from src.utils.concept_bias import split_for_calibration, learn_concept_bias
 
 # ANSI terminal colors for highlighting
 GREEN = "\033[92m"
@@ -36,7 +37,7 @@ def parse_args():
     temp_parser = argparse.ArgumentParser(add_help=False)
     temp_parser.add_argument('--config_path', type=str, default=None)
     temp_args, _ = temp_parser.parse_known_args()
-    
+
     # Load defaults from config file if provided
     config_data = {}
     if temp_args.config_path and os.path.exists(temp_args.config_path):
@@ -50,9 +51,9 @@ def parse_args():
             with open(temp_args.config_path, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
         tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Loaded config file: {temp_args.config_path}")
-        
+
     flat_defaults = {}
-    
+
     # backbone
     bb_cfg = config_data.get("backbone", {})
     if "backbone_type" in bb_cfg: flat_defaults["backbone_type"] = bb_cfg["backbone_type"]
@@ -75,7 +76,7 @@ def parse_args():
             flat_defaults["backbone_train_mode"] = "lora"
         else:
             flat_defaults["backbone_train_mode"] = "full"
-    
+
     # dataset
     ds_cfg = config_data.get("dataset", {})
     if "dataset" in ds_cfg: flat_defaults["dataset"] = ds_cfg["dataset"]
@@ -88,7 +89,7 @@ def parse_args():
     if "use_multimodal" in ds_cfg: flat_defaults["use_multimodal"] = ds_cfg["use_multimodal"]
     if "policy" in ds_cfg: flat_defaults["policy"] = ds_cfg["policy"]
     if "subset_ratio" in ds_cfg: flat_defaults["subset_ratio"] = ds_cfg["subset_ratio"]
-    
+
     # training
     tr_cfg = config_data.get("training", {})
     if "epochs" in tr_cfg: flat_defaults["epochs"] = tr_cfg["epochs"]
@@ -132,7 +133,7 @@ def parse_args():
     if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
     if "use_cb_loss" in tr_cfg: flat_defaults["use_cb_loss"] = tr_cfg["use_cb_loss"]
     if "cb_beta" in tr_cfg: flat_defaults["cb_beta"] = tr_cfg["cb_beta"]
-    
+
     # optimizer basic parameter
     opt_cfg = config_data.get("optimizer", {})
     if "lr" in opt_cfg: flat_defaults["lr"] = opt_cfg["lr"]
@@ -149,7 +150,7 @@ def parse_args():
     if "lambda_ce" in opt_cfg: flat_defaults["lambda_ce"] = opt_cfg["lambda_ce"]
     if "lambda_latent_ortho" in opt_cfg: flat_defaults["lambda_latent_ortho"] = opt_cfg["lambda_latent_ortho"]
     if "lambda_latent_l1" in opt_cfg: flat_defaults["lambda_latent_l1"] = opt_cfg["lambda_latent_l1"]
-    
+
     # early stopping patience
     es_cfg = config_data.get("early_stopping", {})
     if "phase1_patience" in es_cfg: flat_defaults["phase1_patience"] = es_cfg["phase1_patience"]
@@ -158,17 +159,17 @@ def parse_args():
     if "phase1_monitor" in es_cfg: flat_defaults["phase1_monitor"] = es_cfg["phase1_monitor"]
     if "phase2_monitor" in es_cfg: flat_defaults["phase2_monitor"] = es_cfg["phase2_monitor"]
     if "phase3_monitor" in es_cfg: flat_defaults["phase3_monitor"] = es_cfg["phase3_monitor"]
-    
+
     # training parameters
     if "l1_lambda" in tr_cfg: flat_defaults["l1_lambda"] = tr_cfg["l1_lambda"]
     if "l1_warmup_epochs" in tr_cfg: flat_defaults["l1_warmup_epochs"] = tr_cfg["l1_warmup_epochs"]
     if "phase3_epochs" in tr_cfg: flat_defaults["phase3_epochs"] = tr_cfg["phase3_epochs"]
     if "phase3_lr" in opt_cfg: flat_defaults["phase3_lr"] = opt_cfg["phase3_lr"]
-    
+
     # Stage 2: Create full parser with dynamic defaults
     parser = argparse.ArgumentParser(description="Train a Modular CBM")
     choices = get_dataset_choices()
-    
+
     parser.add_argument('--config_path', type=str, default=None, help="Path to config JSON file")
     parser.add_argument('--dataset', type=str, default=flat_defaults.get('dataset', 'milk10k'), choices=choices)
     parser.add_argument('--csv_path', type=str, default=flat_defaults.get('csv_path', None))
@@ -256,7 +257,7 @@ def parse_args():
     parser.add_argument('--weight_decay_nam', type=float, default=flat_defaults.get('weight_decay_nam', 1e-2), help="L2 penalty for NAM subnetworks smoothing")
     parser.add_argument('--use_cb_loss', type=str2bool, default=flat_defaults.get('use_cb_loss', True), help="Use Class-Balanced Loss weighting based on CVPR 2019")
     parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")
-    
+
     args = parser.parse_args()
     for phase in ("phase1", "phase2", "phase3"):
         validate_monitor_name(phase, getattr(args, f"{phase}_monitor"))
@@ -303,7 +304,7 @@ def main():
     if args.concept_cols:
         dataset_config["concepts"] = [c.strip() for c in args.concept_cols.split(',')]
         dataset_config["num_concepts"] = len(dataset_config["concepts"])
-        
+
     if args.num_classes != 1:  # Only override if explicitly customized via CLI
         dataset_config["num_classes"] = args.num_classes
 
@@ -325,45 +326,90 @@ def main():
         max_cache_size_gb=args.max_cache_size_gb
     )
 
+    calibration_cfg = config_data.get("calibration", {}) if isinstance(config_data, dict) else {}
+    calibration_for = calibration_cfg.get("for_what", [])
+    if isinstance(calibration_for, str):
+        calibration_for = [calibration_for]
+    use_concept_bias_calibration = "learn_concept_bias" in calibration_for
+    calibration_dataset = None
+
+    if use_concept_bias_calibration:
+        source_split = calibration_cfg.get("source_split", "train")
+        if source_split != "train":
+            raise ValueError("calibration.source_split currently supports only 'train'")
+        calibration_ratio = float(calibration_cfg.get("ratio", 0.1))
+        calibration_seed = int(calibration_cfg.get("seed", 42))
+        calibration_source_dataset = dataset_class(
+            csv_path=args.csv_path,
+            image_dir=args.image_dir,
+            split='train',
+            config=dataset_config,
+            transform=getattr(val_dataset, "transform", None),
+            cache_in_memory=False,
+            max_cache_size_gb=args.max_cache_size_gb
+        )
+        train_dataset, calibration_dataset = split_for_calibration(
+            train_dataset,
+            calibration_source_dataset,
+            ratio=calibration_ratio,
+            seed=calibration_seed
+        )
+
     # Use final resolved configuration from dataset instance
-    resolved_config = train_dataset.config
+    base_train_dataset, _ = unwrap_subset(train_dataset)
+    resolved_config = base_train_dataset.config
     num_concepts_supervised = resolved_config["num_concepts"]
     num_concepts_total = num_concepts_supervised + args.latent_concepts
     num_classes = resolved_config["num_classes"]
 
     tqdm.write(f"  {BOLD}{BLUE}[Dataset]{RESET} {args.dataset} | Supervised Concepts: {num_concepts_supervised} | Latent Concepts: {args.latent_concepts} | Classes: {num_classes}")
-    tqdm.write(f"  {BOLD}{BLUE}[Samples]{RESET} Train: {len(train_dataset)} | Val: {len(val_dataset)}")
-    
+    sample_msg = f"  {BOLD}{BLUE}[Samples]{RESET} Train: {len(train_dataset)} | Val: {len(val_dataset)}"
+    if calibration_dataset is not None:
+        sample_msg += f" | Calibration: {len(calibration_dataset)}"
+    tqdm.write(sample_msg)
+
     # Log target class names if available
     target_classes = resolved_config.get("target_classes", [])
     if target_classes:
         tqdm.write(f"  {BOLD}{BLUE}[Classes]{RESET} {target_classes}")
 
     num_workers = args.num_workers
-    if getattr(train_dataset, "cache_in_memory", False):
+    base_for_cache, _ = unwrap_subset(train_dataset)
+    if getattr(base_for_cache, "cache_in_memory", False):
         tqdm.write(f"  {BOLD}{GREEN}[Cache]{RESET} In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
         num_workers = 0
 
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
+        train_dataset,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=(num_workers > 0)
     )
     val_loader = DataLoader(
-        val_dataset, 
-        batch_size=args.batch_size, 
+        val_dataset,
+        batch_size=args.batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=(num_workers > 0)
     )
+    calibration_loader = None
+    if calibration_dataset is not None:
+        calibration_loader = DataLoader(
+            calibration_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=args.pin_memory,
+            persistent_workers=(num_workers > 0)
+        )
 
     # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax
     concept_groups_info = None
-    if args.use_concept_groups and hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
+    group_source_dataset, _ = unwrap_subset(train_dataset)
+    if args.use_concept_groups and hasattr(group_source_dataset, "concept_features_info") and group_source_dataset.concept_features_info is not None:
         target_groups = None
         if isinstance(args.use_concept_groups, str):
             if args.use_concept_groups.lower() == 'true':
@@ -374,10 +420,10 @@ def main():
                 target_groups = {name.strip() for name in args.use_concept_groups.split(',')}
         elif isinstance(args.use_concept_groups, list):
             target_groups = {str(name).strip() for name in args.use_concept_groups}
-            
+
         concept_groups_info = []
         grouped_count = 0
-        for info in train_dataset.concept_features_info:
+        for info in group_source_dataset.concept_features_info:
             start = info["start_idx"]
             num = info["num_feats"]
             name = info["name"]
@@ -389,7 +435,7 @@ def main():
                 concept_groups_info.append((start, num))
                 if num > 1:
                     grouped_count += 1
-        tqdm.write(f"  {BOLD}{BLUE}[Softmax Group]{RESET} Configured {grouped_count} mutually exclusive groups out of {len(train_dataset.concept_features_info)} total categories.")
+        tqdm.write(f"  {BOLD}{BLUE}[Softmax Group]{RESET} Configured {grouped_count} mutually exclusive groups out of {len(group_source_dataset.concept_features_info)} total categories.")
     else:
         tqdm.write(f"  {BOLD}{BLUE}[Softmax Group]{RESET} DISABLED (Sigmoid activation fallback active).")
 
@@ -403,8 +449,9 @@ def main():
     num_groups    = None
     if args.use_group_broadcasting:
         concept_info_list = None
-        if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
-            concept_info_list = train_dataset.concept_features_info
+        group_source_dataset, _ = unwrap_subset(train_dataset)
+        if hasattr(group_source_dataset, "concept_features_info") and group_source_dataset.concept_features_info is not None:
+            concept_info_list = group_source_dataset.concept_features_info
         elif args.concept_config_path and os.path.exists(args.concept_config_path):
             try:
                 import json
@@ -424,7 +471,7 @@ def main():
                     })
             except Exception as e:
                 tqdm.write(f"  ⚠️ Error loading concept config path in main.py: {e}")
-        
+
         if concept_info_list is not None:
             group_mapping = []
             for group_idx, info in enumerate(concept_info_list):
@@ -463,15 +510,15 @@ def main():
         use_pairwise_nam=args.use_pairwise_nam
     )
 
-    
+
     if args.backbone_train_mode == "frozen":
         model.freeze_backbone()
         tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Backbone frozen")
-        
+
     if args.freeze_head:
         model.freeze_classifier()
         tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Classifier head frozen")
-        
+
     if args.resume_checkpoint:
         if os.path.exists(args.resume_checkpoint):
             tqdm.write(f"  {BOLD}{CYAN}[Resume]{RESET} Loading pre-trained weights from: {args.resume_checkpoint}")
@@ -518,8 +565,14 @@ def main():
                 tqdm.write(f"  {BOLD}{GREEN}[Success]{RESET} Weights loaded successfully (non-strict match).")
         else:
             tqdm.write(f"  {BOLD}{YELLOW}[Error]{RESET} Checkpoint path '{args.resume_checkpoint}' does not exist. Starting training from scratch.")
-            
+
     model.to(device)
+    if use_concept_bias_calibration and hasattr(model, "concept_bias"):
+        model.concept_bias.zero_()
+        tqdm.write(
+            f"  {BOLD}{CYAN}[Calibration]{RESET} "
+            "Concept bias will be learned post-hoc after Phase 3; training phases use zero bias."
+        )
 
     # 3. Loss & Optimizer Setup
     cb_pos_weight = None
@@ -545,7 +598,7 @@ def main():
                 focal_alpha = focal_alpha.to(device)
             elif args.focal_alpha is not None and args.focal_alpha != 'dynamic':
                 focal_alpha = float(args.focal_alpha)
-                
+
         tqdm.write(
             f"  {BOLD}{BLUE}[Concept Loss]{RESET} Mutually Exclusive GroupCrossEntropyLoss ({len(concept_groups_info)} groups, "
             f"lambda_ce={args.lambda_ce}, fallback_loss={args.concept_loss_type})"
@@ -589,7 +642,7 @@ def main():
         pos_weights = calculate_pos_weights(train_dataset, num_concepts_supervised).to(device)
         tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} BCEWithLogitsLoss with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
         concept_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
-    
+
     if args.dataset == 'chexpert':
         target_criterion = nn.BCEWithLogitsLoss()
     elif num_classes == 1:
@@ -600,12 +653,14 @@ def main():
             target_criterion = nn.BCEWithLogitsLoss()
     else:
         # Multi-class: compute inverse-frequency class weights from training data
-        if hasattr(train_dataset, 'df') and not train_dataset.dummy_mode:
+        target_source_dataset, target_subset_indices = unwrap_subset(train_dataset)
+        if hasattr(target_source_dataset, 'df') and not target_source_dataset.dummy_mode:
             target_col = resolved_config.get("target_col", "diagnosis_idx")
-            target_to_idx = getattr(train_dataset, "target_to_idx", None)
-            
+            target_to_idx = getattr(target_source_dataset, "target_to_idx", None)
+            target_df = target_source_dataset.df.iloc[target_subset_indices] if target_subset_indices is not None else target_source_dataset.df
+
             counts = [0] * num_classes
-            for val in train_dataset.df[target_col].dropna():
+            for val in target_df[target_col].dropna():
                 if target_to_idx is not None and val in target_to_idx:
                     idx = target_to_idx[val]
                 else:
@@ -615,20 +670,20 @@ def main():
                         idx = 0
                 if 0 <= idx < num_classes:
                     counts[idx] += 1
-            
+
             # Ensure at least 1 count to avoid division by zero
             counts = [max(1, c) for c in counts]
-            
+
             # Inverse-frequency weights normalized so they sum to num_classes
             weights = [1.0 / c for c in counts]
             sum_weights = sum(weights)
             weights = [w / sum_weights * num_classes for w in weights]
-            
+
             class_weight = torch.tensor(weights, dtype=torch.float32, device=device)
             target_criterion = nn.CrossEntropyLoss(weight=class_weight)
         else:
             target_criterion = nn.CrossEntropyLoss()
-        
+
     # 3b. Weights & Biases Initialization
     if args.use_wandb:
         import wandb
@@ -640,7 +695,7 @@ def main():
         tqdm.write(f"  {BOLD}{BLUE}[W&B]{RESET} Run initialized successfully.")
 
     tqdm.write(f"{'='*60}\n")
-    
+
     # 4. Sequential Training Phases
     # Phase 1: Concept Learning
     phase1_epochs = args.phase1_epochs if args.phase1_epochs is not None else args.epochs
@@ -658,7 +713,10 @@ def main():
             resolved_config=resolved_config,
             concept_groups_info=concept_groups_info
         )
-        
+    else:
+        tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 1: phase1_epochs is 0.")
+
+    if phase1_epochs > 0:
         # Safety Backup: Save intermediate Phase 1 checkpoint to allow resuming Phase 2
         save_subdir = os.path.join(args.save_dir, args.backbone_name)
         os.makedirs(save_subdir, exist_ok=True)
@@ -666,7 +724,7 @@ def main():
         if not phase1_save_filename.endswith("_phase1.pt") and not phase1_save_filename.endswith("_phase1.pth"):
             phase1_save_filename = phase1_save_filename.replace(".pt", "_phase1.pt").replace(".pth", "_phase1.pth")
         phase1_save_path = os.path.join(save_subdir, phase1_save_filename)
-        
+
         checkpoint_p1 = {
             'state_dict': model.state_dict(),
             'config': config_data,
@@ -674,9 +732,7 @@ def main():
         }
         torch.save(checkpoint_p1, phase1_save_path)
         tqdm.write(f"\n{BOLD}{GREEN}[Safety Backup]{RESET} Phase 1 complete! Saved intermediate checkpoint to: {phase1_save_path}\n")
-    else:
-        tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 1: phase1_epochs is 0.")
-        
+
     # Phase 2: Target Learning
     phase2_epochs = args.phase2_epochs if args.phase2_epochs is not None else args.epochs
     if phase2_epochs > 0:
@@ -695,7 +751,7 @@ def main():
         )
     else:
         tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 2: phase2_epochs is 0.")
-    
+
     # Phase 3: Joint Parameter Tuning
     if getattr(args, "phase3_epochs", 5) > 0:
         train_phase3(
@@ -713,17 +769,39 @@ def main():
             num_classes=num_classes
         )
 
+    if calibration_loader is not None:
+        bias_cfg = config_data.get("learn_concept_bias", {})
+        tqdm.write(f"\n{BOLD}{CYAN}[Calibration]{RESET} Learning fixed supervised concept bias after Phase 3...")
+        bias_summary = learn_concept_bias(
+            model=model,
+            calibration_loader=calibration_loader,
+            concept_groups_info=concept_groups_info,
+            device=device,
+            config=bias_cfg
+        )
+        tqdm.write(
+            f"  {BOLD}{GREEN}[Concept Bias]{RESET} "
+            f"{bias_summary['metric']}: {bias_summary['baseline_score']*100:.2f}% "
+            f"-> {bias_summary['calibrated_score']*100:.2f}%"
+        )
+        if args.use_wandb:
+            import wandb
+            wandb.log({
+                "calibration/concept_bias_baseline": bias_summary["baseline_score"],
+                "calibration/concept_bias_score": bias_summary["calibrated_score"],
+            })
+
     # Save Model Weights
     save_subdir = os.path.join(args.save_dir, args.backbone_name)
     os.makedirs(save_subdir, exist_ok=True)
-    
+
     if args.save_filename:
         save_filename = args.save_filename
     else:
         simple_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         save_filename = f"{args.dataset}_{args.backbone_name}_latent{args.latent_concepts}_{simple_timestamp}.pt"
     save_path = os.path.join(save_subdir, save_filename)
-    
+
     # Pack model state_dict along with full training configs for absolute reproducibility & lineage tracking
     checkpoint = {
         'state_dict': model.state_dict(),
@@ -731,7 +809,7 @@ def main():
         'args': vars(args)
     }
     torch.save(checkpoint, save_path)
-    
+
     tqdm.write(f"\n{BOLD}{GREEN}{'='*60}{RESET}")
     tqdm.write(f"  {BOLD}{GREEN}[Success] Training complete!{RESET}")
     tqdm.write(f"  {BOLD}{GREEN}[Save]{RESET} Weights saved to: {save_path}")
@@ -746,7 +824,7 @@ def main():
         tqdm.write(f"\n{BOLD}{CYAN}[Evaluation]{RESET} Launching evaluation benchmark automatically...")
         import subprocess
         import sys
-        
+
         cmd = [
             sys.executable, "eval_cbm.py",
             "--checkpoint", save_path
@@ -762,7 +840,7 @@ def main():
         tqdm.write(f"\n{BOLD}{CYAN}[Gradio]{RESET} Launching inference application automatically...")
         import subprocess
         import sys
-        
+
         # Build command dynamically matching the trained model parameters
         cmd = [
             sys.executable, "app.py",
@@ -783,7 +861,7 @@ def main():
             cmd.extend(["--use_probabilistic_cbm", "true"])
         if args.use_concept_attention:
             cmd.extend(["--use_concept_attention", "true"])
-            
+
         tqdm.write(f"  Running: {' '.join(cmd)}")
         try:
             subprocess.run(cmd)

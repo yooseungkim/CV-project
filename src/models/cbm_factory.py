@@ -844,11 +844,15 @@ class UniversalFlexibleCBM(nn.Module):
         
         # Register a buffer to store dynamically-found optimal validation logit thresholds
         self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
+        # Post-hoc supervised concept calibration bias learned on a held-out calibration split.
+        self.register_buffer('concept_bias', torch.zeros(self.num_supervised_concepts))
 
     def load_state_dict(self, state_dict, strict=True):
         # If 'concept_thresholds' is not in the loaded state_dict, inject it to prevent strict loading errors
         if 'concept_thresholds' not in state_dict:
             state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
+        if 'concept_bias' not in state_dict:
+            state_dict['concept_bias'] = torch.zeros(self.num_supervised_concepts)
             
         # Backward compatibility for concept_gates and latent_gates
         if hasattr(self.classifier_head, 'concept_gates'):
@@ -895,6 +899,20 @@ class UniversalFlexibleCBM(nn.Module):
                 print(f"  Final remaining latent gates (>0.05): {l_final_active} / {l_total_gates}")
                 
         return ret
+
+    def apply_concept_bias(self, concept_logits: torch.Tensor) -> torch.Tensor:
+        """Apply fixed calibration bias to supervised concept logits only."""
+        if not hasattr(self, "concept_bias") or self.concept_bias.numel() == 0:
+            return concept_logits
+        if concept_logits.size(-1) < self.num_supervised_concepts:
+            return concept_logits
+
+        biased_logits = concept_logits.clone()
+        bias = self.concept_bias.to(device=concept_logits.device, dtype=concept_logits.dtype)
+        biased_logits[:, :self.num_supervised_concepts] = (
+            biased_logits[:, :self.num_supervised_concepts] + bias.unsqueeze(0)
+        )
+        return biased_logits
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:
         """Pass a dummy tensor through the backbone to dynamically infer feature dimensions (ResNet only)."""
@@ -1173,7 +1191,8 @@ class UniversalFlexibleCBM(nn.Module):
                 latent_features = None
                 
         # Apply dropout to regularize concept predictions (in logit space)
-        concept_logits_dropout = self.dropout(concept_logits)
+        concept_logits_for_classifier = self.apply_concept_bias(concept_logits)
+        concept_logits_dropout = self.dropout(concept_logits_for_classifier)
         
         # Final classification target output logits (Inverse Sigmoid / Logit Intervention SOTA design)
         class_logits = self.classifier_head(concept_logits_dropout)  # [B, num_classes]

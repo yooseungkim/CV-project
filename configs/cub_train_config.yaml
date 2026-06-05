@@ -20,7 +20,7 @@ dataset:
   csv_path: "data/CUB_200_2011/images.txt" # Path to metadata CSV
   image_dir: "data/CUB_200_2011/images" # Directory containing images
   concept_config_path: "data/CUB_200_2011/concept_config.json" # Path to concept configuration JSON
-  
+
   # --- Dataset-Specific Settings ---
   use_concept_groups: true     # [Dataset-Specific: cub, derm7pt, milk10k] Toggle Mutually Exclusive Group-level Softmax
   filter_rare_concepts: false  # [Dataset-Specific: cub, derm7pt] Filter out concepts with frequency < 1%
@@ -29,7 +29,22 @@ dataset:
   policy: "u-ones"             # [Dataset-Specific: chexpert] Uncertainty policy: "u-ones" or "u-zeros"
   subset_ratio: null           # [Dataset-Specific: chexpert] Subset ratio of the dataset to load
 
-# 3. Core Training Hyperparameters
+# 3. Calibration Setup
+calibration:
+  source_split: train          # Split to partition for calibration
+  ratio: 0.10                  # Fraction of source_split reserved for calibration
+  seed: 42                     # Deterministic calibration split seed
+  for_what:
+    - learn_concept_bias
+
+learn_concept_bias:
+  scope: supervised_concepts
+  objective:
+    metric: target_macro_f1    # Choices: ["concept_macro_f1", "concept_macro_f2", "target_macro_f1"]
+  search_method: coordinate_grid # Choices: ["coordinate_grid"]
+  max_abs_bias: 4.0            # Absolute logit-bias bound
+
+# 4. Core Training Hyperparameters
 training:
   epochs: 30                   # Total number of epochs to train
   phase1_epochs: 30            # Number of epochs for Phase 1 (Concept Learning)
@@ -73,7 +88,7 @@ training:
   run_eval: true               # Run evaluation script after training
   run_app: false               # Launch Gradio app after training
 
-# 4. Optimizer Configurations
+# 5. Optimizer Configurations
 optimizer:
   type: "adamw"                # Choices: ["adam", "adamw", "sgd"]
   lr: 0.001                    # General default learning rate
@@ -95,7 +110,7 @@ optimizer:
   lambda_latent_ortho: 0.1     # Latent projection loss weight
   lambda_latent_l1: 0.01       # Latent activation L1 loss weight
 
-# 5. Learning Rate Scheduler Options
+# 6. Learning Rate Scheduler Options
 scheduler:
   type: "cosine"               # Choices: ["none", "cosine", "step", "plateau"]
   T_max: 30                    # T_max for cosine annealing scheduler
@@ -105,7 +120,7 @@ scheduler:
   gamma: 0.1                   # decay rate for step scheduler
   patience: 3                  # patience for plateau scheduler
   factor: 0.1                  # decay factor for plateau scheduler
-  
+
   # --- Dataset-Specific Schedulers ---
   phase1_type: "cosine_with_warmup" # [Dataset-Specific: cub, derm7pt]
   phase1_warmup_epochs: 5      # [Dataset-Specific: cub, derm7pt]
@@ -114,17 +129,17 @@ scheduler:
   phase2_patience: 3           # [Dataset-Specific: cub, derm7pt]
   phase2_factor: 0.5           # [Dataset-Specific: cub, derm7pt]
 
-# 6. Early Stopping Criteria
+# 7. Early Stopping Criteria
 early_stopping:
   enabled: true                # Enable early stopping
   monitor: "val_target_loss"   # Target validation metric to monitor
   patience: 7                  # Patience for early stopping
   min_delta: 0.001             # Minimum change to qualify as improvement
-  
+
   # --- Dataset-Specific Early Stopping ---
-  phase1_monitor: "val_concept_f1" # [Dataset-Specific: cub, derm7pt]
-  phase1_patience: 5           # [Dataset-Specific: cub, derm7pt]
-  phase2_monitor: "val_target_acc" # [Dataset-Specific: cub, derm7pt]
+  phase1_monitor: "val_concept_loss" # [Dataset-Specific: cub, derm7pt]
+  phase1_patience: 10           # [Dataset-Specific: cub, derm7pt]
+  phase2_monitor: "val_target_loss" # [Dataset-Specific: cub, derm7pt]
   phase2_patience: 10          # [Dataset-Specific: cub, derm7pt]
   phase3_monitor: "val_joint_loss" # [Dataset-Specific: cub, derm7pt]
   phase3_patience: 5           # [Dataset-Specific: cub, derm7pt]

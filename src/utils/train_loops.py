@@ -8,7 +8,7 @@ from tqdm import tqdm
 from src.utils.metrics import calculate_accuracy, calculate_concept_metrics, find_optimal_concept_thresholds
 from src.utils.visualization import generate_concept_heatmaps
 from src.utils.losses import calculate_orthogonality_loss
-from src.utils.helpers import EarlyStopping
+from src.utils.helpers import EarlyStopping, unwrap_subset
 
 # ANSI terminal colors for highlighting
 GREEN = "\033[92m"
@@ -95,7 +95,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     
     # Extract concept grouping indices from dataset for group-level orthogonality loss
     concept_groups_indices = None
-    train_dataset = train_loader.dataset
+    train_dataset, _ = unwrap_subset(train_loader.dataset)
     if args.use_concept_groups and hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
         target_groups = None
         if isinstance(args.use_concept_groups, str):
@@ -741,8 +741,9 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 concept_logits = supervised_logits
                 latent_features = None
                 
-            concept_probs = model.concept_activation(concept_logits)
-            concept_logits_dropout = model.dropout(concept_logits)
+            concept_logits_for_classifier = model.apply_concept_bias(concept_logits)
+            concept_probs = model.concept_activation(concept_logits_for_classifier)
+            concept_logits_dropout = model.dropout(concept_logits_for_classifier)
             class_logits = model.classifier_head(concept_logits_dropout)
             
             if isinstance(target_criterion, nn.BCEWithLogitsLoss):
@@ -1285,6 +1286,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 else:
                     concept_logits_for_classifier = supervised_logits_injected
 
+            concept_logits_for_classifier = model.apply_concept_bias(concept_logits_for_classifier)
             concept_logits_dropout = model.dropout(concept_logits_for_classifier)
             class_logits = model.classifier_head(concept_logits_dropout)
             
@@ -1338,7 +1340,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             loss_latent_ortho = torch.tensor(0.0, device=device)
             loss_latent_l1 = torch.tensor(0.0, device=device)
             
-            concept_probs = model.concept_activation(concept_logits)
+            concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
             
             if model.num_latent_concepts > 0 and latent_features is not None:
                 # Cosine similarity-based Orthogonal Projection Loss

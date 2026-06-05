@@ -1,20 +1,16 @@
 import os
 import argparse
-import yaml
 import json
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import pandas as pd
-import numpy as np
 
 from src.data.cub import CUB2011Dataset
 from src.data.derm7pt import Derm7PtDataset
 from src.data.milk10k import MILK10KDataset
 from src.data.chexpert import CheXpertDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
-from src.utils.metrics import calculate_accuracy, calculate_concept_metrics
+from src.utils.metrics import calculate_concept_metrics
 
 # ANSI terminal colors for highlighting
 GREEN = "\033[92m"
@@ -84,6 +80,44 @@ def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     return res
 
 
+def calculate_target_macro_f1(outputs, targets):
+    """Calculate macro-F1 for target predictions."""
+    if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
+        preds = (outputs > 0.0).float()
+        targets = (targets > 0.5).float()
+        tp = (preds * targets).sum(dim=0)
+        fp = (preds * (1.0 - targets)).sum(dim=0)
+        fn = ((1.0 - preds) * targets).sum(dim=0)
+        denom = (2.0 * tp) + fp + fn
+        scores = torch.where(denom > 0, (2.0 * tp) / (denom + 1e-8), torch.zeros_like(tp))
+        return scores.mean().item()
+
+    if outputs.shape[-1] <= 1:
+        preds = (outputs.view(-1) > 0.0).long()
+        targets_flat = targets.view(-1).long()
+        num_classes = 2
+    else:
+        preds = torch.argmax(outputs, dim=1).long()
+        targets_flat = targets.view(-1).long()
+        num_classes = int(outputs.shape[-1])
+
+    labels = torch.unique(torch.cat([targets_flat, preds]))
+    labels = labels[(labels >= 0) & (labels < num_classes)]
+    if labels.numel() == 0:
+        return 0.0
+
+    scores = []
+    for label in labels:
+        pred_pos = preds == label
+        target_pos = targets_flat == label
+        tp = (pred_pos & target_pos).sum().float()
+        fp = (pred_pos & ~target_pos).sum().float()
+        fn = (~pred_pos & target_pos).sum().float()
+        denom = (2.0 * tp) + fp + fn
+        scores.append(torch.where(denom > 0, (2.0 * tp) / (denom + 1e-8), torch.zeros_like(tp)))
+    return torch.stack(scores).mean().item()
+
+
 
 @torch.no_grad()
 def run_evaluation(model, dataloader, concept_groups_info, device):
@@ -115,22 +149,21 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     all_gt_concepts = torch.cat(all_gt_concepts, dim=0)
     all_gt_targets = torch.cat(all_gt_targets, dim=0)
     
-    # Calculate concept probabilities through model's registered activation
-    all_concept_probs = model.concept_activation(all_concept_logits.to(device)).cpu()
-    
+    biased_concept_logits = model.apply_concept_bias(all_concept_logits.to(device)).cpu()
     # Compute Target Classification Accuracy
     topk_accs = calculate_topk_accuracy(all_class_logits, all_gt_targets)
+    target_macro_f1 = calculate_target_macro_f1(all_class_logits, all_gt_targets)
     
     # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
-        all_concept_logits[:, :model.num_supervised_concepts], 
+        biased_concept_logits[:, :model.num_supervised_concepts],
         all_gt_concepts, 
         concept_groups_info=concept_groups_info,
         threshold=model.concept_thresholds.cpu()
     )
     
-    # Return all_concept_logits instead of all_concept_probs to enable Inverse Sigmoid Intervention
-    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
+    # Return raw concept logits to keep logit-space interventions well defined.
+    return topk_accs, target_macro_f1, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
 
 
 def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
@@ -179,7 +212,7 @@ def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
     return gt_logits
 
 
-def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
+def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
     """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
     num_samples = concept_logits.shape[0]
@@ -189,12 +222,12 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     group_tti_accuracies = []
     
     # Calculate initial predictions (K=0 interventions) using predicted logits directly
-    init_logits = model.classifier_head(concept_logits.to(device))
+    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     group_tti_accuracies.append((0, init_topk))
     
     # Compute concept probs for sorting erroneous groups
-    concept_probs = model.concept_activation(concept_logits.to(device)).cpu()
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
     
     # 1. Compute per-sample prediction error for each group
     sample_group_errors = []
@@ -228,7 +261,7 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
             
         # Predict class targets using the updated concept logits
         with torch.no_grad():
-            updated_logits = model.classifier_head(logits_mutated.to(device))
+            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         group_tti_accuracies.append((K, updated_topk))
@@ -237,7 +270,7 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     return group_tti_accuracies
 
 
-def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
+def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
     """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
     num_samples, num_supervised = gt_concepts.shape
@@ -245,12 +278,12 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     concept_tti_accuracies = []
     
     # Init (K=0)
-    init_logits = model.classifier_head(concept_logits.to(device))
+    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     concept_tti_accuracies.append((0, init_topk))
     
     # Compute concept probs for sorting erroneous concepts
-    concept_probs = model.concept_activation(concept_logits.to(device)).cpu()
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
     
     # Calculate prediction error for each individual concept per sample
     sample_concept_errors = []
@@ -276,7 +309,7 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
             logits_mutated[i, indices_to_correct] = gt_logits[i, indices_to_correct]
             
         with torch.no_grad():
-            updated_logits = model.classifier_head(logits_mutated.to(device))
+            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         concept_tti_accuracies.append((pct, updated_topk))
@@ -285,47 +318,52 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     return concept_tti_accuracies
 
 
-def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, logit_margin=0.0):
-    """Simulates TTI by correcting concept groups predicted as "Not Visible / Occluded" or within a logit margin of optimal dynamic thresholds."""
+def run_tti_uncertainty_topk(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+    """Corrects top-K most uncertain groups, where uncertainty = 1 - max(p_group)."""
     model.eval()
     num_samples = concept_logits.shape[0]
     num_groups = len(concept_groups)
-    
-    # Get optimal validation thresholds in logit space
-    thresh_tensor = model.concept_thresholds.cpu()
-    
+
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
-    
-    # Create a copy of predicted concept logits
-    logits_mutated = concept_logits.clone()
-    
-    corrected_counts = []
+
+    uncertainty_tti_accuracies = []
+    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
+    init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
+    uncertainty_tti_accuracies.append((0, init_topk))
+
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
+    sample_group_order = []
     for i in range(num_samples):
-        corrected_count = 0
+        group_scores = []
         for group in concept_groups:
             indices = group["flat_indices"]
-            # Extract predicted logits for this group
-            group_logits = concept_logits[i, indices]
-            max_logit = torch.max(group_logits).item()
-            
-            # Group threshold (mean of optimal thresholds for this group)
-            g_threshold = thresh_tensor[indices].mean().item()
-            
-            # Check if predicted logit is below threshold + logit margin
-            if max_logit <= (g_threshold + logit_margin):
-                # Correct this group
-                logits_mutated[i, indices] = gt_logits[i, indices]
-                corrected_count += 1
-        corrected_counts.append(corrected_count)
-        
-    # Predict target classes using mutated logits
-    with torch.no_grad():
-        updated_logits = model.classifier_head(logits_mutated.to(device))
-        updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
-        
-    avg_corrected = np.mean(corrected_counts)
-    return updated_topk, avg_corrected
+            group_probs = concept_probs[i, indices]
+            if len(indices) > 1:
+                confidence = torch.max(group_probs).item()
+            else:
+                p = group_probs[0].item()
+                confidence = max(p, 1.0 - p)
+            uncertainty = 1.0 - confidence
+            group_scores.append((group["name"], uncertainty))
+        sample_group_order.append([
+            name for name, _ in sorted(group_scores, key=lambda item: item[1], reverse=True)
+        ])
+
+    group_lookup = {group["name"]: group["flat_indices"] for group in concept_groups}
+    logits_mutated = concept_logits.clone()
+    for K in range(1, num_groups + 1):
+        for i in range(num_samples):
+            group_name = sample_group_order[i][K - 1]
+            indices = group_lookup[group_name]
+            logits_mutated[i, indices] = gt_logits[i, indices]
+
+        with torch.no_grad():
+            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
+            updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
+        uncertainty_tti_accuracies.append((K, updated_topk))
+
+    return uncertainty_tti_accuracies
 
 
 def main():
@@ -564,7 +602,7 @@ def main():
     tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
     
     # 5. Run standard evaluation
-    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
+    topk_accs, target_macro_f1, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
         model, 
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
@@ -576,6 +614,7 @@ def main():
     if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
     if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
     if 10 in topk_accs: tqdm.write(f"   Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
+    tqdm.write(f"   Target Macro F1-Score    : {target_macro_f1*100:.2f}%")
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
@@ -593,8 +632,7 @@ def main():
         concept_logits, 
         gt_concepts, 
         gt_targets, 
-        concept_groups, 
-        latent_concepts, 
+        concept_groups,
         device
     )
     
@@ -632,8 +670,7 @@ def main():
         concept_logits, 
         gt_concepts, 
         gt_targets, 
-        concept_groups, 
-        latent_concepts, 
+        concept_groups,
         device
     )
     
@@ -660,48 +697,44 @@ def main():
         print(row)
     print(border_concept)
     
-    # 8. Run "Not Visible / Occluded" Only TTI under different logit margins
+    # 8. Run uncertainty-ranked feasible TTI by fixed group budget
     print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
-    print(f"  {BOLD}{YELLOW}[Margin Search]{RESET} Searching for the optimal logit margin to achieve ~2-3 corrected groups...")
+    print(f"  {BOLD}{YELLOW}[Uncertainty Top-K TTI]{RESET} Correcting top-K groups by uncertainty = 1 - max(p_group)...")
     print(f"{BOLD}{YELLOW}============================================================{RESET}")
-    
-    logit_margin_candidates = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0]
-    print("| Logit Margin | Top-1 Accuracy | Top-3 Accuracy | Avg Groups Corrected |")
-    print("| :----------: | :------------: | :------------: | :------------------: |")
-    for margin in logit_margin_candidates:
-        unconf_topk, avg_corrected = run_tti_unconfident_only(
-            model, 
-            concept_logits, 
-            gt_concepts, 
-            gt_targets, 
-            concept_groups, 
-            latent_concepts, 
-            device,
-            logit_margin=margin
-        )
-        print(f"| {margin:>12.2f} | {unconf_topk.get(1, 0.0)*100:>12.2f}% | {unconf_topk.get(3, 0.0)*100:>12.2f}% | {avg_corrected:>20.2f} / {num_groups} |")
-    print("============================================================\n")
-    
-    # 9. Evaluate Chosen Sweet-Spot Logit Margin (0.30)
-    print(f"{BOLD}{YELLOW}============================================================{RESET}")
-    print(f"  {BOLD}{YELLOW}[Unconfident TTI]{RESET} Running Unconfident-Only TTI with Selected Logit Margin (0.30)...")
-    print(f"{BOLD}{YELLOW}============================================================{RESET}")
-    unconf_topk, avg_corrected = run_tti_unconfident_only(
+
+    uncertainty_tti_results = run_tti_uncertainty_topk(
         model, 
         concept_logits, 
         gt_concepts, 
         gt_targets, 
-        concept_groups, 
-        latent_concepts, 
-        device,
-        logit_margin=0.30
+        concept_groups,
+        device
     )
-    print(f"  Unconfident-Only (Margin 0.30) Top-1 Accuracy : {unconf_topk.get(1, 0.0)*100:.2f}%")
-    if 3 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-3 Accuracy : {unconf_topk[3]*100:.2f}%")
-    if 5 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-5 Accuracy : {unconf_topk[5]*100:.2f}%")
-    if 10 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-10 Accuracy: {unconf_topk[10]*100:.2f}%")
-    print(f"  Avg Groups Corrected per Sample               : {avg_corrected:.2f} / {num_groups}")
-    print("============================================================\n")
+
+    available_ks_uncertainty = sorted(list(uncertainty_tti_results[0][1].keys()))
+    header_uncertainty = "| Number of Uncertain Groups Corrected "
+    for k in available_ks_uncertainty:
+        header_uncertainty += f"| Top-{k:<4} "
+    header_uncertainty += "|"
+    border_uncertainty = "+" + "-"*38
+    for k in available_ks_uncertainty:
+        border_uncertainty += "+" + "-"*10
+    border_uncertainty += "+"
+
+    print("\n" + border_uncertainty)
+    print(header_uncertainty)
+    print(border_uncertainty)
+    for K, accs_dict in uncertainty_tti_results:
+        row = f"| {K:<36} "
+        for k in available_ks_uncertainty:
+            val = accs_dict.get(k, 0.0) * 100
+            row += f"| {val:>8.2f}% "
+        row += "|"
+        print(row)
+    print(border_uncertainty)
+
+    summary_uncertainty_k = min(3, num_groups)
+    uncertainty_summary = dict(uncertainty_tti_results)[summary_uncertainty_k]
     
     # Summary of accomplishments with Top-K metrics
     print(f"\n{BOLD}{GREEN}============================================================{RESET}")
@@ -709,15 +742,15 @@ def main():
     for k in available_ks:
         val_0 = group_tti_results[0][1][k] * 100
         val_all = group_tti_results[-1][1][k] * 100
-        val_unconf = unconf_topk.get(k, 0.0) * 100
+        val_unconf = uncertainty_summary.get(k, 0.0) * 100
         delta = val_all - val_0
         delta_unconf = val_unconf - val_0
         print(f"  [TTI] Standard (K=0) Target Top-{k} Accuracy: {val_0:.2f}%")
-        print(f"  [TTI] Unconfident-Only (Margin=0.30) Top-{k} Accuracy: {val_unconf:.2f}% ({BOLD}{YELLOW}{delta_unconf:+.2f}%{RESET})")
+        print(f"  [TTI] Uncertainty Top-{summary_uncertainty_k} Groups Top-{k} Accuracy: {val_unconf:.2f}% ({BOLD}{YELLOW}{delta_unconf:+.2f}%{RESET})")
         print(f"  [TTI] Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
         print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
         print(f"  ----------------------------------------------------------")
-    print(f"  [TTI] Unconfident Avg Groups Corrected: {avg_corrected:.2f} / {num_groups}")
+    print(f"  [TTI] Uncertainty Groups Corrected in Summary: {summary_uncertainty_k} / {num_groups}")
     print(f"{BOLD}{GREEN}============================================================{RESET}\n")
     
     # 10. Export Active Pairwise NAM Interactions
