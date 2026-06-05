@@ -172,7 +172,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             
             if getattr(model, "use_probabilistic_cbm", False):
                 mean = model.last_mean
-                logvar = model.last_logvar
+                logvar = torch.clamp(model.last_logvar, min=-10.0, max=10.0)
                 kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
                 
                 # Filter out ignored/missing concepts (< 0.0, e.g. -1)
@@ -224,6 +224,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 loss_ortho = torch.tensor(0.0, device=device)
                 
             total_loss.backward()
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             total_loss_c += total_loss.item()
@@ -259,7 +261,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 
                 if getattr(model, "use_probabilistic_cbm", False):
                     mean = model.last_mean
-                    logvar = model.last_logvar
+                    logvar = torch.clamp(model.last_logvar, min=-10.0, max=10.0)
                     kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
                     
                     # Filter out ignored/missing concepts (< 0.0, e.g. -1)
@@ -747,6 +749,8 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                     loss_t = loss_t + current_l1_lambda * l1_norm
                 
             loss_t.backward()
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity
@@ -1255,7 +1259,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             loss_c = concept_criterion(supervised_logits, smoothed_concepts)
             if getattr(model, "use_probabilistic_cbm", False):
                 mean = model.last_mean
-                logvar = model.last_logvar
+                logvar = torch.clamp(model.last_logvar, min=-10.0, max=10.0)
                 kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
                 
                 # Filter out ignored/missing concepts (< 0.0, e.g. -1)
@@ -1314,6 +1318,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     total_loss = total_loss + l1_lambda * l1_norm
                 
             total_loss.backward()
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             
             # Apply proximal hard-thresholding to GatedSparseNAMHead gates for exact sparsity

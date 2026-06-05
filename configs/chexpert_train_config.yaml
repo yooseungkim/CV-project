@@ -60,7 +60,7 @@ training:
   scheduled_sampling_prob: 0.3 # Probability to replace prediction with GT during scheduled sampling
   scheduled_sampling_epsilon: 0.05 # Epsilon value for soft GT probabilities
   intervention_prob: 0.3       # [Dataset-Specific: chexpert] Scheduled sampling probability in Phase 3
-  target_pos_weight: 5.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
+  target_pos_weight: 1.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
   latent_concepts: 0           # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 5               # Number of target classification classes (Cardiomegaly, Edema, Consolidation, Atelectasis, Pleural Effusion)
   use_dynamic_threshold: true  # Optimize validation concept decision thresholds via Youden's J statistic
