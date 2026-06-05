@@ -80,8 +80,8 @@ optimizer:
   weight_decay: 0.05
   concept_loss_type: "asl"  # Choices: ["focal", "bce"]
   asl_gamma_pos: 0.0    # positive decay 제거 → 강한 gradient 유지
-  asl_gamma_neg: 2.5    # easy negative gradient noise 강력 억제
-  asl_alpha_pos: 1.5   # positive 샘플에 static weight 부여
+  asl_gamma_neg: 3.0    # easy negative gradient noise 강력 억제
+  asl_alpha_pos: 2.0   # positive 샘플에 static weight 부여
   asl_clip: 0.05 
 
 # 5. Learning Rate Scheduler Options

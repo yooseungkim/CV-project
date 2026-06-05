@@ -1,1098 +1,978 @@
 [
     {
-        "index": 250,
-        "concept_i_idx": 11,
-        "concept_j_idx": 20,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": 0.037739161401987076
-    },
-    {
-        "index": 240,
-        "concept_i_idx": 10,
-        "concept_j_idx": 26,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "vascular_structures_within regression",
-        "gate_weight": 0.035368360579013824
-    },
-    {
-        "index": 147,
-        "concept_i_idx": 6,
-        "concept_j_idx": 7,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "pigmentation_diffuse irregular",
-        "gate_weight": 0.03227776288986206
-    },
-    {
-        "index": 224,
-        "concept_i_idx": 9,
-        "concept_j_idx": 27,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.028859484940767288
-    },
-    {
-        "index": 0,
-        "concept_i_idx": 0,
-        "concept_j_idx": 1,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "pigment_network_atypical",
-        "gate_weight": 0.02873215638101101
-    },
-    {
-        "index": 334,
-        "concept_i_idx": 18,
-        "concept_j_idx": 20,
-        "concept_i": "blue_whitish_veil_absent",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": 0.02722429484128952
-    },
-    {
-        "index": 155,
-        "concept_i_idx": 6,
-        "concept_j_idx": 15,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": -0.02707323618233204
-    },
-    {
-        "index": 234,
-        "concept_i_idx": 10,
-        "concept_j_idx": 20,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": 0.025967424735426903
-    },
-    {
-        "index": 269,
-        "concept_i_idx": 12,
-        "concept_j_idx": 24,
-        "concept_i": "regression_structures_blue areas",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": 0.025329437106847763
-    },
-    {
-        "index": 68,
-        "concept_i_idx": 2,
-        "concept_j_idx": 18,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": 0.025312339887022972
-    },
-    {
-        "index": 88,
-        "concept_i_idx": 3,
-        "concept_j_idx": 14,
-        "concept_i": "streaks_absent",
-        "concept_j": "regression_structures_white areas",
-        "gate_weight": -0.024747414514422417
-    },
-    {
-        "index": 43,
-        "concept_i_idx": 1,
-        "concept_j_idx": 18,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": -0.023380503058433533
-    },
-    {
-        "index": 167,
-        "concept_i_idx": 6,
-        "concept_j_idx": 27,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.0220772884786129
-    },
-    {
-        "index": 160,
-        "concept_i_idx": 6,
-        "concept_j_idx": 20,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": -0.021048810333013535
-    },
-    {
-        "index": 349,
-        "concept_i_idx": 19,
-        "concept_j_idx": 27,
-        "concept_i": "blue_whitish_veil_present",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.02093871682882309
-    },
-    {
-        "index": 11,
-        "concept_i_idx": 0,
-        "concept_j_idx": 12,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": 0.020252879709005356
-    },
-    {
-        "index": 124,
+        "index": 65,
         "concept_i_idx": 4,
-        "concept_j_idx": 27,
-        "concept_i": "streaks_irregular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.01998082362115383
-    },
-    {
-        "index": 346,
-        "concept_i_idx": 19,
-        "concept_j_idx": 24,
-        "concept_i": "blue_whitish_veil_present",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.019743598997592926
-    },
-    {
-        "index": 221,
-        "concept_i_idx": 9,
-        "concept_j_idx": 24,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.019543668255209923
-    },
-    {
-        "index": 66,
-        "concept_i_idx": 2,
-        "concept_j_idx": 16,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "dots_and_globules_irregular",
-        "gate_weight": 0.018976299092173576
-    },
-    {
-        "index": 63,
-        "concept_i_idx": 2,
-        "concept_j_idx": 13,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "regression_structures_combinations",
-        "gate_weight": -0.0189632810652256
-    },
-    {
-        "index": 7,
-        "concept_i_idx": 0,
         "concept_j_idx": 8,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "pigmentation_diffuse regular",
-        "gate_weight": 0.01830301061272621
+        "concept_i": "site_foot",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": 0.0435541495680809
     },
     {
-        "index": 371,
-        "concept_i_idx": 23,
-        "concept_j_idx": 27,
-        "concept_i": "vascular_structures_dotted",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.018044916912913322
-    },
-    {
-        "index": 230,
-        "concept_i_idx": 10,
+        "index": 150,
+        "concept_i_idx": 15,
         "concept_j_idx": 16,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "dots_and_globules_irregular",
-        "gate_weight": -0.017969492822885513
+        "concept_i": "MONET_pigmented",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": -0.04209591820836067
     },
     {
-        "index": 87,
-        "concept_i_idx": 3,
+        "index": 70,
+        "concept_i_idx": 4,
         "concept_j_idx": 13,
-        "concept_i": "streaks_absent",
-        "concept_j": "regression_structures_combinations",
-        "gate_weight": 0.01778593473136425
+        "concept_i": "site_foot",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": 0.03715293109416962
     },
     {
-        "index": 178,
-        "concept_i_idx": 7,
-        "concept_j_idx": 18,
-        "concept_i": "pigmentation_diffuse irregular",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": -0.01770436204969883
-    },
-    {
-        "index": 343,
-        "concept_i_idx": 19,
-        "concept_j_idx": 21,
-        "concept_i": "blue_whitish_veil_present",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": 0.017130887135863304
-    },
-    {
-        "index": 200,
-        "concept_i_idx": 8,
-        "concept_j_idx": 21,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": -0.016815030947327614
-    },
-    {
-        "index": 212,
-        "concept_i_idx": 9,
-        "concept_j_idx": 15,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": -0.01659347675740719
-    },
-    {
-        "index": 328,
-        "concept_i_idx": 17,
-        "concept_j_idx": 23,
-        "concept_i": "dots_and_globules_regular",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": 0.016478989273309708
-    },
-    {
-        "index": 41,
-        "concept_i_idx": 1,
-        "concept_j_idx": 16,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "dots_and_globules_irregular",
-        "gate_weight": 0.016271917149424553
-    },
-    {
-        "index": 207,
-        "concept_i_idx": 9,
-        "concept_j_idx": 10,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "pigmentation_localized regular",
-        "gate_weight": 0.01601581647992134
-    },
-    {
-        "index": 254,
-        "concept_i_idx": 11,
-        "concept_j_idx": 24,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.016014065593481064
-    },
-    {
-        "index": 184,
-        "concept_i_idx": 7,
-        "concept_j_idx": 24,
-        "concept_i": "pigmentation_diffuse irregular",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.015933820977807045
+        "index": 39,
+        "concept_i_idx": 2,
+        "concept_j_idx": 9,
+        "concept_i": "sex_male",
+        "concept_j": "site_trunk",
+        "gate_weight": -0.03561445325613022
     },
     {
         "index": 118,
-        "concept_i_idx": 4,
-        "concept_j_idx": 21,
-        "concept_i": "streaks_irregular",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": -0.01588786020874977
+        "concept_i_idx": 9,
+        "concept_j_idx": 11,
+        "concept_i": "site_trunk",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.03559103608131409
+    },
+    {
+        "index": 47,
+        "concept_i_idx": 2,
+        "concept_j_idx": 17,
+        "concept_i": "sex_male",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.0333365723490715
+    },
+    {
+        "index": 33,
+        "concept_i_idx": 2,
+        "concept_j_idx": 3,
+        "concept_i": "sex_male",
+        "concept_j": "skin_tone_class",
+        "gate_weight": 0.03154405578970909
     },
     {
         "index": 15,
         "concept_i_idx": 0,
         "concept_j_idx": 16,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "dots_and_globules_irregular",
-        "gate_weight": 0.015711870044469833
-    },
-    {
-        "index": 276,
-        "concept_i_idx": 13,
-        "concept_j_idx": 17,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "dots_and_globules_regular",
-        "gate_weight": 0.015515855513513088
-    },
-    {
-        "index": 332,
-        "concept_i_idx": 17,
-        "concept_j_idx": 27,
-        "concept_i": "dots_and_globules_regular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.015433266758918762
-    },
-    {
-        "index": 322,
-        "concept_i_idx": 16,
-        "concept_j_idx": 27,
-        "concept_i": "dots_and_globules_irregular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.015424765646457672
-    },
-    {
-        "index": 96,
-        "concept_i_idx": 3,
-        "concept_j_idx": 22,
-        "concept_i": "streaks_absent",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.01523724477738142
-    },
-    {
-        "index": 219,
-        "concept_i_idx": 9,
-        "concept_j_idx": 22,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": 0.014604177325963974
-    },
-    {
-        "index": 144,
-        "concept_i_idx": 5,
-        "concept_j_idx": 25,
-        "concept_i": "streaks_regular",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.014536174014210701
-    },
-    {
-        "index": 12,
-        "concept_i_idx": 0,
-        "concept_j_idx": 13,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "regression_structures_combinations",
-        "gate_weight": 0.014252261258661747
-    },
-    {
-        "index": 37,
-        "concept_i_idx": 1,
-        "concept_j_idx": 12,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": 0.014239323325455189
-    },
-    {
-        "index": 232,
-        "concept_i_idx": 10,
-        "concept_j_idx": 18,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": 0.014113360084593296
-    },
-    {
-        "index": 2,
-        "concept_i_idx": 0,
-        "concept_j_idx": 3,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "streaks_absent",
-        "gate_weight": -0.014018483459949493
-    },
-    {
-        "index": 242,
-        "concept_i_idx": 11,
-        "concept_j_idx": 12,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": 0.014011647552251816
-    },
-    {
-        "index": 4,
-        "concept_i_idx": 0,
-        "concept_j_idx": 5,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "streaks_regular",
-        "gate_weight": 0.013736750930547714
+        "concept_i": "age_approx",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.030515100806951523
     },
     {
         "index": 131,
-        "concept_i_idx": 5,
+        "concept_i_idx": 10,
+        "concept_j_idx": 17,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": 0.02954975701868534
+    },
+    {
+        "index": 106,
+        "concept_i_idx": 7,
+        "concept_j_idx": 16,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.02866961993277073
+    },
+    {
+        "index": 87,
+        "concept_i_idx": 6,
+        "concept_j_idx": 7,
+        "concept_i": "site_hand",
+        "concept_j": "site_head_neck_face",
+        "gate_weight": -0.026519624516367912
+    },
+    {
+        "index": 35,
+        "concept_i_idx": 2,
+        "concept_j_idx": 5,
+        "concept_i": "sex_male",
+        "concept_j": "site_genital",
+        "gate_weight": -0.02640274353325367
+    },
+    {
+        "index": 91,
+        "concept_i_idx": 6,
+        "concept_j_idx": 11,
+        "concept_i": "site_hand",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": -0.02544243447482586
+    },
+    {
+        "index": 27,
+        "concept_i_idx": 1,
         "concept_j_idx": 12,
-        "concept_i": "streaks_regular",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": -0.013447443023324013
+        "concept_i": "sex_female",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.02505442686378956
+    },
+    {
+        "index": 51,
+        "concept_i_idx": 3,
+        "concept_j_idx": 7,
+        "concept_i": "skin_tone_class",
+        "concept_j": "site_head_neck_face",
+        "gate_weight": -0.02481389418244362
+    },
+    {
+        "index": 128,
+        "concept_i_idx": 10,
+        "concept_j_idx": 14,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.024350006133317947
+    },
+    {
+        "index": 29,
+        "concept_i_idx": 1,
+        "concept_j_idx": 14,
+        "concept_i": "sex_female",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.02329361066222191
     },
     {
         "index": 121,
+        "concept_i_idx": 9,
+        "concept_j_idx": 14,
+        "concept_i": "site_trunk",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.02285846695303917
+    },
+    {
+        "index": 142,
+        "concept_i_idx": 12,
+        "concept_j_idx": 17,
+        "concept_i": "MONET_hair",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.022354653105139732
+    },
+    {
+        "index": 18,
+        "concept_i_idx": 1,
+        "concept_j_idx": 3,
+        "concept_i": "sex_female",
+        "concept_j": "skin_tone_class",
+        "gate_weight": 0.021488336846232414
+    },
+    {
+        "index": 137,
+        "concept_i_idx": 11,
+        "concept_j_idx": 17,
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.019665591418743134
+    },
+    {
+        "index": 71,
         "concept_i_idx": 4,
-        "concept_j_idx": 24,
-        "concept_i": "streaks_irregular",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.013429075479507446
+        "concept_j_idx": 14,
+        "concept_i": "site_foot",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.019378669559955597
     },
     {
-        "index": 237,
+        "index": 16,
+        "concept_i_idx": 0,
+        "concept_j_idx": 17,
+        "concept_i": "age_approx",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.018803291022777557
+    },
+    {
+        "index": 75,
+        "concept_i_idx": 5,
+        "concept_j_idx": 6,
+        "concept_i": "site_genital",
+        "concept_j": "site_hand",
+        "gate_weight": 0.018790842965245247
+    },
+    {
+        "index": 34,
+        "concept_i_idx": 2,
+        "concept_j_idx": 4,
+        "concept_i": "sex_male",
+        "concept_j": "site_foot",
+        "gate_weight": -0.018580619245767593
+    },
+    {
+        "index": 90,
+        "concept_i_idx": 6,
+        "concept_j_idx": 10,
+        "concept_i": "site_hand",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": 0.01755378767848015
+    },
+    {
+        "index": 23,
+        "concept_i_idx": 1,
+        "concept_j_idx": 8,
+        "concept_i": "sex_female",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": -0.01722850278019905
+    },
+    {
+        "index": 134,
+        "concept_i_idx": 11,
+        "concept_j_idx": 14,
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.017001887783408165
+    },
+    {
+        "index": 103,
+        "concept_i_idx": 7,
+        "concept_j_idx": 13,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.016590168699622154
+    },
+    {
+        "index": 32,
+        "concept_i_idx": 1,
+        "concept_j_idx": 17,
+        "concept_i": "sex_female",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.015621934086084366
+    },
+    {
+        "index": 84,
+        "concept_i_idx": 5,
+        "concept_j_idx": 15,
+        "concept_i": "site_genital",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": 0.015340222977101803
+    },
+    {
+        "index": 148,
+        "concept_i_idx": 14,
+        "concept_j_idx": 16,
+        "concept_i": "MONET_erythema",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.015318715944886208
+    },
+    {
+        "index": 59,
+        "concept_i_idx": 3,
+        "concept_j_idx": 15,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.01485970988869667
+    },
+    {
+        "index": 80,
+        "concept_i_idx": 5,
+        "concept_j_idx": 11,
+        "concept_i": "site_genital",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.014636607840657234
+    },
+    {
+        "index": 119,
+        "concept_i_idx": 9,
+        "concept_j_idx": 12,
+        "concept_i": "site_trunk",
+        "concept_j": "MONET_hair",
+        "gate_weight": -0.014623403549194336
+    },
+    {
+        "index": 28,
+        "concept_i_idx": 1,
+        "concept_j_idx": 13,
+        "concept_i": "sex_female",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": 0.013889805413782597
+    },
+    {
+        "index": 120,
+        "concept_i_idx": 9,
+        "concept_j_idx": 13,
+        "concept_i": "site_trunk",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.013625840656459332
+    },
+    {
+        "index": 9,
+        "concept_i_idx": 0,
+        "concept_j_idx": 10,
+        "concept_i": "age_approx",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": 0.013118519447743893
+    },
+    {
+        "index": 40,
+        "concept_i_idx": 2,
+        "concept_j_idx": 10,
+        "concept_i": "sex_male",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": 0.012915370054543018
+    },
+    {
+        "index": 78,
+        "concept_i_idx": 5,
+        "concept_j_idx": 9,
+        "concept_i": "site_genital",
+        "concept_j": "site_trunk",
+        "gate_weight": 0.011902250349521637
+    },
+    {
+        "index": 58,
+        "concept_i_idx": 3,
+        "concept_j_idx": 14,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.011703984811902046
+    },
+    {
+        "index": 77,
+        "concept_i_idx": 5,
+        "concept_j_idx": 8,
+        "concept_i": "site_genital",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": -0.011635581962764263
+    },
+    {
+        "index": 104,
+        "concept_i_idx": 7,
+        "concept_j_idx": 14,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.011633790098130703
+    },
+    {
+        "index": 66,
+        "concept_i_idx": 4,
+        "concept_j_idx": 9,
+        "concept_i": "site_foot",
+        "concept_j": "site_trunk",
+        "gate_weight": 0.011448265053331852
+    },
+    {
+        "index": 125,
         "concept_i_idx": 10,
-        "concept_j_idx": 23,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.013288135640323162
+        "concept_j_idx": 11,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.011379885487258434
     },
     {
-        "index": 376,
-        "concept_i_idx": 25,
-        "concept_j_idx": 27,
-        "concept_i": "vascular_structures_linear irregular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.013169374316930771
+        "index": 41,
+        "concept_i_idx": 2,
+        "concept_j_idx": 11,
+        "concept_i": "sex_male",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": -0.011331395246088505
+    },
+    {
+        "index": 146,
+        "concept_i_idx": 13,
+        "concept_j_idx": 17,
+        "concept_i": "MONET_vasculature_vessels",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.011100491508841515
+    },
+    {
+        "index": 31,
+        "concept_i_idx": 1,
+        "concept_j_idx": 16,
+        "concept_i": "sex_female",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": -0.011016516014933586
+    },
+    {
+        "index": 127,
+        "concept_i_idx": 10,
+        "concept_j_idx": 13,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.010786646977066994
+    },
+    {
+        "index": 141,
+        "concept_i_idx": 12,
+        "concept_j_idx": 16,
+        "concept_i": "MONET_hair",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.010539030656218529
+    },
+    {
+        "index": 69,
+        "concept_i_idx": 4,
+        "concept_j_idx": 12,
+        "concept_i": "site_foot",
+        "concept_j": "MONET_hair",
+        "gate_weight": -0.01049494557082653
+    },
+    {
+        "index": 68,
+        "concept_i_idx": 4,
+        "concept_j_idx": 11,
+        "concept_i": "site_foot",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.010472288355231285
+    },
+    {
+        "index": 88,
+        "concept_i_idx": 6,
+        "concept_j_idx": 8,
+        "concept_i": "site_hand",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": -0.010452304035425186
+    },
+    {
+        "index": 60,
+        "concept_i_idx": 3,
+        "concept_j_idx": 16,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.01035868376493454
+    },
+    {
+        "index": 113,
+        "concept_i_idx": 8,
+        "concept_j_idx": 14,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.010349743068218231
+    },
+    {
+        "index": 83,
+        "concept_i_idx": 5,
+        "concept_j_idx": 14,
+        "concept_i": "site_genital",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.01010279729962349
+    },
+    {
+        "index": 110,
+        "concept_i_idx": 8,
+        "concept_j_idx": 11,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.01002831943333149
+    },
+    {
+        "index": 122,
+        "concept_i_idx": 9,
+        "concept_j_idx": 15,
+        "concept_i": "site_trunk",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": 0.009829485788941383
+    },
+    {
+        "index": 108,
+        "concept_i_idx": 8,
+        "concept_j_idx": 9,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "site_trunk",
+        "gate_weight": 0.009634146466851234
+    },
+    {
+        "index": 139,
+        "concept_i_idx": 12,
+        "concept_j_idx": 14,
+        "concept_i": "MONET_hair",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.00943747628480196
     },
     {
         "index": 112,
-        "concept_i_idx": 4,
-        "concept_j_idx": 15,
-        "concept_i": "streaks_irregular",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": -0.012249700725078583
-    },
-    {
-        "index": 280,
-        "concept_i_idx": 13,
-        "concept_j_idx": 21,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": 0.012127019464969635
-    },
-    {
-        "index": 206,
         "concept_i_idx": 8,
-        "concept_j_idx": 27,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.0116262286901474
+        "concept_j_idx": 13,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.008625260554254055
     },
     {
-        "index": 289,
+        "index": 94,
+        "concept_i_idx": 6,
+        "concept_j_idx": 14,
+        "concept_i": "site_hand",
+        "concept_j": "MONET_erythema",
+        "gate_weight": -0.008500559255480766
+    },
+    {
+        "index": 149,
         "concept_i_idx": 14,
         "concept_j_idx": 17,
-        "concept_i": "regression_structures_white areas",
-        "concept_j": "dots_and_globules_regular",
-        "gate_weight": 0.011318049393594265
+        "concept_i": "MONET_erythema",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.00838831439614296
     },
     {
-        "index": 338,
-        "concept_i_idx": 18,
-        "concept_j_idx": 24,
-        "concept_i": "blue_whitish_veil_absent",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": 0.011223925277590752
+        "index": 56,
+        "concept_i_idx": 3,
+        "concept_j_idx": 12,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_hair",
+        "gate_weight": -0.008209139108657837
     },
     {
-        "index": 274,
-        "concept_i_idx": 13,
+        "index": 38,
+        "concept_i_idx": 2,
+        "concept_j_idx": 8,
+        "concept_i": "sex_male",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": 0.008147754706442356
+    },
+    {
+        "index": 135,
+        "concept_i_idx": 11,
         "concept_j_idx": 15,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": 0.011017187498509884
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.008056922815740108
+    },
+    {
+        "index": 1,
+        "concept_i_idx": 0,
+        "concept_j_idx": 2,
+        "concept_i": "age_approx",
+        "concept_j": "sex_male",
+        "gate_weight": -0.007980618625879288
+    },
+    {
+        "index": 115,
+        "concept_i_idx": 8,
+        "concept_j_idx": 16,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.007840650156140327
     },
     {
         "index": 8,
         "concept_i_idx": 0,
         "concept_j_idx": 9,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "pigmentation_localized irregular",
-        "gate_weight": 0.01058296300470829
+        "concept_i": "age_approx",
+        "concept_j": "site_trunk",
+        "gate_weight": 0.007212101016193628
     },
     {
-        "index": 352,
-        "concept_i_idx": 20,
-        "concept_j_idx": 23,
-        "concept_i": "vascular_structures_absent",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.010563409887254238
+        "index": 55,
+        "concept_i_idx": 3,
+        "concept_j_idx": 11,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": 0.0071570128202438354
     },
     {
-        "index": 374,
-        "concept_i_idx": 24,
-        "concept_j_idx": 27,
-        "concept_i": "vascular_structures_hairpin",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.010277481749653816
+        "index": 7,
+        "concept_i_idx": 0,
+        "concept_j_idx": 8,
+        "concept_i": "age_approx",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": 0.007072743959724903
+    },
+    {
+        "index": 50,
+        "concept_i_idx": 3,
+        "concept_j_idx": 6,
+        "concept_i": "skin_tone_class",
+        "concept_j": "site_hand",
+        "gate_weight": -0.007010741624981165
+    },
+    {
+        "index": 114,
+        "concept_i_idx": 8,
+        "concept_j_idx": 15,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": 0.006920917890965939
     },
     {
         "index": 53,
-        "concept_i_idx": 2,
+        "concept_i_idx": 3,
+        "concept_j_idx": 9,
+        "concept_i": "skin_tone_class",
+        "concept_j": "site_trunk",
+        "gate_weight": -0.006629849784076214
+    },
+    {
+        "index": 57,
+        "concept_i_idx": 3,
+        "concept_j_idx": 13,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": 0.006613361183553934
+    },
+    {
+        "index": 2,
+        "concept_i_idx": 0,
         "concept_j_idx": 3,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "streaks_absent",
-        "gate_weight": -0.01027249451726675
-    },
-    {
-        "index": 122,
-        "concept_i_idx": 4,
-        "concept_j_idx": 25,
-        "concept_i": "streaks_irregular",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.009911098517477512
-    },
-    {
-        "index": 360,
-        "concept_i_idx": 21,
-        "concept_j_idx": 25,
-        "concept_i": "vascular_structures_arborizing",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.009889967739582062
+        "concept_i": "age_approx",
+        "concept_j": "skin_tone_class",
+        "gate_weight": 0.00652148574590683
     },
     {
         "index": 19,
+        "concept_i_idx": 1,
+        "concept_j_idx": 4,
+        "concept_i": "sex_female",
+        "concept_j": "site_foot",
+        "gate_weight": -0.006388097070157528
+    },
+    {
+        "index": 152,
+        "concept_i_idx": 16,
+        "concept_j_idx": 17,
+        "concept_i": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.006295507773756981
+    },
+    {
+        "index": 17,
+        "concept_i_idx": 1,
+        "concept_j_idx": 2,
+        "concept_i": "sex_female",
+        "concept_j": "sex_male",
+        "gate_weight": 0.0062562040984630585
+    },
+    {
+        "index": 144,
+        "concept_i_idx": 13,
+        "concept_j_idx": 15,
+        "concept_i": "MONET_vasculature_vessels",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.006157351657748222
+    },
+    {
+        "index": 61,
+        "concept_i_idx": 3,
+        "concept_j_idx": 17,
+        "concept_i": "skin_tone_class",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": 0.006146079394966364
+    },
+    {
+        "index": 64,
+        "concept_i_idx": 4,
+        "concept_j_idx": 7,
+        "concept_i": "site_foot",
+        "concept_j": "site_head_neck_face",
+        "gate_weight": -0.005617326591163874
+    },
+    {
+        "index": 136,
+        "concept_i_idx": 11,
+        "concept_j_idx": 16,
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.005321040749549866
+    },
+    {
+        "index": 43,
+        "concept_i_idx": 2,
+        "concept_j_idx": 13,
+        "concept_i": "sex_male",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.004838820081204176
+    },
+    {
+        "index": 13,
         "concept_i_idx": 0,
-        "concept_j_idx": 20,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": -0.00987063068896532
+        "concept_j_idx": 14,
+        "concept_i": "age_approx",
+        "concept_j": "MONET_erythema",
+        "gate_weight": 0.0046693976037204266
     },
     {
-        "index": 5,
-        "concept_i_idx": 0,
-        "concept_j_idx": 6,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "pigmentation_absent",
-        "gate_weight": -0.009764899499714375
-    },
-    {
-        "index": 311,
+        "index": 151,
         "concept_i_idx": 15,
-        "concept_j_idx": 27,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.009580357931554317
+        "concept_j_idx": 17,
+        "concept_i": "MONET_pigmented",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.004512650892138481
     },
     {
-        "index": 308,
-        "concept_i_idx": 15,
-        "concept_j_idx": 24,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": 0.00953111331909895
+        "index": 130,
+        "concept_i_idx": 10,
+        "concept_j_idx": 16,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": -0.004488464444875717
     },
     {
-        "index": 324,
-        "concept_i_idx": 17,
-        "concept_j_idx": 19,
-        "concept_i": "dots_and_globules_regular",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": 0.009468882344663143
+        "index": 45,
+        "concept_i_idx": 2,
+        "concept_j_idx": 15,
+        "concept_i": "sex_male",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.00446342583745718
+    },
+    {
+        "index": 109,
+        "concept_i_idx": 8,
+        "concept_j_idx": 10,
+        "concept_i": "site_lower_extremity",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": 0.0042292289435863495
+    },
+    {
+        "index": 49,
+        "concept_i_idx": 3,
+        "concept_j_idx": 5,
+        "concept_i": "skin_tone_class",
+        "concept_j": "site_genital",
+        "gate_weight": -0.004161170683801174
+    },
+    {
+        "index": 81,
+        "concept_i_idx": 5,
+        "concept_j_idx": 12,
+        "concept_i": "site_genital",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.004098336212337017
     },
     {
         "index": 21,
-        "concept_i_idx": 0,
-        "concept_j_idx": 22,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.009341737255454063
+        "concept_i_idx": 1,
+        "concept_j_idx": 6,
+        "concept_i": "sex_female",
+        "concept_j": "site_hand",
+        "gate_weight": 0.004075272940099239
     },
     {
-        "index": 244,
-        "concept_i_idx": 11,
-        "concept_j_idx": 14,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "regression_structures_white areas",
-        "gate_weight": 0.008789099752902985
+        "index": 98,
+        "concept_i_idx": 7,
+        "concept_j_idx": 8,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "site_lower_extremity",
+        "gate_weight": -0.0037475330755114555
     },
     {
-        "index": 327,
-        "concept_i_idx": 17,
-        "concept_j_idx": 22,
-        "concept_i": "dots_and_globules_regular",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": 0.00831430871039629
-    },
-    {
-        "index": 337,
-        "concept_i_idx": 18,
-        "concept_j_idx": 23,
-        "concept_i": "blue_whitish_veil_absent",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.008304068818688393
-    },
-    {
-        "index": 359,
-        "concept_i_idx": 21,
-        "concept_j_idx": 24,
-        "concept_i": "vascular_structures_arborizing",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.008145321160554886
-    },
-    {
-        "index": 194,
-        "concept_i_idx": 8,
-        "concept_j_idx": 15,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": 0.00798182561993599
-    },
-    {
-        "index": 110,
-        "concept_i_idx": 4,
-        "concept_j_idx": 13,
-        "concept_i": "streaks_irregular",
-        "concept_j": "regression_structures_combinations",
-        "gate_weight": -0.00788978673517704
-    },
-    {
-        "index": 154,
+        "index": 97,
         "concept_i_idx": 6,
-        "concept_j_idx": 14,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "regression_structures_white areas",
-        "gate_weight": -0.007641506381332874
+        "concept_j_idx": 17,
+        "concept_i": "site_hand",
+        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
+        "gate_weight": -0.003745818277820945
     },
     {
-        "index": 65,
-        "concept_i_idx": 2,
+        "index": 101,
+        "concept_i_idx": 7,
+        "concept_j_idx": 11,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": -0.003405933268368244
+    },
+    {
+        "index": 129,
+        "concept_i_idx": 10,
         "concept_j_idx": 15,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": 0.007597657851874828
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.0030329085420817137
     },
     {
-        "index": 116,
-        "concept_i_idx": 4,
-        "concept_j_idx": 19,
-        "concept_i": "streaks_irregular",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": -0.007569457404315472
-    },
-    {
-        "index": 24,
+        "index": 12,
         "concept_i_idx": 0,
-        "concept_j_idx": 25,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.007400650531053543
+        "concept_j_idx": 13,
+        "concept_i": "age_approx",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": -0.0029146766755729914
+    },
+    {
+        "index": 20,
+        "concept_i_idx": 1,
+        "concept_j_idx": 5,
+        "concept_i": "sex_female",
+        "concept_j": "site_genital",
+        "gate_weight": -0.002826722338795662
+    },
+    {
+        "index": 133,
+        "concept_i_idx": 11,
+        "concept_j_idx": 13,
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": 0.0027854559011757374
+    },
+    {
+        "index": 0,
+        "concept_i_idx": 0,
+        "concept_j_idx": 1,
+        "concept_i": "age_approx",
+        "concept_j": "sex_female",
+        "gate_weight": 0.0027751969173550606
+    },
+    {
+        "index": 140,
+        "concept_i_idx": 12,
+        "concept_j_idx": 15,
+        "concept_i": "MONET_hair",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.002746686339378357
+    },
+    {
+        "index": 102,
+        "concept_i_idx": 7,
+        "concept_j_idx": 12,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.002649642527103424
+    },
+    {
+        "index": 62,
+        "concept_i_idx": 4,
+        "concept_j_idx": 5,
+        "concept_i": "site_foot",
+        "concept_j": "site_genital",
+        "gate_weight": -0.0024604671634733677
+    },
+    {
+        "index": 132,
+        "concept_i_idx": 11,
+        "concept_j_idx": 12,
+        "concept_i": "MONET_ulceration_crust",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.002400374738499522
     },
     {
         "index": 6,
         "concept_i_idx": 0,
         "concept_j_idx": 7,
-        "concept_i": "pigment_network_absent",
-        "concept_j": "pigmentation_diffuse irregular",
-        "gate_weight": -0.007365223485976458
+        "concept_i": "age_approx",
+        "concept_j": "site_head_neck_face",
+        "gate_weight": -0.002343318425118923
     },
     {
-        "index": 218,
-        "concept_i_idx": 9,
-        "concept_j_idx": 21,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": -0.007301694247871637
-    },
-    {
-        "index": 47,
-        "concept_i_idx": 1,
-        "concept_j_idx": 22,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.007156858220696449
-    },
-    {
-        "index": 78,
-        "concept_i_idx": 3,
-        "concept_j_idx": 4,
-        "concept_i": "streaks_absent",
-        "concept_j": "streaks_irregular",
-        "gate_weight": -0.007154701743274927
-    },
-    {
-        "index": 181,
+        "index": 105,
         "concept_i_idx": 7,
-        "concept_j_idx": 21,
-        "concept_i": "pigmentation_diffuse irregular",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": 0.007085020188242197
+        "concept_j_idx": 15,
+        "concept_i": "site_head_neck_face",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": 0.002276831306517124
     },
     {
-        "index": 203,
-        "concept_i_idx": 8,
-        "concept_j_idx": 24,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.0070519656874239445
+        "index": 4,
+        "concept_i_idx": 0,
+        "concept_j_idx": 5,
+        "concept_i": "age_approx",
+        "concept_j": "site_genital",
+        "gate_weight": -0.0021565856877714396
     },
     {
-        "index": 281,
-        "concept_i_idx": 13,
-        "concept_j_idx": 22,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.0069922469556331635
-    },
-    {
-        "index": 75,
-        "concept_i_idx": 2,
-        "concept_j_idx": 25,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": -0.006722060032188892
-    },
-    {
-        "index": 32,
-        "concept_i_idx": 1,
-        "concept_j_idx": 7,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "pigmentation_diffuse irregular",
-        "gate_weight": -0.006653450429439545
-    },
-    {
-        "index": 303,
-        "concept_i_idx": 15,
-        "concept_j_idx": 19,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": 0.006496062036603689
-    },
-    {
-        "index": 215,
-        "concept_i_idx": 9,
-        "concept_j_idx": 18,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": -0.006256880238652229
-    },
-    {
-        "index": 345,
-        "concept_i_idx": 19,
-        "concept_j_idx": 23,
-        "concept_i": "blue_whitish_veil_present",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": 0.006190877873450518
-    },
-    {
-        "index": 255,
-        "concept_i_idx": 11,
-        "concept_j_idx": 25,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.006048751994967461
-    },
-    {
-        "index": 54,
-        "concept_i_idx": 2,
-        "concept_j_idx": 4,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "streaks_irregular",
-        "gate_weight": 0.005905492696911097
-    },
-    {
-        "index": 257,
-        "concept_i_idx": 11,
-        "concept_j_idx": 27,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.005779395345598459
-    },
-    {
-        "index": 166,
-        "concept_i_idx": 6,
-        "concept_j_idx": 26,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "vascular_structures_within regression",
-        "gate_weight": -0.0057443114928901196
-    },
-    {
-        "index": 69,
-        "concept_i_idx": 2,
-        "concept_j_idx": 19,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": 0.005530625581741333
-    },
-    {
-        "index": 341,
-        "concept_i_idx": 18,
-        "concept_j_idx": 27,
-        "concept_i": "blue_whitish_veil_absent",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.0054549286141991615
-    },
-    {
-        "index": 81,
-        "concept_i_idx": 3,
-        "concept_j_idx": 7,
-        "concept_i": "streaks_absent",
-        "concept_j": "pigmentation_diffuse irregular",
-        "gate_weight": -0.005412766709923744
-    },
-    {
-        "index": 162,
-        "concept_i_idx": 6,
-        "concept_j_idx": 22,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.005257584620267153
-    },
-    {
-        "index": 101,
-        "concept_i_idx": 3,
-        "concept_j_idx": 27,
-        "concept_i": "streaks_absent",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.005197043530642986
-    },
-    {
-        "index": 31,
-        "concept_i_idx": 1,
-        "concept_j_idx": 6,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "pigmentation_absent",
-        "gate_weight": -0.005134637467563152
-    },
-    {
-        "index": 77,
-        "concept_i_idx": 2,
-        "concept_j_idx": 27,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.005044182762503624
-    },
-    {
-        "index": 198,
-        "concept_i_idx": 8,
-        "concept_j_idx": 19,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": -0.004803753923624754
-    },
-    {
-        "index": 145,
-        "concept_i_idx": 5,
-        "concept_j_idx": 26,
-        "concept_i": "streaks_regular",
-        "concept_j": "vascular_structures_within regression",
-        "gate_weight": -0.004768695216625929
-    },
-    {
-        "index": 46,
-        "concept_i_idx": 1,
-        "concept_j_idx": 21,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "vascular_structures_arborizing",
-        "gate_weight": 0.004694129340350628
-    },
-    {
-        "index": 317,
-        "concept_i_idx": 16,
-        "concept_j_idx": 22,
-        "concept_i": "dots_and_globules_irregular",
-        "concept_j": "vascular_structures_comma",
-        "gate_weight": -0.004094759467989206
-    },
-    {
-        "index": 123,
+        "index": 72,
         "concept_i_idx": 4,
-        "concept_j_idx": 26,
-        "concept_i": "streaks_irregular",
-        "concept_j": "vascular_structures_within regression",
-        "gate_weight": 0.004075143486261368
+        "concept_j_idx": 15,
+        "concept_i": "site_foot",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": 0.002082140650600195
     },
     {
-        "index": 286,
-        "concept_i_idx": 13,
-        "concept_j_idx": 27,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": -0.003994945902377367
+        "index": 10,
+        "concept_i_idx": 0,
+        "concept_j_idx": 11,
+        "concept_i": "age_approx",
+        "concept_j": "MONET_ulceration_crust",
+        "gate_weight": -0.001980865839868784
     },
     {
-        "index": 142,
-        "concept_i_idx": 5,
-        "concept_j_idx": 23,
-        "concept_i": "streaks_regular",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.0036671694833785295
+        "index": 67,
+        "concept_i_idx": 4,
+        "concept_j_idx": 10,
+        "concept_i": "site_foot",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": -0.0018125484930351377
     },
     {
-        "index": 33,
-        "concept_i_idx": 1,
-        "concept_j_idx": 8,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "pigmentation_diffuse regular",
-        "gate_weight": 0.0029005734249949455
+        "index": 48,
+        "concept_i_idx": 3,
+        "concept_j_idx": 4,
+        "concept_i": "skin_tone_class",
+        "concept_j": "site_foot",
+        "gate_weight": -0.0017388802953064442
     },
     {
         "index": 126,
+        "concept_i_idx": 10,
+        "concept_j_idx": 12,
+        "concept_i": "site_upper_extremity",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.0017050585011020303
+    },
+    {
+        "index": 5,
+        "concept_i_idx": 0,
+        "concept_j_idx": 6,
+        "concept_i": "age_approx",
+        "concept_j": "site_hand",
+        "gate_weight": -0.0016516584437340498
+    },
+    {
+        "index": 145,
+        "concept_i_idx": 13,
+        "concept_j_idx": 16,
+        "concept_i": "MONET_vasculature_vessels",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": 0.0015906795160844922
+    },
+    {
+        "index": 79,
         "concept_i_idx": 5,
-        "concept_j_idx": 7,
-        "concept_i": "streaks_regular",
-        "concept_j": "pigmentation_diffuse irregular",
-        "gate_weight": 0.002789574209600687
+        "concept_j_idx": 10,
+        "concept_i": "site_genital",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": -0.0015245014801621437
+    },
+    {
+        "index": 14,
+        "concept_i_idx": 0,
+        "concept_j_idx": 15,
+        "concept_i": "age_approx",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.0014697341248393059
+    },
+    {
+        "index": 96,
+        "concept_i_idx": 6,
+        "concept_j_idx": 16,
+        "concept_i": "site_hand",
+        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
+        "gate_weight": -0.001403074711561203
+    },
+    {
+        "index": 25,
+        "concept_i_idx": 1,
+        "concept_j_idx": 10,
+        "concept_i": "sex_female",
+        "concept_j": "site_upper_extremity",
+        "gate_weight": 0.0014015052001923323
     },
     {
         "index": 92,
-        "concept_i_idx": 3,
-        "concept_j_idx": 18,
-        "concept_i": "streaks_absent",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": -0.0023650287184864283
-    },
-    {
-        "index": 295,
-        "concept_i_idx": 14,
-        "concept_j_idx": 23,
-        "concept_i": "regression_structures_white areas",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.0021118696313351393
-    },
-    {
-        "index": 170,
-        "concept_i_idx": 7,
-        "concept_j_idx": 10,
-        "concept_i": "pigmentation_diffuse irregular",
-        "concept_j": "pigmentation_localized regular",
-        "gate_weight": -0.0020691994577646255
-    },
-    {
-        "index": 191,
-        "concept_i_idx": 8,
-        "concept_j_idx": 12,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": 0.0020032196771353483
-    },
-    {
-        "index": 301,
-        "concept_i_idx": 15,
-        "concept_j_idx": 17,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "dots_and_globules_regular",
-        "gate_weight": -0.0018458833219483495
-    },
-    {
-        "index": 362,
-        "concept_i_idx": 21,
-        "concept_j_idx": 27,
-        "concept_i": "vascular_structures_arborizing",
-        "concept_j": "vascular_structures_wreath",
-        "gate_weight": 0.001717394799925387
-    },
-    {
-        "index": 238,
-        "concept_i_idx": 10,
-        "concept_j_idx": 24,
-        "concept_i": "pigmentation_localized regular",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": 0.0016502009239047766
-    },
-    {
-        "index": 366,
-        "concept_i_idx": 22,
-        "concept_j_idx": 26,
-        "concept_i": "vascular_structures_comma",
-        "concept_j": "vascular_structures_within regression",
-        "gate_weight": -0.0016042494680732489
-    },
-    {
-        "index": 309,
-        "concept_i_idx": 15,
-        "concept_j_idx": 25,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "vascular_structures_linear irregular",
-        "gate_weight": 0.0014457537326961756
-    },
-    {
-        "index": 277,
-        "concept_i_idx": 13,
-        "concept_j_idx": 18,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": 0.0013377961004152894
-    },
-    {
-        "index": 363,
-        "concept_i_idx": 22,
-        "concept_j_idx": 23,
-        "concept_i": "vascular_structures_comma",
-        "concept_j": "vascular_structures_dotted",
-        "gate_weight": -0.0013289762428030372
-    },
-    {
-        "index": 209,
-        "concept_i_idx": 9,
-        "concept_j_idx": 12,
-        "concept_i": "pigmentation_localized irregular",
-        "concept_j": "regression_structures_blue areas",
-        "gate_weight": -0.0013265707530081272
-    },
-    {
-        "index": 60,
-        "concept_i_idx": 2,
-        "concept_j_idx": 10,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "pigmentation_localized regular",
-        "gate_weight": 0.0012891525402665138
-    },
-    {
-        "index": 159,
         "concept_i_idx": 6,
-        "concept_j_idx": 19,
-        "concept_i": "pigmentation_absent",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": 0.001288858475163579
+        "concept_j_idx": 12,
+        "concept_i": "site_hand",
+        "concept_j": "MONET_hair",
+        "gate_weight": 0.0012335095088928938
     },
     {
-        "index": 283,
-        "concept_i_idx": 13,
-        "concept_j_idx": 24,
-        "concept_i": "regression_structures_combinations",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": 0.0012872660299763083
-    },
-    {
-        "index": 287,
+        "index": 147,
         "concept_i_idx": 14,
         "concept_j_idx": 15,
-        "concept_i": "regression_structures_white areas",
-        "concept_j": "dots_and_globules_absent",
-        "gate_weight": 0.0012561364565044641
+        "concept_i": "MONET_erythema",
+        "concept_j": "MONET_pigmented",
+        "gate_weight": -0.001145747839473188
     },
     {
-        "index": 249,
-        "concept_i_idx": 11,
-        "concept_j_idx": 19,
-        "concept_i": "regression_structures_absent",
-        "concept_j": "blue_whitish_veil_present",
-        "gate_weight": -0.001113877515308559
+        "index": 3,
+        "concept_i_idx": 0,
+        "concept_j_idx": 4,
+        "concept_i": "age_approx",
+        "concept_j": "site_foot",
+        "gate_weight": -0.0011188449570909142
     },
     {
-        "index": 197,
-        "concept_i_idx": 8,
-        "concept_j_idx": 18,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "blue_whitish_veil_absent",
-        "gate_weight": 0.0010941540822386742
-    },
-    {
-        "index": 85,
-        "concept_i_idx": 3,
-        "concept_j_idx": 11,
-        "concept_i": "streaks_absent",
-        "concept_j": "regression_structures_absent",
-        "gate_weight": 0.0010918037733063102
-    },
-    {
-        "index": 304,
-        "concept_i_idx": 15,
-        "concept_j_idx": 20,
-        "concept_i": "dots_and_globules_absent",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": 0.0010658963583409786
-    },
-    {
-        "index": 364,
-        "concept_i_idx": 22,
-        "concept_j_idx": 24,
-        "concept_i": "vascular_structures_comma",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.00106395548209548
-    },
-    {
-        "index": 342,
-        "concept_i_idx": 19,
-        "concept_j_idx": 20,
-        "concept_i": "blue_whitish_veil_present",
-        "concept_j": "vascular_structures_absent",
-        "gate_weight": 0.0010546169942244887
-    },
-    {
-        "index": 27,
-        "concept_i_idx": 1,
-        "concept_j_idx": 2,
-        "concept_i": "pigment_network_atypical",
-        "concept_j": "pigment_network_typical",
-        "gate_weight": 0.0010479777120053768
-    },
-    {
-        "index": 74,
-        "concept_i_idx": 2,
-        "concept_j_idx": 24,
-        "concept_i": "pigment_network_typical",
-        "concept_j": "vascular_structures_hairpin",
-        "gate_weight": -0.0010447013191878796
-    },
-    {
-        "index": 195,
-        "concept_i_idx": 8,
-        "concept_j_idx": 16,
-        "concept_i": "pigmentation_diffuse regular",
-        "concept_j": "dots_and_globules_irregular",
-        "gate_weight": 0.001044172327965498
+        "index": 138,
+        "concept_i_idx": 12,
+        "concept_j_idx": 13,
+        "concept_i": "MONET_hair",
+        "concept_j": "MONET_vasculature_vessels",
+        "gate_weight": 0.0011062129633501172
     }
 ]

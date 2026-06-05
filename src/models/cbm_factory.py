@@ -318,6 +318,34 @@ class ViTBackboneWrapper(nn.Module):
         return patch_features
 
 
+class ConvNeXtBackboneWrapper(nn.Module):
+    def __init__(self, convnext_model):
+        """Wrapper for ConvNeXt to extract 2D features and rearrange them as a token sequence [B, H*W, C].
+        This makes ConvNeXt compatible with ViT attention heads.
+        """
+        super().__init__()
+        self.convnext = convnext_model
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Extract features without global pooling
+        feats = self.convnext(x)
+            
+        if isinstance(feats, tuple):
+            feats = feats[0]
+            
+        assert isinstance(feats, torch.Tensor), f"Expected backbone features to be a torch.Tensor, but got {type(feats)}"
+        assert len(feats.shape) == 4, (
+            f"Expected 4D feature map tensor [B, C, H, W] from ConvNeXt backbone, but got shape {feats.shape}. "
+            "Ensure global pooling is disabled in timm and your model returns spatial features."
+        )
+        
+        # Rearrange shape: [B, C, H, W] -> [B, H*W, C]
+        # Equivalent to einops.rearrange(feats, 'b c h w -> b (h w) c')
+        B, C, H, W = feats.shape
+        feats = feats.flatten(2).transpose(1, 2)
+        return feats
+
+
 
 class ViTCrossAttentionLayer(nn.Module):
     def __init__(self, embed_dim: int, num_concepts: int, num_heads: int = 4,
@@ -641,7 +669,7 @@ class UniversalFlexibleCBM(nn.Module):
                 )
 
         # 1. Initialize Backbone based on architecture
-        if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
+        if self.backbone_name.startswith('resnet'):
             # Load CNN backbone
             self.backbone = timm.create_model(
                 backbone_name, 
@@ -680,7 +708,7 @@ class UniversalFlexibleCBM(nn.Module):
             # Dynamic Feature Dimension Inference
             feature_dim, _, _ = self._infer_feature_dim()
             
-            # Layer Construction for ResNet/ConvNeXt
+            # Layer Construction for ResNet
             print(f"{BOLD}{BLUE}[Concept Head]{RESET} ConceptAttentionLayer ({feature_dim} -> {num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
             self.supervised_attention = ConceptAttentionLayer(
                 feature_dim=feature_dim, 
@@ -695,28 +723,40 @@ class UniversalFlexibleCBM(nn.Module):
                     probabilistic=use_probabilistic_cbm
                 )
                 
-        elif self.backbone_name.startswith('vit') or 'dinov2' in self.backbone_name:
-            # Check timm registry to provide clear diagnostic error if naming convention is unsupported
-            if not timm.is_model(backbone_name):
-                available_dinov2 = [m for m in timm.list_models('*dinov2*')]
-                raise ValueError(
-                    f"Model '{backbone_name}' not found in timm registry. "
-                    f"Available DINOv2 models in local timm registry: {available_dinov2}"
+        elif self.backbone_name.startswith('vit') or 'dinov2' in self.backbone_name or 'convnext' in self.backbone_name:
+            if 'convnext' in self.backbone_name:
+                raw_backbone = timm.create_model(
+                    backbone_name,
+                    pretrained=pretrained,
+                    num_classes=0,
+                    global_pool=''
                 )
+                self.backbone = raw_backbone
+                embed_dim, _, _ = self._infer_feature_dim()
+                self.backbone = ConvNeXtBackboneWrapper(raw_backbone)
+                print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Tokenized ConvNeXt for {backbone_name} (embed_dim: {embed_dim})")
+            else:
+                # Check timm registry to provide clear diagnostic error if naming convention is unsupported
+                if not timm.is_model(backbone_name):
+                    available_dinov2 = [m for m in timm.list_models('*dinov2*')]
+                    raise ValueError(
+                        f"Model '{backbone_name}' not found in timm registry. "
+                        f"Available DINOv2 models in local timm registry: {available_dinov2}"
+                    )
                 
-            # Load ViT / DINOv2 backbone with positional embedding interpolation enabled (dynamic_img_size=True)
-            # This cleanly supports 224x224 input without hardcoded image sizing or silencing TypeErrors.
-            vit_model = timm.create_model(backbone_name, pretrained=pretrained, dynamic_img_size=True)
-            self.backbone = ViTBackboneWrapper(vit_model)
-            
-            # Apply LoRA 어댑터 주입 if requested
-            self.lora_active = use_lora
-            if use_lora:
-                inject_lora_to_vit(self.backbone, r=lora_r, lora_alpha=lora_alpha)
-            
-            # Extract embed_dim from the Vit model
-            embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
-            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
+                # Load ViT / DINOv2 backbone with positional embedding interpolation enabled (dynamic_img_size=True)
+                # This cleanly supports 224x224 input without hardcoded image sizing or silencing TypeErrors.
+                vit_model = timm.create_model(backbone_name, pretrained=pretrained, dynamic_img_size=True)
+                self.backbone = ViTBackboneWrapper(vit_model)
+                
+                # Apply LoRA 어댑터 주입 if requested
+                self.lora_active = use_lora
+                if use_lora:
+                    inject_lora_to_vit(self.backbone, r=lora_r, lora_alpha=lora_alpha)
+                
+                # Extract embed_dim from the Vit model
+                embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
+                print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured Cross-Attention CBM for {backbone_name} (embed_dim: {embed_dim}, use_lora: {use_lora})")
 
             if use_group_broadcasting:
                 print(f"{BOLD}{BLUE}[Concept Head]{RESET} GroupToConceptAttention ({embed_dim} -> groups={num_groups} -> concepts={num_supervised_concepts}) | Mode: {'Probabilistic (VAE-style)' if use_probabilistic_cbm else 'Deterministic'}")
@@ -872,7 +912,7 @@ class UniversalFlexibleCBM(nn.Module):
             if isinstance(features_flat, tuple):
                 features_flat = features_flat[0]
             
-            if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
+            if self.backbone_name.startswith('resnet'):
                 _, C_feat, H_feat, W_feat = features_flat.shape
                 features = features_flat.view(B, M, C_feat, H_feat, W_feat)
                 features = torch.cat([features[:, 0], features[:, 1]], dim=2) # [B, C_feat, 2 * H_feat, W_feat]
@@ -881,11 +921,11 @@ class UniversalFlexibleCBM(nn.Module):
                 features = features_flat.view(B, M, N_patches, D)
                 features = torch.cat([features[:, 0], features[:, 1]], dim=1) # [B, 2 * N_patches, D]
         else:
-            features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet/ConvNeXt) or [B, 196, embed_dim] (ViT)
+            features = self.backbone(x)  # [B, C, H_attn, W_attn] (ResNet) or [B, N_patches, embed_dim] (ViT/ConvNeXt Wrapper)
             if isinstance(features, tuple):
                 features = features[0]
             
-        if self.backbone_name.startswith('resnet') or 'convnext' in self.backbone_name:
+        if self.backbone_name.startswith('resnet'):
             # ResNet still uses spatial attention conv
             if self.use_probabilistic_cbm:
                 supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)

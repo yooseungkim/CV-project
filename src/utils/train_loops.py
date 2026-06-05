@@ -987,7 +987,7 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             if isinstance(features, tuple):
                 features = features[0]
                 
-            if model.backbone_name.startswith('resnet') or 'convnext' in model.backbone_name:
+            if model.backbone_name.startswith('resnet'):
                 if getattr(model, "use_probabilistic_cbm", False):
                     supervised_mean, supervised_logvar, supervised_attn, supervised_features = model.supervised_attention(features)
                     model.last_mean = supervised_mean

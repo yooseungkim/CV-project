@@ -37,7 +37,7 @@ training:
   l1_warmup_epochs: 5  # Number of warm-up epochs for L1 sparsity to prevent early gating collapse
   use_gated_nam: true  # Gated Sparse NAM head activation
   use_pairwise_nam: false  # NAM^2 (Pairwise Interaction) activation
-  use_probabilistic_cbm: true  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
+  use_probabilistic_cbm: false  # Deterministic to Probabilistic Concept bottleneck VAE-style transition
   pcbm_beta: 0.001              # Target weight coefficient beta for KL penalty
   pcbm_beta_warmup_epochs: 5   # Number of epochs for KL beta warm-up (beta = 0.0)
   pcbm_beta_anneal_epochs: 5   # Number of epochs for KL beta linear annealing/ramp-up
@@ -50,16 +50,16 @@ training:
   
   # 🧪 Label Smoothing for Phase 1 Concept training
   # Restricts logit magnitudes to prevent overconfidence and align with TTI.
-  phase1_label_smoothing: 0.05
+  phase1_label_smoothing: 0.02
   
   # 🛠️ Scheduled Sampling (Noise Injection) for Phase 2 Classifier training
   # Prevents co-adaptation and shortcut learning to prediction noise.
-  phase2_scheduled_sampling: false
+  phase2_scheduled_sampling: true
   scheduled_sampling_prob: 0.3
   scheduled_sampling_epsilon: 0.05
-  latent_concepts: 15  # Number of unsupervised latent concepts to append to the bottleneck
-  latent_penalty_scale: 4.0
-  num_classes: 5  # 5 consolidated major diagnoses in derm7pt
+  latent_concepts: 0  # Number of unsupervised latent concepts to append to the bottleneck
+  latent_penalty_scale: 5.0
+  num_classes: 3  # 3 consolidated major diagnoses in derm7pt (MEL, BCC, etc)
   use_dynamic_threshold: false  # Dynamic validation thresholding optimization
   save_dir: "checkpoints"
   resume_checkpoint: null
@@ -74,11 +74,11 @@ training:
 # 4. Optimizer Configurations
 optimizer:
   type: "adamw"
-  backbone_lr: 0.0002  # Differential LR
+  backbone_lr: 0.0003  # Differential LR
   phase1_lr: 0.001
   phase2_lr: 0.001  # Larger LR for latent representation learning in Phase 2
   phase3_lr: 0.00001  # Small joint learning rate for end-to-end Phase 3 tuning
-  weight_decay: 0.05
+  weight_decay: 0.01
   concept_loss_type: "asl"  # Choices: ["focal", "bce"]
   # focal_alpha: "dynamic"  # Dynamically computed for each concept based on negative/positive ratio
   # focal_alpha: 0.95 
@@ -91,7 +91,7 @@ optimizer:
 # 5. Learning Rate Scheduler Options
 scheduler:
   type: "cosine_with_warmup"
-  warmup_epochs: 3
+  warmup_epochs: 2
   eta_min: 0.000001
 
 # 6. Early Stopping Criteria

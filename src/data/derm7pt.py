@@ -66,28 +66,28 @@ class Derm7PtDataset(BaseDataset):
         else:
             full_df = pd.read_csv(resolved_csv)
             
-            # Apply diagnosis mapping to consolidate 20 classes into 5 classes
+            # Apply diagnosis mapping to consolidate 20 classes into 3 classes (MEL, BCC, etc)
             self.diagnosis_mapping = {
-                'clark nevus': 'Nevus',
-                'reed or spitz nevus': 'Nevus',
-                'dermal nevus': 'Nevus',
-                'blue nevus': 'Nevus',
-                'congenital nevus': 'Nevus',
-                'combined nevus': 'Nevus',
-                'recurrent nevus': 'Nevus',
-                'melanoma (less than 0.76 mm)': 'Melanoma',
-                'melanoma (in situ)': 'Melanoma',
-                'melanoma (0.76 to 1.5 mm)': 'Melanoma',
-                'melanoma (more than 1.5 mm)': 'Melanoma',
-                'melanoma metastasis': 'Melanoma',
-                'melanoma': 'Melanoma',
+                'clark nevus': 'etc',
+                'reed or spitz nevus': 'etc',
+                'dermal nevus': 'etc',
+                'blue nevus': 'etc',
+                'congenital nevus': 'etc',
+                'combined nevus': 'etc',
+                'recurrent nevus': 'etc',
+                'melanoma (less than 0.76 mm)': 'MEL',
+                'melanoma (in situ)': 'MEL',
+                'melanoma (0.76 to 1.5 mm)': 'MEL',
+                'melanoma (more than 1.5 mm)': 'MEL',
+                'melanoma metastasis': 'MEL',
+                'melanoma': 'MEL',
                 'basal cell carcinoma': 'BCC',
-                'seborrheic keratosis': 'SK',
-                'vascular lesion': 'MISC',
-                'lentigo': 'MISC',
-                'dermatofibroma': 'MISC',
-                'melanosis': 'MISC',
-                'miscellaneous': 'MISC'
+                'seborrheic keratosis': 'etc',
+                'vascular lesion': 'etc',
+                'lentigo': 'etc',
+                'dermatofibroma': 'etc',
+                'melanosis': 'etc',
+                'miscellaneous': 'etc'
             }
             target_col = self.config.get("target_col", "diagnosis")
             if target_col in full_df.columns:
