@@ -95,7 +95,7 @@ uv run python main.py \
 ### 3. Sequential Training: Freezing the Vision Backbone
 Freeze thevision backbone to train **only** the spatial attention layers and the classification head (extremely useful to preserve pre-trained backbone features or speed up training):
 ```bash
-uv run python main.py --config_path configs/train_config.yaml --freeze_backbone
+uv run python main.py --config_path configs/train_config.yaml --backbone_train_mode frozen
 ```
 
 ### 4. Sequential Training: Freezing the Classifier Head

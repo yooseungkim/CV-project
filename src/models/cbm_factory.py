@@ -662,6 +662,12 @@ class UniversalFlexibleCBM(nn.Module):
         self.use_concept_attention = use_concept_attention
         self.use_pairwise_nam = use_pairwise_nam
         self.use_multimodal = use_multimodal
+
+        if use_lora and not (self.backbone_name.startswith('vit') or 'dinov2' in self.backbone_name):
+            raise ValueError(
+                "backbone_train_mode='lora' is only supported for ViT/DINOv2 backbones "
+                f"with attention qkv projections. Got backbone_name='{backbone_name}'."
+            )
         
         # Placeholders for VAE loss calculation
         self.last_mean = None
@@ -760,7 +766,12 @@ class UniversalFlexibleCBM(nn.Module):
                 # Apply LoRA 어댑터 주입 if requested
                 self.lora_active = use_lora
                 if use_lora:
-                    inject_lora_to_vit(self.backbone, r=lora_r, lora_alpha=lora_alpha)
+                    injected_modules = inject_lora_to_vit(self.backbone, r=lora_r, lora_alpha=lora_alpha)
+                    if not injected_modules:
+                        raise ValueError(
+                            "backbone_train_mode='lora' was requested, but no ViT attention qkv "
+                            f"modules were found in backbone_name='{backbone_name}'."
+                        )
                 
                 # Extract embed_dim from the Vit model
                 embed_dim = vit_model.embed_dim if hasattr(vit_model, 'embed_dim') else 768
@@ -1175,6 +1186,34 @@ class UniversalFlexibleCBM(nn.Module):
         """Freezes the vision backbone parameters."""
         for param in self.backbone.parameters():
             param.requires_grad = False
+
+    def set_backbone_train_mode(self, mode: str):
+        """Sets backbone trainability to one of: frozen, lora, full."""
+        mode = mode.lower()
+        if mode == "frozen":
+            self.freeze_backbone()
+            print(f"{BOLD}{YELLOW}[Backbone Mode]{RESET} Frozen backbone parameters.")
+        elif mode == "lora":
+            lora_count = 0
+            for name, param in self.backbone.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad = True
+                    lora_count += 1
+                else:
+                    param.requires_grad = False
+            if lora_count == 0:
+                raise ValueError(
+                    "backbone_train_mode='lora' was requested, but no LoRA parameters were found. "
+                    "Check that the model was initialized with LoRA enabled on a supported ViT/DINOv2 backbone."
+                )
+            else:
+                print(f"{BOLD}{GREEN}[Backbone Mode]{RESET} LoRA-only backbone training enabled ({lora_count} tensors).")
+        elif mode == "full":
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            print(f"{BOLD}{GREEN}[Backbone Mode]{RESET} Full backbone training enabled.")
+        else:
+            raise ValueError(f"Unsupported backbone_train_mode: {mode}. Expected one of: frozen, lora, full.")
 
     def unfreeze_backbone(self):
         """Unfreezes the vision backbone parameters.

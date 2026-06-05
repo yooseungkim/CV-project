@@ -85,9 +85,8 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     for param in model.classifier_head.parameters():
         param.requires_grad = False
         
-    if not args.freeze_backbone:
-        for param in model.backbone.parameters():
-            param.requires_grad = True
+    backbone_train_mode = getattr(args, "backbone_train_mode", "full")
+    model.set_backbone_train_mode(backbone_train_mode)
     model.unfreeze_supervised_attention()
     model.freeze_latent_attention()
         
@@ -97,12 +96,13 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     backbone_lr = opt_cfg.get("backbone_lr")
     
     param_groups = []
-    if not args.freeze_backbone:
+    if backbone_train_mode != "frozen":
         backbone_trainable = [p for p in model.backbone.parameters() if p.requires_grad]
-        if backbone_lr is not None:
-            param_groups.append({"params": backbone_trainable, "lr": backbone_lr})
-        else:
-            param_groups.append({"params": backbone_trainable, "lr": args.lr})
+        if backbone_trainable:
+            if backbone_lr is not None:
+                param_groups.append({"params": backbone_trainable, "lr": backbone_lr})
+            else:
+                param_groups.append({"params": backbone_trainable, "lr": args.lr})
             
     # Phase 1 learning rate configuration
     phase1_lr = args.phase1_lr if args.phase1_lr is not None else opt_cfg.get("phase1_lr", opt_cfg.get("head_lr", args.lr))
@@ -876,24 +876,16 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
 
 def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
-    tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Backbone & Classifier Fine-Tuning (Concept Head Frozen){RESET}")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Joint Fine-Tuning{RESET}")
     tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
     
-    # 1. Conditionally freeze or unfreeze Concept Head in Phase 3
-    if args.freeze_backbone:
-        model.freeze_supervised_attention()
-        model.freeze_latent_attention()
-        tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Concept Head and Backbone frozen in Phase 3.")
-    else:
-        model.unfreeze_supervised_attention()
-        if model.num_latent_concepts > 0:
-            model.unfreeze_latent_attention()
-        tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Backbone and Concept Head unfrozen in Phase 3 to prevent Concept Drift.")
-        
-    # 2. Unfreeze only LoRA backbone adapters + classifier head
-    model.unfreeze_backbone()    # LoRA-active: only lora_A / lora_B params, pretrained weights stay frozen
+    # 1. Phase 3 always tunes the concept/classifier heads; backbone trainability is mode-controlled.
+    model.unfreeze_supervised_attention()
+    if model.num_latent_concepts > 0:
+        model.unfreeze_latent_attention()
+    model.set_backbone_train_mode(getattr(args, "backbone_train_mode", "full"))
     model.unfreeze_classifier()
-    tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Backbone (LoRA adapters) and Classifier Head unfrozen for fine-tuning.")
+    tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Concept Head and Classifier Head enabled for fine-tuning.")
 
     # Adjust dropout for Phase 3 to 0.3
     original_dropout_p = getattr(model.dropout, 'p', 0.2)
@@ -922,11 +914,13 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             else:
                 head_params.append(param)
                  
-    param_groups = [
-        {"params": backbone_params, "lr": phase3_lr},
-        {"params": concept_head_params, "lr": phase3_lr},
-        {"params": head_params, "lr": phase3_lr * 50}  # 50x higher learning rate for classifier/gating parameters
-    ]
+    param_groups = []
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": phase3_lr})
+    if concept_head_params:
+        param_groups.append({"params": concept_head_params, "lr": phase3_lr})
+    if head_params:
+        param_groups.append({"params": head_params, "lr": phase3_lr * 50})  # 50x higher learning rate for classifier/gating parameters
     
     trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
     tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} Trainable parameters in Phase 3: {len(backbone_params) + len(concept_head_params) + len(head_params)} tensors")

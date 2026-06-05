@@ -34,6 +34,30 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict):
+    """Resolve backbone mode from new metadata, old metadata, or checkpoint keys."""
+    valid_modes = {"frozen", "lora", "full"}
+    checkpoint_args = checkpoint_args or {}
+    checkpoint_config = checkpoint_config or {}
+    state_dict = state_dict or {}
+    bb_cfg = checkpoint_config.get("backbone", {}) if isinstance(checkpoint_config, dict) else {}
+    mode = checkpoint_args.get("backbone_train_mode") or bb_cfg.get("backbone_train_mode")
+    has_lora_keys = any("lora_" in key for key in state_dict.keys())
+
+    if has_lora_keys:
+        return "lora"
+    if mode is not None:
+        mode = str(mode).lower()
+        if mode not in valid_modes:
+            raise ValueError(f"Unsupported backbone_train_mode in checkpoint: {mode}. Expected one of {sorted(valid_modes)}.")
+        return mode
+    if checkpoint_args.get("use_lora") or bb_cfg.get("use_lora"):
+        return "lora"
+    if checkpoint_args.get("freeze_backbone") or bb_cfg.get("freeze_backbone"):
+        return "frozen"
+    return "full"
+
+
 def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     """Helper to calculate Top-K accuracy for target classes."""
     if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
@@ -325,7 +349,8 @@ def main():
     dataset_name = checkpoint_args.get('dataset') or checkpoint_config.get('dataset', {}).get('name') or 'cub'
     backbone_type = checkpoint_args.get('backbone_type') or checkpoint_config.get('backbone', {}).get('backbone_type') or 'timm'
     backbone_name = checkpoint_args.get('backbone_name') or checkpoint_config.get('backbone', {}).get('backbone_name') or 'vit_base_patch14_dinov2'
-    use_lora = checkpoint_args.get('use_lora') or checkpoint_config.get('backbone', {}).get('use_lora') or False
+    backbone_train_mode = resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict)
+    use_lora = (backbone_train_mode == "lora")
     lora_r = checkpoint_args.get('lora_r') or checkpoint_config.get('backbone', {}).get('lora_r') or 8
     lora_alpha = checkpoint_args.get('lora_alpha') or checkpoint_config.get('backbone', {}).get('lora_alpha') or 16.0
     
@@ -406,6 +431,7 @@ def main():
     tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
+    tqdm.write(f"     ├─ backbone_train_mode: {backbone_train_mode}")
     tqdm.write(f"     ├─ use_lora: {use_lora} (r={lora_r}, alpha={lora_alpha})")
     tqdm.write(f"     ├─ latent_concepts: {latent_concepts}")
     tqdm.write(f"     ├─ use_group_broadcasting: {use_group_broadcasting}")

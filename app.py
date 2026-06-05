@@ -930,8 +930,9 @@ def parse_app_args():
         help="Number of latent concepts (automatically detected from checkpoint if not specified)"
     )
     parser.add_argument(
-        '--use_lora', action='store_true', default=False,
-        help="Enable LoRA adapters for ViT backbone"
+        '--backbone_train_mode', type=str, default=None,
+        choices=['frozen', 'lora', 'full'],
+        help="Optional backbone mode override for checkpoints without metadata"
     )
     # (use_dino_mask and dino_mask_threshold CLI arguments removed)
     parser.add_argument(
@@ -969,6 +970,42 @@ def parse_app_args():
         help="Port to serve the Gradio app on"
     )
     return parser.parse_args()
+
+
+def resolve_backbone_train_mode(checkpoint_args=None, checkpoint_config=None, state_dict=None, override=None):
+    """Resolve backbone mode from CLI override, checkpoint metadata, or LoRA keys."""
+    valid_modes = {"frozen", "lora", "full"}
+    checkpoint_args = checkpoint_args or {}
+    checkpoint_config = checkpoint_config or {}
+    state_dict = state_dict or {}
+    bb_cfg = checkpoint_config.get("backbone", {}) if isinstance(checkpoint_config, dict) else {}
+    has_lora_keys = any("lora_" in key for key in state_dict.keys())
+
+    if override is not None:
+        mode = str(override).lower()
+        if mode not in valid_modes:
+            raise ValueError(f"Unsupported backbone_train_mode override: {mode}. Expected one of {sorted(valid_modes)}.")
+        if has_lora_keys and mode != "lora":
+            raise ValueError(
+                "backbone_train_mode override conflicts with checkpoint LoRA weights: "
+                f"override='{mode}', but state_dict contains lora_ parameters."
+            )
+        return mode
+    if has_lora_keys:
+        return "lora"
+
+    mode = checkpoint_args.get("backbone_train_mode") or bb_cfg.get("backbone_train_mode")
+    if mode is not None:
+        mode = str(mode).lower()
+        if mode not in valid_modes:
+            raise ValueError(f"Unsupported backbone_train_mode in checkpoint: {mode}. Expected one of {sorted(valid_modes)}.")
+        return mode
+    if checkpoint_args.get("use_lora") or bb_cfg.get("use_lora"):
+        return "lora"
+    if checkpoint_args.get("freeze_backbone") or bb_cfg.get("freeze_backbone"):
+        return "frozen"
+    return "full"
+
 
 def main():
     global MODEL, DEVICE, CONCEPT_NAMES, CONCEPT_CONFIG, CONCEPT_GROUPS, TARGET_CLASSES, NUM_CONCEPTS, NUM_CLASSES, DATASET_NAME
@@ -1218,7 +1255,15 @@ def main():
     else:
         print(f"[Config] Warning: 'classifier_head.weight' or 'classifier_head.concept_gates' not found in checkpoint. Using args.latent_concepts={args.latent_concepts}.")
 
-    use_lora = getattr(args, 'use_lora', False)
+    checkpoint_args_for_mode = loaded_checkpoint.get('args', {}) if isinstance(loaded_checkpoint, dict) else {}
+    checkpoint_config_for_mode = loaded_checkpoint.get('config', {}) if isinstance(loaded_checkpoint, dict) else {}
+    backbone_train_mode = resolve_backbone_train_mode(
+        checkpoint_args=checkpoint_args_for_mode,
+        checkpoint_config=checkpoint_config_for_mode,
+        state_dict=state_dict,
+        override=getattr(args, 'backbone_train_mode', None)
+    )
+    use_lora = (backbone_train_mode == "lora")
     lora_r = getattr(args, 'lora_r', 8)
     lora_alpha = getattr(args, 'lora_alpha', 16.0)
     backbone_name = args.backbone_name
@@ -1234,10 +1279,8 @@ def main():
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
-        if 'use_lora' in checkpoint_args:
-            use_lora = checkpoint_args['use_lora']
-            lora_r = checkpoint_args.get('lora_r', 8)
-            lora_alpha = checkpoint_args.get('lora_alpha', 16.0)
+        lora_r = checkpoint_args.get('lora_r', lora_r)
+        lora_alpha = checkpoint_args.get('lora_alpha', lora_alpha)
         if 'use_cosine_attention' in checkpoint_args:
             use_cosine_attention = checkpoint_args['use_cosine_attention']
         if 'use_group_broadcasting' in checkpoint_args:
@@ -1258,16 +1301,14 @@ def main():
             use_probabilistic_cbm = checkpoint_args['use_probabilistic_cbm']
         if 'use_concept_attention' in checkpoint_args:
             use_concept_attention = checkpoint_args['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), backbone_train_mode={backbone_train_mode}, use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
         ds_cfg = checkpoint_cfg.get('dataset', {})
         tr_cfg = checkpoint_cfg.get('training', {})
-        if 'use_lora' in bb_cfg:
-            use_lora = bb_cfg['use_lora']
-            lora_r = bb_cfg.get('lora_r', 8)
-            lora_alpha = bb_cfg.get('lora_alpha', 16.0)
+        lora_r = bb_cfg.get('lora_r', lora_r)
+        lora_alpha = bb_cfg.get('lora_alpha', lora_alpha)
         if 'use_cosine_attention' in bb_cfg:
             use_cosine_attention = bb_cfg['use_cosine_attention']
         if 'use_group_broadcasting' in bb_cfg:
@@ -1288,12 +1329,9 @@ def main():
             use_probabilistic_cbm = tr_cfg['use_probabilistic_cbm']
         if 'use_concept_attention' in bb_cfg:
             use_concept_attention = bb_cfg['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), backbone_train_mode={backbone_train_mode}, use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
     else:
-        # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
-        has_lora_keys = any("lora_" in key for key in state_dict.keys())
-        if has_lora_keys:
-            use_lora = True
+        # Fallback to key scanning when checkpoint metadata is unavailable.
         # Detect cosine attention from state_dict keys (cosine path has q_proj/k_proj, standard has cross_attention)
         has_cosine_keys = any(".q_proj.weight" in k and "supervised_attention" in k for k in state_dict.keys())
         has_mha_keys    = any(".cross_attention." in k for k in state_dict.keys())
@@ -1307,7 +1345,7 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
+        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, backbone_train_mode={backbone_train_mode}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
     
     # Command line argument override
     if getattr(args, 'no_grouping', False):

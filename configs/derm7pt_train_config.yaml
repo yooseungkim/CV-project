@@ -6,9 +6,8 @@
 backbone:
   backbone_type: "timm"        # Choices: ["timm", "clip"]
   backbone_name: "convnext_tiny" # Specific model name from timm or CLIP
-  freeze_backbone: false       # Freeze pre-trained vision backbone weights
+  backbone_train_mode: "full"  # Choices: ["frozen", "lora", "full"]
   freeze_head: false           # Freeze final classification head weights
-  use_lora: false              # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
   lora_r: 16                   # LoRA rank dimension
   lora_alpha: 16.0             # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for suppression

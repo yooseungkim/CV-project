@@ -95,7 +95,7 @@ uv run python main.py \
 ### 3) 순차 학습: 비전 백본 동결 (Backbone Freeze)
 이미 검증된 비전 백본 특징 추출기 가중치를 완전 동결하고, **오직** 교차 공간 어텐션 레이어와 분류 헤드만을 학습시킵니다 (백본 손상 방지 및 학습 속도 대폭 개선):
 ```bash
-uv run python main.py --config_path configs/train_config.yaml --freeze_backbone
+uv run python main.py --config_path configs/train_config.yaml --backbone_train_mode frozen
 ```
 
 ### 4) 순차 학습: 분류기 헤드 동결 (Classifier Head Freeze)

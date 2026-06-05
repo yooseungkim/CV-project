@@ -57,6 +57,7 @@ def parse_args():
     bb_cfg = config_data.get("backbone", {})
     if "backbone_type" in bb_cfg: flat_defaults["backbone_type"] = bb_cfg["backbone_type"]
     if "backbone_name" in bb_cfg: flat_defaults["backbone_name"] = bb_cfg["backbone_name"]
+    if "backbone_train_mode" in bb_cfg: flat_defaults["backbone_train_mode"] = bb_cfg["backbone_train_mode"]
     if "freeze_backbone" in bb_cfg: flat_defaults["freeze_backbone"] = bb_cfg["freeze_backbone"]
     if "freeze_head" in bb_cfg: flat_defaults["freeze_head"] = bb_cfg["freeze_head"]
     if "use_lora" in bb_cfg: flat_defaults["use_lora"] = bb_cfg["use_lora"]
@@ -65,6 +66,15 @@ def parse_args():
     if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
     if "use_group_broadcasting" in bb_cfg: flat_defaults["use_group_broadcasting"] = bb_cfg["use_group_broadcasting"]
     # (use_dino_mask and dino_mask_threshold flat defaults removed)
+
+    # Backward-compatible interpretation for older config files.
+    if "backbone_train_mode" not in flat_defaults:
+        if flat_defaults.get("freeze_backbone", False):
+            flat_defaults["backbone_train_mode"] = "frozen"
+        elif flat_defaults.get("use_lora", False):
+            flat_defaults["backbone_train_mode"] = "lora"
+        else:
+            flat_defaults["backbone_train_mode"] = "full"
     
     # dataset
     ds_cfg = config_data.get("dataset", {})
@@ -167,6 +177,7 @@ def parse_args():
     parser.add_argument('--subset_ratio', type=float, default=flat_defaults.get('subset_ratio', None), help="Fraction of dataset to load")
     parser.add_argument('--backbone_type', type=str, default=flat_defaults.get('backbone_type', 'timm'), choices=['timm', 'clip'])
     parser.add_argument('--backbone_name', type=str, default=flat_defaults.get('backbone_name', 'resnet50'))
+    parser.add_argument('--backbone_train_mode', type=str, default=flat_defaults.get('backbone_train_mode', 'full'), choices=['frozen', 'lora', 'full'], help="Backbone training mode for Phase 1 and Phase 3")
     parser.add_argument('--num_concepts', type=int, default=None)
     parser.add_argument('--concept_cols', type=str, default=None)
     parser.add_argument('--concept_config_path', type=str, default=flat_defaults.get('concept_config_path', None))
@@ -210,12 +221,10 @@ def parse_args():
     parser.add_argument('--target_pos_weight', type=float, default=flat_defaults.get('target_pos_weight', 1.0))
     parser.add_argument('--num_workers', type=int, default=flat_defaults.get('num_workers', 4))
     parser.add_argument('--pin_memory', type=str2bool, default=flat_defaults.get('pin_memory', True))
-    parser.add_argument('--freeze_backbone', action='store_true', default=flat_defaults.get('freeze_backbone', False))
     parser.add_argument('--freeze_head', action='store_true', default=flat_defaults.get('freeze_head', False))
     parser.add_argument('--use_concept_groups', type=str_or_bool, default=flat_defaults.get('use_concept_groups', True), help="Toggle Group-level Softmax and GroupCrossEntropyLoss (True/False, or comma-separated list of concept names to group)")
     parser.add_argument('--filter_rare_concepts', type=str2bool, default=flat_defaults.get('filter_rare_concepts', False), help="Filter out concepts with occurrence frequency < 1%%")
     parser.add_argument('--use_paper_preprocessing', type=str2bool, default=flat_defaults.get('use_paper_preprocessing', False), help="Align preprocessing (majority voting, sparseness filter, 80-20 train-val split) with the paper")
-    parser.add_argument('--use_lora', type=str2bool, default=flat_defaults.get('use_lora', False), help="Use Low-Rank Adaptation (LoRA) for ViT backbone tuning")
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
@@ -249,6 +258,8 @@ def parse_args():
     parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")
     
     args = parser.parse_args()
+    args.use_lora = (args.backbone_train_mode == "lora")
+    args.freeze_backbone = (args.backbone_train_mode == "frozen")
     return args, config_data
 
 def main():
@@ -382,6 +393,7 @@ def main():
 
     # 2. Model Initialization
     tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} {args.backbone_type}/{args.backbone_name}")
+    tqdm.write(f"  {BOLD}{BLUE}[Backbone Train Mode]{RESET} {args.backbone_train_mode}")
     tqdm.write(f"  {BOLD}{BLUE}[Concepts]{RESET} Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
 
     # 2a. Build group_mapping for GroupToConceptAttention (if requested)
@@ -450,7 +462,7 @@ def main():
     )
 
     
-    if args.freeze_backbone:
+    if args.backbone_train_mode == "frozen":
         model.freeze_backbone()
         tqdm.write(f"  {BOLD}{YELLOW}[Freeze]{RESET} Backbone frozen")
         
@@ -700,7 +712,6 @@ def main():
         )
 
     # Save Model Weights
-    mode = "frozen_backbone" if args.freeze_backbone else "full"
     save_subdir = os.path.join(args.save_dir, args.backbone_name)
     os.makedirs(save_subdir, exist_ok=True)
     
