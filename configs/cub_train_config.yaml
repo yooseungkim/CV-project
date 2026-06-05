@@ -124,7 +124,7 @@ early_stopping:
   # --- Dataset-Specific Early Stopping ---
   phase1_monitor: "val_concept_f1" # [Dataset-Specific: cub, derm7pt]
   phase1_patience: 5           # [Dataset-Specific: cub, derm7pt]
-  phase2_monitor: "val_acc"    # [Dataset-Specific: cub, derm7pt]
+  phase2_monitor: "val_target_acc" # [Dataset-Specific: cub, derm7pt]
   phase2_patience: 10          # [Dataset-Specific: cub, derm7pt]
   phase3_monitor: "val_joint_loss" # [Dataset-Specific: cub, derm7pt]
   phase3_patience: 5           # [Dataset-Specific: cub, derm7pt]

@@ -19,6 +19,45 @@ MAGENTA = "\033[95m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
+PHASE_MONITORS = {
+    "phase1": (
+        "val_concept_loss",
+        "val_concept_acc",
+        "val_concept_f1",
+    ),
+    "phase2": (
+        "val_target_loss",
+        "val_target_acc",
+    ),
+    "phase3": (
+        "val_target_loss",
+        "val_joint_loss",
+        "val_concept_loss",
+        "val_target_acc",
+    ),
+}
+
+def validate_monitor_name(phase, monitor):
+    valid_monitors = PHASE_MONITORS[phase]
+    if monitor not in valid_monitors:
+        valid_names = ", ".join(sorted(valid_monitors))
+        raise ValueError(
+            f"{phase}_monitor must exactly match one of [{valid_names}], got {monitor!r}."
+        )
+    return monitor
+
+def get_monitor_score(phase, monitor, metrics):
+    validate_monitor_name(phase, monitor)
+    return metrics[monitor]
+
+def get_phase2_sparsity_warmup_epochs(args):
+    warmup_epochs = max(0, int(getattr(args, "l1_warmup_epochs", 0) or 0))
+    if warmup_epochs == 0:
+        return 0
+    if getattr(args, "use_gated_nam", False) or getattr(args, "use_nam_head", False):
+        return warmup_epochs if getattr(args, "l1_lambda_gate", 0.01) > 0 else 0
+    return warmup_epochs if getattr(args, "l1_lambda", 0.0) > 0 else 0
+
 def inject_concept_noise(pred_logits, gt_labels, replace_prob=0.3, epsilon=0.05):
     """
     pred_logits: Phase 1 output logits (Batch, Num_Concepts)
@@ -127,10 +166,15 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     elif sched_type == "step":
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=sched_cfg.get("step_size", 10), gamma=sched_cfg.get("gamma", 0.1))
         
-    # Phase 1은 val_concept_loss 또는 사용자가 지정한 phase1_monitor를 기반으로 early stopping 수행
-    phase1_patience = args.phase1_patience if args.phase1_patience is not None else config_data.get("early_stopping", {}).get("phase1_patience", 5)
-    phase1_monitor = args.phase1_monitor if getattr(args, "phase1_monitor", None) is not None else config_data.get("early_stopping", {}).get("phase1_monitor", "val_concept_loss")
-    es_handler = EarlyStopping(patience=phase1_patience, min_delta=0.0, monitor=phase1_monitor)
+    es_cfg = config_data.get("early_stopping", {})
+    es_handler = None
+    if es_cfg.get("enabled", False):
+        phase1_patience = args.phase1_patience if args.phase1_patience is not None else es_cfg.get("phase1_patience", es_cfg.get("patience", 5))
+        phase1_monitor = args.phase1_monitor if getattr(args, "phase1_monitor", None) is not None else es_cfg.get("phase1_monitor", "val_concept_loss")
+        validate_monitor_name("phase1", phase1_monitor)
+        min_delta = es_cfg.get("min_delta", 0.0)
+        es_handler = EarlyStopping(patience=phase1_patience, min_delta=min_delta, monitor=phase1_monitor)
+        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 1 Early stopping: monitor={phase1_monitor}, patience={phase1_patience}, min_delta={min_delta}")
     
     for epoch in range(phase1_epochs):
         # Calculate current beta for PCBM KL Divergence
@@ -350,18 +394,16 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         # struggling concepts는 마지막 epoch이거나 조기종료일 때만 출력하여 로그 노이즈 최소화
         is_last_epoch = (epoch == phase1_epochs - 1)
         
-        # Select correct monitoring metric score dynamically
-        monitor_metric = es_handler.monitor.lower()
-        if "loss" in monitor_metric:
-            monitor_score = avg_val_loss_c
-        elif "f1" in monitor_metric:
-            monitor_score = val_f1
-        elif "acc" in monitor_metric or "accuracy" in monitor_metric:
-            monitor_score = avg_val_acc_c
-        else:
-            monitor_score = avg_val_loss_c
-            
-        es_handler(monitor_score, model)
+        early_stop_triggered = False
+        if es_handler is not None:
+            phase1_metrics = {
+                "val_concept_loss": avg_val_loss_c,
+                "val_concept_acc": avg_val_acc_c,
+                "val_concept_f1": val_f1,
+            }
+            monitor_score = get_monitor_score("phase1", es_handler.monitor, phase1_metrics)
+            es_handler(monitor_score, model)
+            early_stop_triggered = es_handler.early_stop
         
         # Compute individual balanced accuracies for struggling concepts and logging
         if all_val_probs:
@@ -371,7 +413,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 ind_balanced_acc = val_metrics["individual_balanced_acc"][c].item()
                 val_individual_accs[f"val_concept_acc/{name}"] = ind_balanced_acc
                 
-            if is_last_epoch or es_handler.early_stop:
+            if is_last_epoch or early_stop_triggered:
                 sorted_concept_accs = sorted(
                     [(concepts_list[c] if c < len(concepts_list) else f"Concept_{c}", val_individual_accs[f"val_concept_acc/{concepts_list[c] if c < len(concepts_list) else f'Concept_{c}'}"])
                      for c in range(num_concepts_supervised)],
@@ -380,7 +422,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 lowest_3 = ", ".join([f"{name}: {acc:.4f}" for name, acc in sorted_concept_accs[:3]])
                 tqdm.write(f"  {BOLD}{YELLOW}[Struggling Concepts]{RESET} Final Struggling Concepts (Balanced Acc): {lowest_3}")
             
-        if val_vis_data is not None and (is_last_epoch or es_handler.early_stop):
+        if val_vis_data is not None and (is_last_epoch or early_stop_triggered):
             vis_images, vis_attn = val_vis_data
             num_samples = min(4, vis_images.size(0))
             heatmap_images = generate_concept_heatmaps(
@@ -396,11 +438,6 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         if scheduler is not None:
             scheduler.step()
             
-        if es_handler.early_stop:
-            tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 1 at Epoch {epoch + 1}. Restoring best Phase 1 weights.")
-            model.load_state_dict(es_handler.best_weights)
-            break
-            
         if args.use_wandb:
             import wandb
             log_dict = {
@@ -414,8 +451,18 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             }
             if 'val_individual_accs' in locals():
                 log_dict.update(val_individual_accs)
+            if es_handler is not None:
+                log_dict.update({
+                    "early_stop/phase1_counter": es_handler.counter,
+                    "early_stop/phase1_triggered": early_stop_triggered,
+                })
             wandb.log(log_dict)
-            
+
+        if early_stop_triggered:
+            tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 1 at Epoch {epoch + 1}. Restoring best Phase 1 weights.")
+            model.load_state_dict(es_handler.best_weights)
+            break
+
     # Phase 1 루프 완료 후 (조기 종료되지 않고 완주한 경우에도) 베스트 가중치 복원
     if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:
         tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 1 completed. Restoring best Phase 1 weights.")
@@ -575,12 +622,15 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         
     es_cfg = config_data.get("early_stopping", {})
     es_handler = None
+    phase2_early_stopping_start_epoch = 0
     if es_cfg.get("enabled", False):
         phase2_monitor = args.phase2_monitor if getattr(args, "phase2_monitor", None) is not None else es_cfg.get("phase2_monitor", es_cfg.get("monitor", "val_target_loss"))
+        validate_monitor_name("phase2", phase2_monitor)
         phase2_patience = args.phase2_patience if args.phase2_patience is not None else es_cfg.get("phase2_patience", es_cfg.get("patience", 5))
         min_delta = es_cfg.get("min_delta", 0.0)
         es_handler = EarlyStopping(patience=phase2_patience, min_delta=min_delta, monitor=phase2_monitor)
-        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 2 Early stopping: monitor={phase2_monitor}, patience={phase2_patience}")
+        phase2_early_stopping_start_epoch = get_phase2_sparsity_warmup_epochs(args)
+        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 2 Early stopping: monitor={phase2_monitor}, patience={phase2_patience}, min_delta={min_delta}, starts_after_warmup_epochs={phase2_early_stopping_start_epoch}")
         
     for epoch in range(phase2_epochs):
         model.train()
@@ -823,20 +873,15 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         if scheduler is not None:
             scheduler.step()
             
-        if es_handler is not None:
-            monitor_target = es_handler.monitor.lower()
-            if "loss" in monitor_target:
-                monitor_score = avg_val_loss_t
-            elif "acc" in monitor_target or "accuracy" in monitor_target:
-                monitor_score = avg_val_acc_t
-            else:
-                monitor_score = avg_val_loss_t
-                
+        early_stop_triggered = False
+        if es_handler is not None and epoch >= phase2_early_stopping_start_epoch:
+            phase2_metrics = {
+                "val_target_loss": avg_val_loss_t,
+                "val_target_acc": avg_val_acc_t,
+            }
+            monitor_score = get_monitor_score("phase2", es_handler.monitor, phase2_metrics)
             es_handler(monitor_score, model)
-            if es_handler.early_stop:
-                tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 2 at Epoch {epoch + 1}. Restoring best Phase 2 weights.")
-                model.load_state_dict(es_handler.best_weights)
-                break
+            early_stop_triggered = es_handler.early_stop
                 
         if args.use_wandb:
             import wandb
@@ -851,7 +896,18 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                     "val/active_gates": active_count,
                     "val/gate_mean": gate_mean_val
                 })
+            if es_handler is not None:
+                log_dict.update({
+                    "early_stop/phase2_counter": es_handler.counter,
+                    "early_stop/phase2_counting": epoch >= phase2_early_stopping_start_epoch,
+                    "early_stop/phase2_triggered": early_stop_triggered,
+                })
             wandb.log(log_dict)
+
+        if early_stop_triggered:
+            tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 2 at Epoch {epoch + 1}. Restoring best Phase 2 weights.")
+            model.load_state_dict(es_handler.best_weights)
+            break
 
     # 💧 Phase 2 종료 후 드롭아웃 원복
     if hasattr(model, 'dropout'):
@@ -947,11 +1003,12 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     es_cfg = config_data.get("early_stopping", {})
     es_handler = None
     if es_cfg.get("enabled", False):
-        phase3_monitor = args.phase3_monitor if getattr(args, "phase3_monitor", None) is not None else "val_target_loss"
-        phase3_patience = args.phase3_patience if args.phase3_patience is not None else 5
+        phase3_monitor = args.phase3_monitor if getattr(args, "phase3_monitor", None) is not None else es_cfg.get("phase3_monitor", es_cfg.get("monitor", "val_target_loss"))
+        validate_monitor_name("phase3", phase3_monitor)
+        phase3_patience = args.phase3_patience if args.phase3_patience is not None else es_cfg.get("phase3_patience", es_cfg.get("patience", 5))
         min_delta = es_cfg.get("min_delta", 0.0)
         es_handler = EarlyStopping(patience=phase3_patience, min_delta=min_delta, monitor=phase3_monitor)
-        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}")
+        tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Phase 3 Early stopping: monitor={phase3_monitor}, patience={phase3_patience}, min_delta={min_delta}")
         
     for epoch in range(phase3_epochs):
         # Calculate current beta for PCBM KL Divergence
@@ -1344,15 +1401,18 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         avg_acc_t = total_acc_t / len(train_loader)
         
         model.eval()
+        val_loss_joint = 0.0
         val_loss_t = 0.0
+        val_loss_c = 0.0
         val_acc_t = 0.0
         
         with torch.no_grad():
-            for val_images, _, val_targets in val_loader:
+            for val_images, val_concepts, val_targets in val_loader:
                 val_images = val_images.to(device, non_blocking=True)
+                val_concepts = val_concepts.to(device, non_blocking=True)
                 val_targets = val_targets.to(device, non_blocking=True)
                 
-                v_class_logits, _, _ = model(val_images)
+                v_class_logits, v_concept_logits, _, v_supervised_features, v_latent_features = model(val_images, return_features=True)
                 
                 if isinstance(target_criterion, nn.BCEWithLogitsLoss):
                     v_loss_t = target_criterion(v_class_logits, val_targets)
@@ -1360,14 +1420,73 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     v_loss_t = target_criterion(v_class_logits, val_targets)
                 else:
                     v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
+
+                val_supervised_concepts = val_concepts[:, :num_concepts_supervised]
+                val_smoothed_concepts = apply_label_smoothing(
+                    val_supervised_concepts,
+                    epsilon=getattr(args, "phase1_label_smoothing", 0.05)
+                )
+                v_loss_c = concept_criterion(
+                    v_concept_logits[:, :num_concepts_supervised],
+                    val_smoothed_concepts
+                )
+                if getattr(model, "use_probabilistic_cbm", False):
+                    mean = model.last_mean
+                    logvar = model.last_logvar
+                    kl_loss_raw = -0.5 * (1 + logvar - mean.pow(2) - logvar.exp())
+
+                    valid_mask = (val_supervised_concepts >= 0.0)
+                    pos_mask = (val_supervised_concepts > 0.5) & valid_mask
+                    neg_mask = (val_supervised_concepts <= 0.5) & valid_mask
+
+                    pos_sum = (kl_loss_raw * pos_mask.float()).sum(dim=0)
+                    neg_sum = (kl_loss_raw * neg_mask.float()).sum(dim=0)
+
+                    P_c = pos_mask.sum(dim=0).float()
+                    N_c = neg_mask.sum(dim=0).float()
+                    P_c_safe = torch.where(P_c > 0, P_c, torch.ones_like(P_c))
+                    N_c_safe = torch.where(N_c > 0, N_c, torch.ones_like(N_c))
+
+                    avg_kl_pos = torch.where(P_c > 0, pos_sum / P_c_safe, torch.zeros_like(pos_sum))
+                    avg_kl_neg = torch.where(N_c > 0, neg_sum / N_c_safe, torch.zeros_like(neg_sum))
+
+                    asym_weight = getattr(args, "pcbm_asymmetric_kl_weight", 0.1)
+                    kl_loss = (avg_kl_neg + asym_weight * avg_kl_pos).mean()
+                    v_loss_c = v_loss_c + current_beta * kl_loss
+
+                v_loss_latent_ortho = torch.tensor(0.0, device=device)
+                v_loss_latent_l1 = torch.tensor(0.0, device=device)
+                if model.num_latent_concepts > 0 and v_latent_features is not None:
+                    explicit_norm = F.normalize(v_supervised_features, p=2, dim=-1)
+                    latent_norm = F.normalize(v_latent_features, p=2, dim=-1)
+                    cos_sim = torch.bmm(latent_norm, explicit_norm.transpose(1, 2))
+                    v_loss_latent_ortho = (cos_sim ** 2).mean()
+
+                    v_concept_probs = model.concept_activation(v_concept_logits)
+                    latent_activations = v_concept_probs[:, num_concepts_supervised:]
+                    v_loss_latent_l1 = latent_activations.abs().mean()
+
+                v_loss_joint = v_loss_t + (args.lambda_c * v_loss_c) + (args.lambda_latent_ortho * v_loss_latent_ortho) + (args.lambda_latent_l1 * v_loss_latent_l1)
+                l1_lambda = getattr(args, "phase3_l1_lambda", 0.05)
+                if l1_lambda > 0:
+                    if hasattr(model.classifier_head, "get_sparsity_loss"):
+                        latent_penalty_scale = getattr(args, "latent_penalty_scale", 1.0)
+                        v_loss_joint = v_loss_joint + l1_lambda * model.classifier_head.get_sparsity_loss(latent_penalty_scale=latent_penalty_scale)
+                    else:
+                        l1_norm = sum(p.abs().sum() for p in model.classifier_head.parameters())
+                        v_loss_joint = v_loss_joint + l1_lambda * l1_norm
                     
+                val_loss_joint += v_loss_joint.item()
                 val_loss_t += v_loss_t.item()
+                val_loss_c += v_loss_c.item()
                 val_acc_t += calculate_accuracy(v_class_logits, val_targets)
                 
+        avg_val_loss_joint = val_loss_joint / len(val_loader)
         avg_val_loss_t = val_loss_t / len(val_loader)
+        avg_val_loss_c = val_loss_c / len(val_loader)
         avg_val_acc_t = val_acc_t / len(val_loader)
         
-        tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
+        tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Joint Loss: {avg_val_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
         
         # Track Active Gates if GatedSparseNAMHead is used
         active_count = None
@@ -1387,20 +1506,17 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         if scheduler is not None:
             scheduler.step()
             
+        early_stop_triggered = False
         if es_handler is not None:
-            monitor_target = es_handler.monitor.lower()
-            if "loss" in monitor_target:
-                monitor_score = avg_val_loss_t
-            elif "acc" in monitor_target or "accuracy" in monitor_target:
-                monitor_score = avg_val_acc_t
-            else:
-                monitor_score = avg_val_loss_t
-                
+            phase3_metrics = {
+                "val_target_loss": avg_val_loss_t,
+                "val_joint_loss": avg_val_loss_joint,
+                "val_concept_loss": avg_val_loss_c,
+                "val_target_acc": avg_val_acc_t,
+            }
+            monitor_score = get_monitor_score("phase3", es_handler.monitor, phase3_metrics)
             es_handler(monitor_score, model)
-            if es_handler.early_stop:
-                tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 3 at Epoch {epoch + 1}. Restoring best Phase 3 weights.")
-                model.load_state_dict(es_handler.best_weights)
-                break
+            early_stop_triggered = es_handler.early_stop
                 
         if args.use_wandb:
             import wandb
@@ -1409,7 +1525,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 "train/joint_loss": avg_loss_joint,
                 "train/joint_target_loss": avg_loss_t,
                 "train/joint_concept_loss": avg_loss_c,
+                "val/joint_loss": avg_val_loss_joint,
                 "val/joint_target_loss": avg_val_loss_t,
+                "val/joint_concept_loss": avg_val_loss_c,
                 "val/joint_accuracy": avg_val_acc_t
             }
             if active_count is not None:
@@ -1417,7 +1535,17 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     "val/active_gates": active_count,
                     "val/gate_mean": gate_mean_val
                 })
+            if es_handler is not None:
+                log_dict.update({
+                    "early_stop/phase3_counter": es_handler.counter,
+                    "early_stop/phase3_triggered": early_stop_triggered,
+                })
             wandb.log(log_dict)
+
+        if early_stop_triggered:
+            tqdm.write(f"  {BOLD}{YELLOW}[Early Stop]{RESET} Early stopping Phase 3 at Epoch {epoch + 1}. Restoring best Phase 3 weights.")
+            model.load_state_dict(es_handler.best_weights)
+            break
 
     # Phase 3 루프 완료 후 (조기 종료되지 않고 완주한 경우에도) 베스트 가중치 복원
     if es_handler is not None and not es_handler.early_stop and es_handler.best_weights is not None:

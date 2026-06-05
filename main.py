@@ -19,7 +19,7 @@ from src.utils.visualization import generate_concept_heatmaps
 # Modularized utility, loss, and training loop imports
 from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos_weights, get_dataset_choices
 from src.utils.losses import SigmoidFocalLoss, AsymmetricLossWithWeight, GroupCrossEntropyLoss
-from src.utils.train_loops import train_phase1, train_phase2, train_phase3
+from src.utils.train_loops import PHASE_MONITORS, train_phase1, train_phase2, train_phase3, validate_monitor_name
 
 # ANSI terminal colors for highlighting
 GREEN = "\033[92m"
@@ -198,9 +198,9 @@ def parse_args():
     parser.add_argument('--phase1_patience', type=int, default=flat_defaults.get('phase1_patience', None), help="Early stopping patience for Phase 1")
     parser.add_argument('--phase2_patience', type=int, default=flat_defaults.get('phase2_patience', None), help="Early stopping patience for Phase 2")
     parser.add_argument('--phase3_patience', type=int, default=flat_defaults.get('phase3_patience', 5), help="Early stopping patience for Phase 3")
-    parser.add_argument('--phase1_monitor', type=str, default=flat_defaults.get('phase1_monitor', 'val_concept_balanced_acc'), help="Early stopping monitor for Phase 1")
-    parser.add_argument('--phase2_monitor', type=str, default=flat_defaults.get('phase2_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 2")
-    parser.add_argument('--phase3_monitor', type=str, default=flat_defaults.get('phase3_monitor', 'val_target_loss'), help="Early stopping monitor for Phase 3")
+    parser.add_argument('--phase1_monitor', type=str, choices=PHASE_MONITORS["phase1"], default=flat_defaults.get('phase1_monitor', 'val_concept_acc'), help="Exact Phase 1 early stopping monitor name")
+    parser.add_argument('--phase2_monitor', type=str, choices=PHASE_MONITORS["phase2"], default=flat_defaults.get('phase2_monitor', 'val_target_loss'), help="Exact Phase 2 early stopping monitor name")
+    parser.add_argument('--phase3_monitor', type=str, choices=PHASE_MONITORS["phase3"], default=flat_defaults.get('phase3_monitor', 'val_target_loss'), help="Exact Phase 3 early stopping monitor name")
     parser.add_argument('--phase3_epochs', type=int, default=flat_defaults.get('phase3_epochs', 5), help="Number of epochs for Phase 3 (Joint Parameter Tuning)")
     parser.add_argument('--lambda_ce', type=float, default=flat_defaults.get('lambda_ce', 0.1), help="Scaling factor for Softmax Cross-Entropy loss to balance gradient scale against Focal/BCE loss")
     parser.add_argument('--concept_loss_type', type=str, default=flat_defaults.get('concept_loss_type', 'focal'), choices=['focal', 'bce', 'asl'], help="Concept loss function type")
@@ -258,6 +258,8 @@ def parse_args():
     parser.add_argument('--cb_beta', type=float, default=flat_defaults.get('cb_beta', 0.999), help="Beta parameter for Class-Balanced Loss weighting")
     
     args = parser.parse_args()
+    for phase in ("phase1", "phase2", "phase3"):
+        validate_monitor_name(phase, getattr(args, f"{phase}_monitor"))
     args.use_lora = (args.backbone_train_mode == "lora")
     args.freeze_backbone = (args.backbone_train_mode == "frozen")
     return args, config_data
