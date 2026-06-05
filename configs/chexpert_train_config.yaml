@@ -28,7 +28,7 @@ dataset:
   use_paper_preprocessing: false # [Dataset-Specific: cub, derm7pt]
   use_multimodal: false        # [Dataset-Specific: derm7pt]
   policy: "u-ones"             # [Dataset-Specific: chexpert] Uncertainty policy: "u-ones" or "u-zeros"
-  subset_ratio: 0.2            # [Dataset-Specific: chexpert] Subset ratio of the dataset to load (e.g. 0.2)
+  subset_ratio: 1.0            # [Dataset-Specific: chexpert] Subset ratio of the dataset to load (e.g. 0.2)
 
 # 3. Core Training Hyperparameters
 training:
@@ -67,9 +67,9 @@ training:
   save_dir: "checkpoints"      # Directory to save trained model weights
   resume_checkpoint: null      # Path to pre-trained weights .pth to resume from
   use_wandb: true              # Log runs and visualize metrics to Weights & Biases
-  num_workers: 16               # Number of worker threads for DataLoader
+  num_workers: 28               # Number of worker threads for DataLoader
   pin_memory: true             # Pin memory in DataLoader
-  cache_in_memory: true       # Preload all samples into RAM (disabled for CheXpert due to size)
+  cache_in_memory: false       # Preload all samples into RAM (disabled for CheXpert due to size)
   max_cache_size_gb: 15.0      # Maximum dataset size allowed for in-memory caching
   run_eval: true              # Run evaluation script after training
   run_app: false               # Launch Gradio app after training
@@ -85,7 +85,7 @@ optimizer:
   weight_decay: 0.0001         # L2 regularization weight decay
   momentum: 0.9                # Momentum (only applicable when optimizer is sgd)
   concept_loss_type: "focal"     # Choices: ["focal", "bce", "asl"]
-  focal_alpha: 0.85            # Alpha parameter for Focal Loss
+  focal_alpha: "dynamic"       # Alpha parameter for Focal Loss ('dynamic' or custom list like [0.8, 0.6, 0.95, ...])
   focal_gamma: 0.5             # Gamma parameter for Focal Loss
   asl_gamma_pos: 0.0           # ASL: gamma for positive samples
   asl_gamma_neg: 4.0           # ASL: gamma for easy negative samples

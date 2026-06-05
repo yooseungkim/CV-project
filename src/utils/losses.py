@@ -36,38 +36,49 @@ class SigmoidFocalLoss(nn.Module):
         Focuses learning on hard, misclassified samples and down-weights easy majority classes.
         alpha can be:
         - A single float (constant for all concepts)
+        - A list/tuple/string of floats
         - A torch.Tensor of shape (num_concepts,)
         - None (no alpha weighting applied)
         """
         super().__init__()
         if isinstance(alpha, (list, tuple)):
             self.alpha = torch.tensor(alpha, dtype=torch.float32)
+        elif isinstance(alpha, str) and alpha.lower() != 'dynamic':
+            try:
+                self.alpha = torch.tensor([float(x.strip()) for x in alpha.split(',')], dtype=torch.float32)
+            except ValueError:
+                self.alpha = float(alpha)
         else:
             self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        probs = torch.sigmoid(logits)
+        # Calculate the standard BCE loss
         bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
         
-        # Calculate focal weight: (1 - p_t) ^ gamma
-        p_t = probs * targets + (1 - probs) * (1 - targets)
-        focal_weight = (1 - p_t) ** self.gamma
+        # Calculate p_t
+        p_t = torch.exp(-bce_loss)
         
-        loss = focal_weight * bce_loss
-        
+        # Calculate dynamic alpha_t
         if self.alpha is not None:
             if isinstance(self.alpha, torch.Tensor):
-                self.alpha = self.alpha.to(device=logits.device, dtype=logits.dtype)
-            alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
-            loss = alpha_t * loss
+                alpha_device = self.alpha.to(device=logits.device, dtype=logits.dtype)
+                alpha_t = alpha_device * targets + (1.0 - alpha_device) * (1.0 - targets)
+            else:
+                alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
+            
+            # Compute focal loss with alpha weighting
+            focal_loss = alpha_t * ((1.0 - p_t) ** self.gamma) * bce_loss
+        else:
+            # Compute focal loss without alpha weighting
+            focal_loss = ((1.0 - p_t) ** self.gamma) * bce_loss
             
         if self.reduction == 'mean':
-            return loss.mean()
+            return focal_loss.mean()
         elif self.reduction == 'sum':
-            return loss.sum()
-        return loss
+            return focal_loss.sum()
+        return focal_loss
 
 
 class AsymmetricLossWithWeight(nn.Module):
@@ -134,7 +145,15 @@ class GroupCrossEntropyLoss(nn.Module):
         self.groups_info = groups_info
         self.lambda_ce = lambda_ce
         self.loss_type = loss_type.lower()
-        self.focal_alpha = focal_alpha
+        if isinstance(focal_alpha, (list, tuple)):
+            self.focal_alpha = torch.tensor(focal_alpha, dtype=torch.float32)
+        elif isinstance(focal_alpha, str) and focal_alpha.lower() != 'dynamic':
+            try:
+                self.focal_alpha = torch.tensor([float(x.strip()) for x in focal_alpha.split(',')], dtype=torch.float32)
+            except ValueError:
+                self.focal_alpha = float(focal_alpha)
+        else:
+            self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.asl_gamma_pos = asl_gamma_pos
         self.asl_gamma_neg = asl_gamma_neg
@@ -214,8 +233,8 @@ class GroupCrossEntropyLoss(nn.Module):
                     if self.focal_alpha is not None:
                         # Extract alpha value for this specific concept dimension
                         if isinstance(self.focal_alpha, torch.Tensor):
-                            # self.focal_alpha has shape (num_concepts,)
-                            alpha_t = self.focal_alpha[start_idx] * group_targets + (1 - self.focal_alpha[start_idx]) * (1 - group_targets)
+                            focal_alpha_device = self.focal_alpha.to(device=group_logits.device, dtype=group_logits.dtype)
+                            alpha_t = focal_alpha_device[start_idx] * group_targets + (1 - focal_alpha_device[start_idx]) * (1 - group_targets)
                         else:
                             alpha_t = self.focal_alpha * group_targets + (1 - self.focal_alpha) * (1 - group_targets)
                         focal_loss = alpha_t * focal_loss
