@@ -1,8 +1,13 @@
 import torch
 
 def calculate_accuracy(outputs: torch.Tensor, targets: torch.Tensor, topk: int = 3) -> float:
-    """Calculates Top-K accuracy for target classes. Supports binary and multi-class."""
-    if outputs.dim() == 1 or outputs.shape[-1] == 1:
+    """Calculates Top-K accuracy for target classes. Supports binary, multi-label, and multi-class."""
+    if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
+        # Multi-label binary classification (e.g. CheXpert targets)
+        preds = (outputs > 0.0).float()
+        correct = (preds == targets).float().sum()
+        return (correct / targets.numel()).item()
+    elif outputs.dim() == 1 or outputs.shape[-1] == 1:
         # Binary classification
         preds = (outputs > 0.0).float() # Assuming outputs are logits
         targets_flat = targets.view_as(preds)

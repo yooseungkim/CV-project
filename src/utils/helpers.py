@@ -37,7 +37,7 @@ def str_or_bool(v):
 
 def get_dataset_choices():
     data_dir = 'data'
-    default_choices = ['milk10k', 'derm7pt', 'cub']
+    default_choices = ['milk10k', 'derm7pt', 'cub', 'chexpert']
     if not os.path.exists(data_dir):
         return default_choices
     choices = []

@@ -5,7 +5,7 @@
 # 1. Vision Backbone Settings
 backbone:
   backbone_type: "timm"        # Choices: ["timm", "clip"]
-  backbone_name: "resnet50"    # Specific model name from timm or CLIP
+  backbone_name: "convnext_tiny"    # Specific model name from timm or CLIP, [resnet50, convnext, dinov2, ...]
   freeze_backbone: false       # Freeze pre-trained vision backbone weights
   freeze_head: false           # Freeze final classification head weights
   use_lora: false              # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
@@ -13,14 +13,14 @@ backbone:
   lora_alpha: 16.0             # LoRA scaling factor alpha
   use_cosine_attention: false  # L2 Cosine Attention for suppression
   use_group_broadcasting: false # GroupToConceptAttention for independent group classifiers
-  use_concept_attention: false # Patch token-based Cross-Attention (instead of GAP/MLP)
+  use_concept_attention: true # Patch token-based Cross-Attention (instead of GAP/MLP)
 
 # 2. Dataset Setup
 dataset:
   dataset: "chexpert"          # Dataset identifier
-  csv_path: "data/CheXpert-v1.0-small/train.csv" # Path to metadata CSV
-  image_dir: "data/"           # Directory containing images (joined with Path in CSV)
-  concept_config_path: null    # Path to concept configuration JSON (null for CheXpert)
+  csv_path: "data/CheXpert/train.csv" # Path to metadata CSV
+  image_dir: "data/CheXpert/"           # Directory containing images (joined with Path in CSV)
+  concept_config_path: "data/CheXpert/concept_config.json"    # Path to concept configuration JSON
   
   # --- Dataset-Specific Settings ---
   use_concept_groups: false    # [Dataset-Specific: cub, derm7pt, milk10k]
@@ -32,68 +32,68 @@ dataset:
 
 # 3. Core Training Hyperparameters
 training:
-  epochs: 30                   # Total number of epochs to train
-  phase1_epochs: 15            # Number of epochs for Phase 1 (Concept Learning)
-  phase2_epochs: 15            # Number of epochs for Phase 2 (Target Learning)
-  phase3_epochs: 5             # Number of epochs for Phase 3 (Joint Fine-Tuning)
-  batch_size: 32               # Batch size for training
+  phase1_epochs: 30            # Number of epochs for Phase 1 (Concept Learning)
+  phase2_epochs: 30            # Number of epochs for Phase 2 (Target Learning)
+  phase3_epochs: 10            # Number of epochs for Phase 3 (Joint Fine-Tuning)
+  batch_size: 64               # Batch size for training
   lambda_c: 1.0                # Loss balancing weight factor for concepts
-  phase2_dropout: 0.2          # Dropout probability in Phase 2
+  phase2_dropout: 0.4          # Dropout probability in Phase 2
   l1_lambda: 0.01              # L1 Lasso Regularization strength for Phase 2 classifier head
-  use_nam_head: false          # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
-  nam_hidden_dim: 8            # Hidden dimension for parallel NAM sub-networks
+  use_nam_head: true          # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
+  nam_hidden_dim: 16            # Hidden dimension for parallel NAM sub-networks
   l1_warmup_epochs: 5          # Number of warm-up epochs for L1 sparsity
-  use_gated_nam: false         # Gated Sparse NAM head activation
-  use_pairwise_nam: false      # NAM^2 (Pairwise Interaction) activation
-  use_probabilistic_cbm: false # Deterministic to Probabilistic Concept bottleneck
+  use_gated_nam: true         # Gated Sparse NAM head activation
+  use_pairwise_nam: true      # NAM^2 (Pairwise Interaction) activation
+  use_probabilistic_cbm: true # Deterministic to Probabilistic Concept bottleneck
   pcbm_beta: 0.001             # Target weight coefficient beta for KL penalty
-  pcbm_beta_warmup_epochs: 5   # Number of epochs for KL beta warm-up
+  pcbm_beta_warmup_epochs: 2   # Number of epochs for KL beta warm-up
   pcbm_beta_anneal_epochs: 5   # Number of epochs for KL beta linear annealing/ramp-up
-  pcbm_beta_min: 0.0001        # Starting KL beta value after warm-up
+  pcbm_beta_min: 0.001        # Starting KL beta value after warm-up
   pcbm_asymmetric_kl_weight: 0.1 # KL penalty weight multiplier for positive samples
   l1_lambda_gate: 0.01         # L1 Regularization strength on gating parameters
   latent_penalty_scale: 1.0    # Penalty multiplier for latent concept gates
   weight_decay_nam: 1e-2       # L2 penalty for NAM sub-networks smoothing
-  use_cb_loss: true            # Use CVPR 2019 Class-Balanced Loss weighting
-  cb_beta: 0.999               # Beta parameter for Class-Balanced Loss weight calculation
+  use_cb_loss: false            # Use CVPR 2019 Class-Balanced Loss weighting
+  cb_beta: 0.995               # Beta parameter for Class-Balanced Loss weight calculation
   phase1_label_smoothing: 0.05 # Epsilon for Phase 1 concept label smoothing
-  phase2_scheduled_sampling: false # Enable Scheduled Sampling (Noise Injection) for Phase 2
+  phase2_scheduled_sampling: true # Enable Scheduled Sampling (Noise Injection) for Phase 2
   scheduled_sampling_prob: 0.3 # Probability to replace prediction with GT during scheduled sampling
   scheduled_sampling_epsilon: 0.05 # Epsilon value for soft GT probabilities
-  target_pos_weight: 1.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
+  intervention_prob: 0.3       # [Dataset-Specific: chexpert] Scheduled sampling probability in Phase 3
+  target_pos_weight: 5.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
   latent_concepts: 0           # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 5               # Number of target classification classes (Cardiomegaly, Edema, Consolidation, Atelectasis, Pleural Effusion)
   use_dynamic_threshold: true  # Optimize validation concept decision thresholds via Youden's J statistic
   save_dir: "checkpoints"      # Directory to save trained model weights
   resume_checkpoint: null      # Path to pre-trained weights .pth to resume from
   use_wandb: true              # Log runs and visualize metrics to Weights & Biases
-  num_workers: 4               # Number of worker threads for DataLoader
+  num_workers: 16               # Number of worker threads for DataLoader
   pin_memory: true             # Pin memory in DataLoader
-  cache_in_memory: false       # Preload all samples into RAM (disabled for CheXpert due to size)
-  max_cache_size_gb: 10.0      # Maximum dataset size allowed for in-memory caching
-  run_eval: false              # Run evaluation script after training
+  cache_in_memory: true       # Preload all samples into RAM (disabled for CheXpert due to size)
+  max_cache_size_gb: 15.0      # Maximum dataset size allowed for in-memory caching
+  run_eval: true              # Run evaluation script after training
   run_app: false               # Launch Gradio app after training
 
 # 4. Optimizer Configurations
 optimizer:
   type: "adamw"                # Choices: ["adam", "adamw", "sgd"]
   lr: 0.001                    # General default learning rate
-  backbone_lr: 0.00001         # Learning rate for vision backbone
-  phase1_lr: 0.001             # Learning rate for Phase 1 concept head
+  backbone_lr: 0.000025         # Learning rate for vision backbone
+  phase1_lr: 0.003             # Learning rate for Phase 1 concept head
   phase2_lr: 0.001             # Learning rate for Phase 2 latent head and classifier
   phase3_lr: 0.00001           # Learning rate for Phase 3 joint fine-tuning
   weight_decay: 0.0001         # L2 regularization weight decay
   momentum: 0.9                # Momentum (only applicable when optimizer is sgd)
-  concept_loss_type: "bce"     # Choices: ["focal", "bce", "asl"]
-  focal_alpha: "dynamic"       # Alpha parameter for Focal Loss
-  focal_gamma: 2.0             # Gamma parameter for Focal Loss
+  concept_loss_type: "focal"     # Choices: ["focal", "bce", "asl"]
+  focal_alpha: 0.85            # Alpha parameter for Focal Loss
+  focal_gamma: 0.5             # Gamma parameter for Focal Loss
   asl_gamma_pos: 0.0           # ASL: gamma for positive samples
   asl_gamma_neg: 4.0           # ASL: gamma for easy negative samples
   asl_alpha_pos: 1.2           # ASL: static weight for positive samples
   asl_clip: 0.05               # ASL: asymmetric clipping threshold
-  ortho_lambda: 0.05           # Orthogonality loss coefficient for attention map separation
+  ortho_lambda: 0          # Orthogonality loss coefficient for attention map separation
   lambda_ce: 0.1               # Scaling factor for Softmax Cross-Entropy loss
-  lambda_latent_ortho: 0.1     # Latent projection loss weight
+  lambda_latent_ortho: 0      # Latent projection loss weight
   lambda_latent_l1: 0.01       # Latent activation L1 loss weight
 
 # 5. Learning Rate Scheduler Options
@@ -123,7 +123,7 @@ early_stopping:
   min_delta: 0.001             # Minimum change to qualify as improvement
   
   # --- Dataset-Specific Early Stopping ---
-  phase1_monitor: "val_concept_balanced_acc" # [Dataset-Specific: cub, derm7pt]
+  phase1_monitor: "val_concept_f1" # [Dataset-Specific: cub, derm7pt]
   phase1_patience: 5           # [Dataset-Specific: cub, derm7pt]
   phase2_monitor: "val_target_loss" # [Dataset-Specific: cub, derm7pt]
   phase2_patience: 5           # [Dataset-Specific: cub, derm7pt]

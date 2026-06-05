@@ -695,7 +695,9 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             concept_logits_dropout = model.dropout(concept_logits)
             class_logits = model.classifier_head(concept_logits_dropout)
             
-            if num_classes == 1:
+            if isinstance(target_criterion, nn.BCEWithLogitsLoss):
+                loss_t = target_criterion(class_logits, targets)
+            elif num_classes == 1:
                 loss_t = target_criterion(class_logits, targets)
             else:
                 loss_t = target_criterion(class_logits, targets.view(-1).long())
@@ -787,7 +789,9 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 
                 v_class_logits, _, _ = model(val_images)
                 
-                if num_classes == 1:
+                if isinstance(target_criterion, nn.BCEWithLogitsLoss):
+                    v_loss_t = target_criterion(v_class_logits, val_targets)
+                elif num_classes == 1:
                     v_loss_t = target_criterion(v_class_logits, val_targets)
                 else:
                     v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
@@ -890,6 +894,12 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
     model.unfreeze_backbone()    # LoRA-active: only lora_A / lora_B params, pretrained weights stay frozen
     model.unfreeze_classifier()
     tqdm.write(f"  {BOLD}{GREEN}[Unfreeze]{RESET} Backbone (LoRA adapters) and Classifier Head unfrozen for fine-tuning.")
+
+    # Adjust dropout for Phase 3 to 0.3
+    original_dropout_p = getattr(model.dropout, 'p', 0.2)
+    if hasattr(model, 'dropout'):
+        model.dropout.p = 0.3
+        tqdm.write(f"  {BOLD}{YELLOW}[Dropout]{RESET} Adjusted dropout probability for Phase 3: {original_dropout_p} -> 0.3")
     
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
@@ -1210,11 +1220,27 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                         latent_features = None
                         
             # Pass concept_logits through dropout and classifier head (end-to-end gradients intact)
-            concept_logits_dropout = model.dropout(concept_logits)
+            concept_logits_for_classifier = concept_logits
+            intervention_prob = getattr(args, "intervention_prob", 0.0)
+            if intervention_prob > 0.0 and torch.rand(1).item() < intervention_prob:
+                supervised_logits_injected = inject_concept_noise(
+                    pred_logits=concept_logits[:, :num_concepts_supervised],
+                    gt_labels=concepts[:, :num_concepts_supervised],
+                    replace_prob=getattr(args, "scheduled_sampling_prob", 0.3),
+                    epsilon=getattr(args, "scheduled_sampling_epsilon", 0.05)
+                )
+                if model.num_latent_concepts > 0:
+                    concept_logits_for_classifier = torch.cat([supervised_logits_injected, concept_logits[:, num_concepts_supervised:]], dim=1)
+                else:
+                    concept_logits_for_classifier = supervised_logits_injected
+
+            concept_logits_dropout = model.dropout(concept_logits_for_classifier)
             class_logits = model.classifier_head(concept_logits_dropout)
             
             # 1. Target Loss
-            if num_classes == 1:
+            if isinstance(target_criterion, nn.BCEWithLogitsLoss):
+                loss_t = target_criterion(class_logits, targets)
+            elif num_classes == 1:
                 loss_t = target_criterion(class_logits, targets)
             else:
                 loss_t = target_criterion(class_logits, targets.view(-1).long())
@@ -1277,8 +1303,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             # Joint Loss aggregation: Target Loss + Scaled Concept Loss + Latent Orthogonality + Latent L1 Sparsity
             total_loss = loss_t + (args.lambda_c * loss_c) + (args.lambda_latent_ortho * loss_latent_ortho) + (args.lambda_latent_l1 * loss_latent_l1)
             
-            # L1 Lasso Regularization on classifier_head parameters
-            l1_lambda = getattr(args, "l1_lambda", 0.0)
+            # L1 Lasso Regularization on classifier_head parameters (increased to 0.05 during Phase 3)
+            l1_lambda = getattr(args, "phase3_l1_lambda", 0.05)
             if l1_lambda > 0:
                 if hasattr(model.classifier_head, "get_sparsity_loss"):
                     latent_penalty_scale = getattr(args, "latent_penalty_scale", 1.0)
@@ -1334,7 +1360,9 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 
                 v_class_logits, _, _ = model(val_images)
                 
-                if num_classes == 1:
+                if isinstance(target_criterion, nn.BCEWithLogitsLoss):
+                    v_loss_t = target_criterion(v_class_logits, val_targets)
+                elif num_classes == 1:
                     v_loss_t = target_criterion(v_class_logits, val_targets)
                 else:
                     v_loss_t = target_criterion(v_class_logits, val_targets.view(-1).long())
@@ -1412,3 +1440,8 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
             l_gates = model.classifier_head.latent_gates.detach().cpu()
             final_l_active = (l_gates.abs() > 0.0).sum().item()
             tqdm.write(f"  {BOLD}{GREEN}[NAM Latent Gating Post-Phase 3]{RESET} Final Active Latent Gates (threshold=0.05): {final_l_active}/{l_gates.size(0)}")
+
+    # Restore original dropout rate
+    if hasattr(model, 'dropout'):
+        model.dropout.p = original_dropout_p
+        tqdm.write(f"  {BOLD}{YELLOW}[Dropout]{RESET} Restored dropout probability after Phase 3: {model.dropout.p}")

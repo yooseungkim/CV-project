@@ -41,6 +41,8 @@ class GatedSparseNAMHead(nn.Module):
             groups=num_concepts
         )
         
+        self.dropout = nn.Dropout(p=0.2)
+        
         # Learnable gating parameter initialized to 1.0
         self.concept_gates = nn.Parameter(torch.ones(num_concepts))
         
@@ -103,6 +105,7 @@ class GatedSparseNAMHead(nn.Module):
         supervised_x = x[:, :self.num_concepts].unsqueeze(-1)
         
         h = F.relu(self.conv1(supervised_x))
+        h = self.dropout(h)
         y = self.conv2(h) # Shape: [Batch, num_concepts * num_classes, 1]
         
         y = y.view(batch_size, self.num_concepts, self.num_classes)
@@ -124,6 +127,7 @@ class GatedSparseNAMHead(nn.Module):
             pair_features = torch.cat(pair_inputs, dim=1).unsqueeze(-1) # [B, M * 2, 1]
             
             h_p = F.relu(self.pairwise_conv1(pair_features))
+            h_p = self.dropout(h_p)
             y_p = self.pairwise_conv2(h_p)
             y_p = y_p.view(batch_size, self.M, self.num_classes)
             
@@ -202,6 +206,7 @@ class ConceptAttentionLayer(nn.Module):
                 / self.temperature.clamp(min=1e-4)
                 + self.concept_bias_logvar.unsqueeze(0)
             )
+            concept_logvar = torch.clamp(concept_logvar, min=-10.0, max=10.0)
             return concept_mean, concept_logvar, attn_weights_2d, weighted_features
             
         return concept_mean, attn_weights_2d, weighted_features
@@ -454,6 +459,7 @@ class ViTCrossAttentionLayer(nn.Module):
             attn_weights_2d = torch.cat([attn_clinic, attn_derm], dim=3)
 
         if self.probabilistic:
+            concept_logvar = torch.clamp(concept_logvar, min=-10.0, max=10.0)
             return concept_mean, concept_logvar, attn_weights_2d, attn_out
 
         return concept_mean, attn_weights_2d, attn_out
@@ -543,6 +549,7 @@ class GroupToConceptAttention(nn.Module):
                 torch.einsum('bcd,cd->bc', concept_features, self.concept_weight_logvar)
                 + self.concept_bias_logvar.unsqueeze(0)
             )
+            concept_logvar = torch.clamp(concept_logvar, min=-10.0, max=10.0)
             return concept_mean, concept_logvar, attn_weights_2d, concept_features
 
         return concept_mean, attn_weights_2d, concept_features
@@ -604,6 +611,7 @@ class PatchWiseMLPConceptHead(nn.Module):
             # Gather logvar values at the top-k indices of the mean path
             logvar_gathered = torch.gather(logvar_per_patch, dim=1, index=topk_indices) # [B, k, num_concepts]
             concept_logvar = torch.sum(logvar_gathered * weights, dim=1)
+            concept_logvar = torch.clamp(concept_logvar, min=-10.0, max=10.0)
             
             if return_weights:
                 return concept_mean, concept_logvar, topk_indices, weights

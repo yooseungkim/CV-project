@@ -12,6 +12,7 @@ import numpy as np
 from src.data.cub import CUB2011Dataset
 from src.data.derm7pt import Derm7PtDataset
 from src.data.milk10k import MILK10KDataset
+from src.data.chexpert import CheXpertDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.metrics import calculate_accuracy, calculate_concept_metrics
 
@@ -35,6 +36,12 @@ def parse_args():
 
 def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     """Helper to calculate Top-K accuracy for target classes."""
+    if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
+        # Multi-label classification (like CheXpert)
+        preds = (outputs > 0.0).float()
+        correct = (preds == targets).float().sum().item()
+        return {1: correct / targets.numel()}
+        
     maxk = min(outputs.shape[-1], max(topk))
     batch_size = targets.size(0)
     if outputs.shape[-1] <= 1:
@@ -422,6 +429,11 @@ def main():
         csv_path = checkpoint_args.get('csv_path', 'data/MILK10K/MILK10k_Training_Metadata.csv')
         image_dir = checkpoint_args.get('image_dir', 'data/MILK10K/MILK10k_Training_Input/MILK10k_Training_Input')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/MILK10K/concept_config.json')
+    elif dataset_name == 'chexpert':
+        dataset_class = CheXpertDataset
+        csv_path = checkpoint_args.get('csv_path', 'data/CheXpert/train.csv')
+        image_dir = checkpoint_args.get('image_dir', 'data/CheXpert/')
+        concept_config_path = checkpoint_args.get('concept_config_path', 'data/CheXpert/concept_config.json')
     else:
         dataset_class = CUB2011Dataset
         csv_path = checkpoint_args.get('csv_path', 'data/CUB_200_2011/images.txt')

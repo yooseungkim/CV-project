@@ -11,6 +11,7 @@ from tqdm import tqdm
 from src.data.milk10k import MILK10KDataset
 from src.data.derm7pt import Derm7PtDataset
 from src.data.cub import CUB2011Dataset
+from src.data.chexpert import CheXpertDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy, calculate_concept_metrics, find_optimal_concept_thresholds
 from src.utils.visualization import generate_concept_heatmaps
@@ -75,6 +76,8 @@ def parse_args():
     if "filter_rare_concepts" in ds_cfg: flat_defaults["filter_rare_concepts"] = ds_cfg["filter_rare_concepts"]
     if "use_paper_preprocessing" in ds_cfg: flat_defaults["use_paper_preprocessing"] = ds_cfg["use_paper_preprocessing"]
     if "use_multimodal" in ds_cfg: flat_defaults["use_multimodal"] = ds_cfg["use_multimodal"]
+    if "policy" in ds_cfg: flat_defaults["policy"] = ds_cfg["policy"]
+    if "subset_ratio" in ds_cfg: flat_defaults["subset_ratio"] = ds_cfg["subset_ratio"]
     
     # training
     tr_cfg = config_data.get("training", {})
@@ -114,6 +117,7 @@ def parse_args():
     if "use_concept_attention" in bb_cfg: flat_defaults["use_concept_attention"] = bb_cfg["use_concept_attention"]
     if "l1_lambda_gate" in tr_cfg: flat_defaults["l1_lambda_gate"] = tr_cfg["l1_lambda_gate"]
     if "latent_penalty_scale" in tr_cfg: flat_defaults["latent_penalty_scale"] = tr_cfg["latent_penalty_scale"]
+    if "intervention_prob" in tr_cfg: flat_defaults["intervention_prob"] = tr_cfg["intervention_prob"]
 
     if "weight_decay_nam" in tr_cfg: flat_defaults["weight_decay_nam"] = tr_cfg["weight_decay_nam"]
     if "use_cb_loss" in tr_cfg: flat_defaults["use_cb_loss"] = tr_cfg["use_cb_loss"]
@@ -159,6 +163,8 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default=flat_defaults.get('dataset', 'milk10k'), choices=choices)
     parser.add_argument('--csv_path', type=str, default=flat_defaults.get('csv_path', None))
     parser.add_argument('--image_dir', type=str, default=flat_defaults.get('image_dir', None))
+    parser.add_argument('--policy', type=str, default=flat_defaults.get('policy', 'u-ones'), choices=['u-ones', 'u-zeros'], help="CheXpert uncertainty policy")
+    parser.add_argument('--subset_ratio', type=float, default=flat_defaults.get('subset_ratio', None), help="Fraction of dataset to load")
     parser.add_argument('--backbone_type', type=str, default=flat_defaults.get('backbone_type', 'timm'), choices=['timm', 'clip'])
     parser.add_argument('--backbone_name', type=str, default=flat_defaults.get('backbone_name', 'resnet50'))
     parser.add_argument('--num_concepts', type=int, default=None)
@@ -175,6 +181,7 @@ def parse_args():
     parser.add_argument('--phase2_scheduled_sampling', type=str2bool, default=flat_defaults.get('phase2_scheduled_sampling', False), help="Enable Scheduled Sampling (Noise Injection) for Phase 2 Classifier training")
     parser.add_argument('--scheduled_sampling_prob', type=float, default=flat_defaults.get('scheduled_sampling_prob', 0.3), help="Probability to replace prediction with GT during Phase 2 scheduled sampling")
     parser.add_argument('--scheduled_sampling_epsilon', type=float, default=flat_defaults.get('scheduled_sampling_epsilon', 0.05), help="Epsilon value for soft GT probabilities in Phase 2 scheduled sampling")
+    parser.add_argument('--intervention_prob', type=float, default=flat_defaults.get('intervention_prob', 0.0), help="Probability of applying scheduled sampling concept noise in Phase 3")
     parser.add_argument('--phase1_label_smoothing', type=float, default=flat_defaults.get('phase1_label_smoothing', 0.05), help="Epsilon parameter for Phase 1 concept target label smoothing (0.0 to disable)")
     parser.add_argument('--phase3_lr', type=float, default=flat_defaults.get('phase3_lr', 1e-5), help="Learning rate for Phase 3 joint fine-tuning")
     parser.add_argument('--phase1_patience', type=int, default=flat_defaults.get('phase1_patience', None), help="Early stopping patience for Phase 1")
@@ -263,6 +270,8 @@ def main():
         dataset_class = Derm7PtDataset
     elif args.dataset in ['cub', 'cub_200_2011', 'cvpr2016_cub']:
         dataset_class = CUB2011Dataset
+    elif args.dataset == 'chexpert':
+        dataset_class = CheXpertDataset
     else:
         raise ValueError(f"Unknown dataset {args.dataset}")
 
@@ -274,6 +283,8 @@ def main():
 
     dataset_config["filter_rare_concepts"] = getattr(args, "filter_rare_concepts", False)
     dataset_config["use_paper_preprocessing"] = getattr(args, "use_paper_preprocessing", False)
+    dataset_config["policy"] = getattr(args, "policy", "u-ones")
+    dataset_config["subset_ratio"] = getattr(args, "subset_ratio", None)
 
     # Apply CLI overrides if present
     if args.concept_cols:
@@ -565,7 +576,9 @@ def main():
         tqdm.write(f"  {BOLD}{BLUE}[Concept Loss]{RESET} BCEWithLogitsLoss with dynamic pos_weights (first 5 shown): {[f'{w:.2f}' for w in pos_weights[:5].tolist()]}")
         concept_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
     
-    if num_classes == 1:
+    if args.dataset == 'chexpert':
+        target_criterion = nn.BCEWithLogitsLoss()
+    elif num_classes == 1:
         if args.target_pos_weight != 1.0:
             pos_weight = torch.tensor([args.target_pos_weight], dtype=torch.float32, device=device)
             target_criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)

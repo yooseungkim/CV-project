@@ -13,9 +13,10 @@ def run_test():
         img_path = os.path.join(tmpdir, img_filename)
         Image.new('RGB', (100, 100), color='red').save(img_path)
         
-        # 2. Create a dummy CSV with 4 rows to test subsetting
+        # 2. Create a dummy CSV with 4 rows (3 Frontal, 1 Lateral)
         data = {
             'Path': [img_filename, img_filename, img_filename, img_filename],
+            'Frontal/Lateral': ['Frontal', 'Frontal', 'Lateral', 'Frontal'],
             'No Finding': [1.0, -1.0, 0.0, 1.0],
             'Enlarged Cardiomediastinum': [0.0, np.nan, 1.0, 0.0],
             'Lung Opacity': [-1.0, "", 0.0, -1.0],
@@ -37,8 +38,9 @@ def run_test():
         df.to_csv(csv_path, index=False)
         
         # 3. Test with policy = "u-ones"
+        # Total rows = 4, but 1 is Lateral, so only 3 Frontal rows should remain!
         dataset_u_ones = CheXpertDataset(csv_file=csv_path, root_dir=tmpdir, policy="u-ones")
-        assert len(dataset_u_ones) == 4
+        assert len(dataset_u_ones) == 3
         
         img, concepts, targets = dataset_u_ones[0]
         
@@ -66,8 +68,8 @@ def run_test():
         assert torch.allclose(concepts_z, expected_concepts_z0)
         assert torch.allclose(targets_z, expected_targets_z0)
         
-        # 5. Test subset ratio (e.g. subset_ratio=0.5 -> 2 out of 4 rows)
-        dataset_subset = CheXpertDataset(csv_file=csv_path, root_dir=tmpdir, policy="u-ones", subset_ratio=0.5)
+        # 5. Test subset ratio (e.g. subset_ratio=0.66 -> should be ~2 out of 3 frontal rows)
+        dataset_subset = CheXpertDataset(csv_file=csv_path, root_dir=tmpdir, policy="u-ones", subset_ratio=0.66)
         assert len(dataset_subset) == 2
         
         # 6. Test invalid subset ratio
@@ -93,7 +95,7 @@ def run_test():
         assert isinstance(img_t, torch.Tensor)
         assert img_t.shape == (3, 100, 100)
         
-        print("ALL TESTS (INCLUDING SUBSET RATIO) PASSED SUCCESSFULLY!")
+        print("ALL TESTS (INCLUDING FRONTAL FILTER & SUBSET RATIO) PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     run_test()

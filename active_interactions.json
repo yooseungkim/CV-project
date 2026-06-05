@@ -1,978 +1,282 @@
 [
     {
-        "index": 65,
-        "concept_i_idx": 4,
-        "concept_j_idx": 8,
-        "concept_i": "site_foot",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": 0.0435541495680809
-    },
-    {
-        "index": 150,
-        "concept_i_idx": 15,
-        "concept_j_idx": 16,
-        "concept_i": "MONET_pigmented",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": -0.04209591820836067
-    },
-    {
-        "index": 70,
-        "concept_i_idx": 4,
-        "concept_j_idx": 13,
-        "concept_i": "site_foot",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": 0.03715293109416962
-    },
-    {
-        "index": 39,
-        "concept_i_idx": 2,
-        "concept_j_idx": 9,
-        "concept_i": "sex_male",
-        "concept_j": "site_trunk",
-        "gate_weight": -0.03561445325613022
-    },
-    {
-        "index": 118,
-        "concept_i_idx": 9,
-        "concept_j_idx": 11,
-        "concept_i": "site_trunk",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.03559103608131409
-    },
-    {
-        "index": 47,
-        "concept_i_idx": 2,
-        "concept_j_idx": 17,
-        "concept_i": "sex_male",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.0333365723490715
-    },
-    {
-        "index": 33,
-        "concept_i_idx": 2,
-        "concept_j_idx": 3,
-        "concept_i": "sex_male",
-        "concept_j": "skin_tone_class",
-        "gate_weight": 0.03154405578970909
-    },
-    {
-        "index": 15,
-        "concept_i_idx": 0,
-        "concept_j_idx": 16,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.030515100806951523
-    },
-    {
-        "index": 131,
-        "concept_i_idx": 10,
-        "concept_j_idx": 17,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": 0.02954975701868534
-    },
-    {
-        "index": 106,
-        "concept_i_idx": 7,
-        "concept_j_idx": 16,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.02866961993277073
-    },
-    {
-        "index": 87,
-        "concept_i_idx": 6,
-        "concept_j_idx": 7,
-        "concept_i": "site_hand",
-        "concept_j": "site_head_neck_face",
-        "gate_weight": -0.026519624516367912
-    },
-    {
-        "index": 35,
-        "concept_i_idx": 2,
-        "concept_j_idx": 5,
-        "concept_i": "sex_male",
-        "concept_j": "site_genital",
-        "gate_weight": -0.02640274353325367
-    },
-    {
-        "index": 91,
-        "concept_i_idx": 6,
-        "concept_j_idx": 11,
-        "concept_i": "site_hand",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": -0.02544243447482586
-    },
-    {
-        "index": 27,
-        "concept_i_idx": 1,
-        "concept_j_idx": 12,
-        "concept_i": "sex_female",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.02505442686378956
-    },
-    {
-        "index": 51,
-        "concept_i_idx": 3,
-        "concept_j_idx": 7,
-        "concept_i": "skin_tone_class",
-        "concept_j": "site_head_neck_face",
-        "gate_weight": -0.02481389418244362
-    },
-    {
-        "index": 128,
-        "concept_i_idx": 10,
-        "concept_j_idx": 14,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.024350006133317947
-    },
-    {
-        "index": 29,
-        "concept_i_idx": 1,
-        "concept_j_idx": 14,
-        "concept_i": "sex_female",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.02329361066222191
-    },
-    {
-        "index": 121,
-        "concept_i_idx": 9,
-        "concept_j_idx": 14,
-        "concept_i": "site_trunk",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.02285846695303917
-    },
-    {
-        "index": 142,
-        "concept_i_idx": 12,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_hair",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.022354653105139732
-    },
-    {
-        "index": 18,
-        "concept_i_idx": 1,
-        "concept_j_idx": 3,
-        "concept_i": "sex_female",
-        "concept_j": "skin_tone_class",
-        "gate_weight": 0.021488336846232414
-    },
-    {
-        "index": 137,
-        "concept_i_idx": 11,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.019665591418743134
-    },
-    {
-        "index": 71,
-        "concept_i_idx": 4,
-        "concept_j_idx": 14,
-        "concept_i": "site_foot",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.019378669559955597
-    },
-    {
-        "index": 16,
-        "concept_i_idx": 0,
-        "concept_j_idx": 17,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.018803291022777557
-    },
-    {
-        "index": 75,
-        "concept_i_idx": 5,
-        "concept_j_idx": 6,
-        "concept_i": "site_genital",
-        "concept_j": "site_hand",
-        "gate_weight": 0.018790842965245247
-    },
-    {
         "index": 34,
-        "concept_i_idx": 2,
-        "concept_j_idx": 4,
-        "concept_i": "sex_male",
-        "concept_j": "site_foot",
-        "gate_weight": -0.018580619245767593
-    },
-    {
-        "index": 90,
-        "concept_i_idx": 6,
-        "concept_j_idx": 10,
-        "concept_i": "site_hand",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": 0.01755378767848015
-    },
-    {
-        "index": 23,
-        "concept_i_idx": 1,
-        "concept_j_idx": 8,
-        "concept_i": "sex_female",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": -0.01722850278019905
-    },
-    {
-        "index": 134,
-        "concept_i_idx": 11,
-        "concept_j_idx": 14,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.017001887783408165
-    },
-    {
-        "index": 103,
-        "concept_i_idx": 7,
-        "concept_j_idx": 13,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.016590168699622154
-    },
-    {
-        "index": 32,
-        "concept_i_idx": 1,
-        "concept_j_idx": 17,
-        "concept_i": "sex_female",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.015621934086084366
-    },
-    {
-        "index": 84,
-        "concept_i_idx": 5,
-        "concept_j_idx": 15,
-        "concept_i": "site_genital",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": 0.015340222977101803
-    },
-    {
-        "index": 148,
-        "concept_i_idx": 14,
-        "concept_j_idx": 16,
-        "concept_i": "MONET_erythema",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.015318715944886208
-    },
-    {
-        "index": 59,
-        "concept_i_idx": 3,
-        "concept_j_idx": 15,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.01485970988869667
-    },
-    {
-        "index": 80,
-        "concept_i_idx": 5,
-        "concept_j_idx": 11,
-        "concept_i": "site_genital",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.014636607840657234
-    },
-    {
-        "index": 119,
-        "concept_i_idx": 9,
-        "concept_j_idx": 12,
-        "concept_i": "site_trunk",
-        "concept_j": "MONET_hair",
-        "gate_weight": -0.014623403549194336
-    },
-    {
-        "index": 28,
-        "concept_i_idx": 1,
-        "concept_j_idx": 13,
-        "concept_i": "sex_female",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": 0.013889805413782597
-    },
-    {
-        "index": 120,
-        "concept_i_idx": 9,
-        "concept_j_idx": 13,
-        "concept_i": "site_trunk",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.013625840656459332
-    },
-    {
-        "index": 9,
-        "concept_i_idx": 0,
-        "concept_j_idx": 10,
-        "concept_i": "age_approx",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": 0.013118519447743893
-    },
-    {
-        "index": 40,
-        "concept_i_idx": 2,
-        "concept_j_idx": 10,
-        "concept_i": "sex_male",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": 0.012915370054543018
-    },
-    {
-        "index": 78,
-        "concept_i_idx": 5,
-        "concept_j_idx": 9,
-        "concept_i": "site_genital",
-        "concept_j": "site_trunk",
-        "gate_weight": 0.011902250349521637
-    },
-    {
-        "index": 58,
-        "concept_i_idx": 3,
-        "concept_j_idx": 14,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.011703984811902046
-    },
-    {
-        "index": 77,
-        "concept_i_idx": 5,
-        "concept_j_idx": 8,
-        "concept_i": "site_genital",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": -0.011635581962764263
-    },
-    {
-        "index": 104,
-        "concept_i_idx": 7,
-        "concept_j_idx": 14,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.011633790098130703
-    },
-    {
-        "index": 66,
-        "concept_i_idx": 4,
-        "concept_j_idx": 9,
-        "concept_i": "site_foot",
-        "concept_j": "site_trunk",
-        "gate_weight": 0.011448265053331852
-    },
-    {
-        "index": 125,
-        "concept_i_idx": 10,
-        "concept_j_idx": 11,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.011379885487258434
-    },
-    {
-        "index": 41,
-        "concept_i_idx": 2,
-        "concept_j_idx": 11,
-        "concept_i": "sex_male",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": -0.011331395246088505
-    },
-    {
-        "index": 146,
-        "concept_i_idx": 13,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_vasculature_vessels",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.011100491508841515
-    },
-    {
-        "index": 31,
-        "concept_i_idx": 1,
-        "concept_j_idx": 16,
-        "concept_i": "sex_female",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": -0.011016516014933586
-    },
-    {
-        "index": 127,
-        "concept_i_idx": 10,
-        "concept_j_idx": 13,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.010786646977066994
-    },
-    {
-        "index": 141,
-        "concept_i_idx": 12,
-        "concept_j_idx": 16,
-        "concept_i": "MONET_hair",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.010539030656218529
-    },
-    {
-        "index": 69,
-        "concept_i_idx": 4,
-        "concept_j_idx": 12,
-        "concept_i": "site_foot",
-        "concept_j": "MONET_hair",
-        "gate_weight": -0.01049494557082653
-    },
-    {
-        "index": 68,
-        "concept_i_idx": 4,
-        "concept_j_idx": 11,
-        "concept_i": "site_foot",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.010472288355231285
-    },
-    {
-        "index": 88,
         "concept_i_idx": 6,
         "concept_j_idx": 8,
-        "concept_i": "site_hand",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": -0.010452304035425186
-    },
-    {
-        "index": 60,
-        "concept_i_idx": 3,
-        "concept_j_idx": 16,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.01035868376493454
-    },
-    {
-        "index": 113,
-        "concept_i_idx": 8,
-        "concept_j_idx": 14,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.010349743068218231
-    },
-    {
-        "index": 83,
-        "concept_i_idx": 5,
-        "concept_j_idx": 14,
-        "concept_i": "site_genital",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.01010279729962349
-    },
-    {
-        "index": 110,
-        "concept_i_idx": 8,
-        "concept_j_idx": 11,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.01002831943333149
-    },
-    {
-        "index": 122,
-        "concept_i_idx": 9,
-        "concept_j_idx": 15,
-        "concept_i": "site_trunk",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": 0.009829485788941383
-    },
-    {
-        "index": 108,
-        "concept_i_idx": 8,
-        "concept_j_idx": 9,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "site_trunk",
-        "gate_weight": 0.009634146466851234
-    },
-    {
-        "index": 139,
-        "concept_i_idx": 12,
-        "concept_j_idx": 14,
-        "concept_i": "MONET_hair",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.00943747628480196
-    },
-    {
-        "index": 112,
-        "concept_i_idx": 8,
-        "concept_j_idx": 13,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.008625260554254055
-    },
-    {
-        "index": 94,
-        "concept_i_idx": 6,
-        "concept_j_idx": 14,
-        "concept_i": "site_hand",
-        "concept_j": "MONET_erythema",
-        "gate_weight": -0.008500559255480766
-    },
-    {
-        "index": 149,
-        "concept_i_idx": 14,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_erythema",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.00838831439614296
-    },
-    {
-        "index": 56,
-        "concept_i_idx": 3,
-        "concept_j_idx": 12,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_hair",
-        "gate_weight": -0.008209139108657837
-    },
-    {
-        "index": 38,
-        "concept_i_idx": 2,
-        "concept_j_idx": 8,
-        "concept_i": "sex_male",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": 0.008147754706442356
-    },
-    {
-        "index": 135,
-        "concept_i_idx": 11,
-        "concept_j_idx": 15,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.008056922815740108
-    },
-    {
-        "index": 1,
-        "concept_i_idx": 0,
-        "concept_j_idx": 2,
-        "concept_i": "age_approx",
-        "concept_j": "sex_male",
-        "gate_weight": -0.007980618625879288
-    },
-    {
-        "index": 115,
-        "concept_i_idx": 8,
-        "concept_j_idx": 16,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.007840650156140327
-    },
-    {
-        "index": 8,
-        "concept_i_idx": 0,
-        "concept_j_idx": 9,
-        "concept_i": "age_approx",
-        "concept_j": "site_trunk",
-        "gate_weight": 0.007212101016193628
-    },
-    {
-        "index": 55,
-        "concept_i_idx": 3,
-        "concept_j_idx": 11,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": 0.0071570128202438354
-    },
-    {
-        "index": 7,
-        "concept_i_idx": 0,
-        "concept_j_idx": 8,
-        "concept_i": "age_approx",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": 0.007072743959724903
-    },
-    {
-        "index": 50,
-        "concept_i_idx": 3,
-        "concept_j_idx": 6,
-        "concept_i": "skin_tone_class",
-        "concept_j": "site_hand",
-        "gate_weight": -0.007010741624981165
-    },
-    {
-        "index": 114,
-        "concept_i_idx": 8,
-        "concept_j_idx": 15,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": 0.006920917890965939
-    },
-    {
-        "index": 53,
-        "concept_i_idx": 3,
-        "concept_j_idx": 9,
-        "concept_i": "skin_tone_class",
-        "concept_j": "site_trunk",
-        "gate_weight": -0.006629849784076214
-    },
-    {
-        "index": 57,
-        "concept_i_idx": 3,
-        "concept_j_idx": 13,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": 0.006613361183553934
-    },
-    {
-        "index": 2,
-        "concept_i_idx": 0,
-        "concept_j_idx": 3,
-        "concept_i": "age_approx",
-        "concept_j": "skin_tone_class",
-        "gate_weight": 0.00652148574590683
-    },
-    {
-        "index": 19,
-        "concept_i_idx": 1,
-        "concept_j_idx": 4,
-        "concept_i": "sex_female",
-        "concept_j": "site_foot",
-        "gate_weight": -0.006388097070157528
-    },
-    {
-        "index": 152,
-        "concept_i_idx": 16,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.006295507773756981
-    },
-    {
-        "index": 17,
-        "concept_i_idx": 1,
-        "concept_j_idx": 2,
-        "concept_i": "sex_female",
-        "concept_j": "sex_male",
-        "gate_weight": 0.0062562040984630585
-    },
-    {
-        "index": 144,
-        "concept_i_idx": 13,
-        "concept_j_idx": 15,
-        "concept_i": "MONET_vasculature_vessels",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.006157351657748222
-    },
-    {
-        "index": 61,
-        "concept_i_idx": 3,
-        "concept_j_idx": 17,
-        "concept_i": "skin_tone_class",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": 0.006146079394966364
-    },
-    {
-        "index": 64,
-        "concept_i_idx": 4,
-        "concept_j_idx": 7,
-        "concept_i": "site_foot",
-        "concept_j": "site_head_neck_face",
-        "gate_weight": -0.005617326591163874
-    },
-    {
-        "index": 136,
-        "concept_i_idx": 11,
-        "concept_j_idx": 16,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.005321040749549866
-    },
-    {
-        "index": 43,
-        "concept_i_idx": 2,
-        "concept_j_idx": 13,
-        "concept_i": "sex_male",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.004838820081204176
-    },
-    {
-        "index": 13,
-        "concept_i_idx": 0,
-        "concept_j_idx": 14,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_erythema",
-        "gate_weight": 0.0046693976037204266
-    },
-    {
-        "index": 151,
-        "concept_i_idx": 15,
-        "concept_j_idx": 17,
-        "concept_i": "MONET_pigmented",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.004512650892138481
-    },
-    {
-        "index": 130,
-        "concept_i_idx": 10,
-        "concept_j_idx": 16,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": -0.004488464444875717
-    },
-    {
-        "index": 45,
-        "concept_i_idx": 2,
-        "concept_j_idx": 15,
-        "concept_i": "sex_male",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.00446342583745718
-    },
-    {
-        "index": 109,
-        "concept_i_idx": 8,
-        "concept_j_idx": 10,
-        "concept_i": "site_lower_extremity",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": 0.0042292289435863495
-    },
-    {
-        "index": 49,
-        "concept_i_idx": 3,
-        "concept_j_idx": 5,
-        "concept_i": "skin_tone_class",
-        "concept_j": "site_genital",
-        "gate_weight": -0.004161170683801174
-    },
-    {
-        "index": 81,
-        "concept_i_idx": 5,
-        "concept_j_idx": 12,
-        "concept_i": "site_genital",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.004098336212337017
-    },
-    {
-        "index": 21,
-        "concept_i_idx": 1,
-        "concept_j_idx": 6,
-        "concept_i": "sex_female",
-        "concept_j": "site_hand",
-        "gate_weight": 0.004075272940099239
-    },
-    {
-        "index": 98,
-        "concept_i_idx": 7,
-        "concept_j_idx": 8,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "site_lower_extremity",
-        "gate_weight": -0.0037475330755114555
-    },
-    {
-        "index": 97,
-        "concept_i_idx": 6,
-        "concept_j_idx": 17,
-        "concept_i": "site_hand",
-        "concept_j": "MONET_skin_markings_pen_ink_purple_pen",
-        "gate_weight": -0.003745818277820945
-    },
-    {
-        "index": 101,
-        "concept_i_idx": 7,
-        "concept_j_idx": 11,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": -0.003405933268368244
-    },
-    {
-        "index": 129,
-        "concept_i_idx": 10,
-        "concept_j_idx": 15,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.0030329085420817137
-    },
-    {
-        "index": 12,
-        "concept_i_idx": 0,
-        "concept_j_idx": 13,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": -0.0029146766755729914
-    },
-    {
-        "index": 20,
-        "concept_i_idx": 1,
-        "concept_j_idx": 5,
-        "concept_i": "sex_female",
-        "concept_j": "site_genital",
-        "gate_weight": -0.002826722338795662
-    },
-    {
-        "index": 133,
-        "concept_i_idx": 11,
-        "concept_j_idx": 13,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": 0.0027854559011757374
-    },
-    {
-        "index": 0,
-        "concept_i_idx": 0,
-        "concept_j_idx": 1,
-        "concept_i": "age_approx",
-        "concept_j": "sex_female",
-        "gate_weight": 0.0027751969173550606
-    },
-    {
-        "index": 140,
-        "concept_i_idx": 12,
-        "concept_j_idx": 15,
-        "concept_i": "MONET_hair",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.002746686339378357
-    },
-    {
-        "index": 102,
-        "concept_i_idx": 7,
-        "concept_j_idx": 12,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.002649642527103424
-    },
-    {
-        "index": 62,
-        "concept_i_idx": 4,
-        "concept_j_idx": 5,
-        "concept_i": "site_foot",
-        "concept_j": "site_genital",
-        "gate_weight": -0.0024604671634733677
-    },
-    {
-        "index": 132,
-        "concept_i_idx": 11,
-        "concept_j_idx": 12,
-        "concept_i": "MONET_ulceration_crust",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.002400374738499522
-    },
-    {
-        "index": 6,
-        "concept_i_idx": 0,
-        "concept_j_idx": 7,
-        "concept_i": "age_approx",
-        "concept_j": "site_head_neck_face",
-        "gate_weight": -0.002343318425118923
-    },
-    {
-        "index": 105,
-        "concept_i_idx": 7,
-        "concept_j_idx": 15,
-        "concept_i": "site_head_neck_face",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": 0.002276831306517124
+        "concept_i": "Pleural Other",
+        "concept_j": "Support Devices",
+        "gate_weight": -0.021893085911870003
     },
     {
         "index": 4,
         "concept_i_idx": 0,
         "concept_j_idx": 5,
-        "concept_i": "age_approx",
-        "concept_j": "site_genital",
-        "gate_weight": -0.0021565856877714396
+        "concept_i": "No Finding",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.018530337139964104
     },
     {
-        "index": 72,
+        "index": 12,
+        "concept_i_idx": 1,
+        "concept_j_idx": 6,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.018273433670401573
+    },
+    {
+        "index": 29,
         "concept_i_idx": 4,
-        "concept_j_idx": 15,
-        "concept_i": "site_foot",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": 0.002082140650600195
+        "concept_j_idx": 8,
+        "concept_i": "Pneumonia",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.01346561685204506
+    },
+    {
+        "index": 32,
+        "concept_i_idx": 5,
+        "concept_j_idx": 8,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.013125913217663765
+    },
+    {
+        "index": 30,
+        "concept_i_idx": 5,
+        "concept_j_idx": 6,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.011219230480492115
+    },
+    {
+        "index": 23,
+        "concept_i_idx": 3,
+        "concept_j_idx": 6,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pleural Other",
+        "gate_weight": 0.010205651633441448
+    },
+    {
+        "index": 7,
+        "concept_i_idx": 0,
+        "concept_j_idx": 8,
+        "concept_i": "No Finding",
+        "concept_j": "Support Devices",
+        "gate_weight": -0.009748550131917
+    },
+    {
+        "index": 21,
+        "concept_i_idx": 3,
+        "concept_j_idx": 4,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pneumonia",
+        "gate_weight": 0.00885115098208189
     },
     {
         "index": 10,
-        "concept_i_idx": 0,
-        "concept_j_idx": 11,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_ulceration_crust",
-        "gate_weight": -0.001980865839868784
-    },
-    {
-        "index": 67,
-        "concept_i_idx": 4,
-        "concept_j_idx": 10,
-        "concept_i": "site_foot",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": -0.0018125484930351377
-    },
-    {
-        "index": 48,
-        "concept_i_idx": 3,
+        "concept_i_idx": 1,
         "concept_j_idx": 4,
-        "concept_i": "skin_tone_class",
-        "concept_j": "site_foot",
-        "gate_weight": -0.0017388802953064442
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Pneumonia",
+        "gate_weight": 0.00847642868757248
     },
     {
-        "index": 126,
-        "concept_i_idx": 10,
-        "concept_j_idx": 12,
-        "concept_i": "site_upper_extremity",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.0017050585011020303
+        "index": 22,
+        "concept_i_idx": 3,
+        "concept_j_idx": 5,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.008270825259387493
+    },
+    {
+        "index": 6,
+        "concept_i_idx": 0,
+        "concept_j_idx": 7,
+        "concept_i": "No Finding",
+        "concept_j": "Fracture",
+        "gate_weight": 0.008030897937715054
+    },
+    {
+        "index": 20,
+        "concept_i_idx": 2,
+        "concept_j_idx": 8,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.007654005661606789
+    },
+    {
+        "index": 18,
+        "concept_i_idx": 2,
+        "concept_j_idx": 6,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.00641623605042696
+    },
+    {
+        "index": 35,
+        "concept_i_idx": 7,
+        "concept_j_idx": 8,
+        "concept_i": "Fracture",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.006280682981014252
+    },
+    {
+        "index": 0,
+        "concept_i_idx": 0,
+        "concept_j_idx": 1,
+        "concept_i": "No Finding",
+        "concept_j": "Enlarged Cardiomediastinum",
+        "gate_weight": 0.006267784163355827
     },
     {
         "index": 5,
         "concept_i_idx": 0,
         "concept_j_idx": 6,
-        "concept_i": "age_approx",
-        "concept_j": "site_hand",
-        "gate_weight": -0.0016516584437340498
+        "concept_i": "No Finding",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.006215236149728298
     },
     {
-        "index": 145,
-        "concept_i_idx": 13,
-        "concept_j_idx": 16,
-        "concept_i": "MONET_vasculature_vessels",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": 0.0015906795160844922
+        "index": 17,
+        "concept_i_idx": 2,
+        "concept_j_idx": 5,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.00574395339936018
     },
     {
-        "index": 79,
-        "concept_i_idx": 5,
-        "concept_j_idx": 10,
-        "concept_i": "site_genital",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": -0.0015245014801621437
+        "index": 9,
+        "concept_i_idx": 1,
+        "concept_j_idx": 3,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Lung Lesion",
+        "gate_weight": -0.00565763097256422
     },
     {
-        "index": 14,
+        "index": 1,
         "concept_i_idx": 0,
-        "concept_j_idx": 15,
-        "concept_i": "age_approx",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.0014697341248393059
+        "concept_j_idx": 2,
+        "concept_i": "No Finding",
+        "concept_j": "Lung Opacity",
+        "gate_weight": -0.005433514714241028
     },
     {
-        "index": 96,
-        "concept_i_idx": 6,
-        "concept_j_idx": 16,
-        "concept_i": "site_hand",
-        "concept_j": "MONET_gel_water_drop_fluid_dermoscopy_liquid",
-        "gate_weight": -0.001403074711561203
+        "index": 15,
+        "concept_i_idx": 2,
+        "concept_j_idx": 3,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Lung Lesion",
+        "gate_weight": -0.004891871474683285
+    },
+    {
+        "index": 13,
+        "concept_i_idx": 1,
+        "concept_j_idx": 7,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Fracture",
+        "gate_weight": 0.004767077974975109
+    },
+    {
+        "index": 27,
+        "concept_i_idx": 4,
+        "concept_j_idx": 6,
+        "concept_i": "Pneumonia",
+        "concept_j": "Pleural Other",
+        "gate_weight": 0.004732303321361542
     },
     {
         "index": 25,
+        "concept_i_idx": 3,
+        "concept_j_idx": 8,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Support Devices",
+        "gate_weight": -0.004584739916026592
+    },
+    {
+        "index": 14,
         "concept_i_idx": 1,
-        "concept_j_idx": 10,
-        "concept_i": "sex_female",
-        "concept_j": "site_upper_extremity",
-        "gate_weight": 0.0014015052001923323
+        "concept_j_idx": 8,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.003968695178627968
     },
     {
-        "index": 92,
+        "index": 33,
         "concept_i_idx": 6,
-        "concept_j_idx": 12,
-        "concept_i": "site_hand",
-        "concept_j": "MONET_hair",
-        "gate_weight": 0.0012335095088928938
+        "concept_j_idx": 7,
+        "concept_i": "Pleural Other",
+        "concept_j": "Fracture",
+        "gate_weight": 0.003847286803647876
     },
     {
-        "index": 147,
-        "concept_i_idx": 14,
-        "concept_j_idx": 15,
-        "concept_i": "MONET_erythema",
-        "concept_j": "MONET_pigmented",
-        "gate_weight": -0.001145747839473188
+        "index": 31,
+        "concept_i_idx": 5,
+        "concept_j_idx": 7,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Fracture",
+        "gate_weight": -0.003622126765549183
     },
     {
-        "index": 3,
-        "concept_i_idx": 0,
+        "index": 8,
+        "concept_i_idx": 1,
+        "concept_j_idx": 2,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Lung Opacity",
+        "gate_weight": -0.003450100077316165
+    },
+    {
+        "index": 11,
+        "concept_i_idx": 1,
+        "concept_j_idx": 5,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.0031163666862994432
+    },
+    {
+        "index": 16,
+        "concept_i_idx": 2,
         "concept_j_idx": 4,
-        "concept_i": "age_approx",
-        "concept_j": "site_foot",
-        "gate_weight": -0.0011188449570909142
+        "concept_i": "Lung Opacity",
+        "concept_j": "Pneumonia",
+        "gate_weight": 0.002602213528007269
     },
     {
-        "index": 138,
-        "concept_i_idx": 12,
-        "concept_j_idx": 13,
-        "concept_i": "MONET_hair",
-        "concept_j": "MONET_vasculature_vessels",
-        "gate_weight": 0.0011062129633501172
+        "index": 24,
+        "concept_i_idx": 3,
+        "concept_j_idx": 7,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Fracture",
+        "gate_weight": 0.0025043173227459192
+    },
+    {
+        "index": 19,
+        "concept_i_idx": 2,
+        "concept_j_idx": 7,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Fracture",
+        "gate_weight": 0.0019302943255752325
+    },
+    {
+        "index": 28,
+        "concept_i_idx": 4,
+        "concept_j_idx": 7,
+        "concept_i": "Pneumonia",
+        "concept_j": "Fracture",
+        "gate_weight": -0.0016091648722067475
+    },
+    {
+        "index": 2,
+        "concept_i_idx": 0,
+        "concept_j_idx": 3,
+        "concept_i": "No Finding",
+        "concept_j": "Lung Lesion",
+        "gate_weight": -0.0011486670700833201
+    },
+    {
+        "index": 26,
+        "concept_i_idx": 4,
+        "concept_j_idx": 5,
+        "concept_i": "Pneumonia",
+        "concept_j": "Pneumothorax",
+        "gate_weight": -0.0011045405408367515
     }
 ]
