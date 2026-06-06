@@ -10,6 +10,17 @@ from src.data.derm7pt import Derm7PtDataset
 from src.data.milk10k import MILK10KDataset
 from src.data.chexpert import CheXpertDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
+from src.tti.common import (
+    calculate_classifier_metrics,
+    calculate_target_metrics,
+    translate_gt_to_logits,
+)
+from src.tti.coop import (
+    fit_alpha_gamma,
+    parse_coop_costs,
+    parse_float_grid,
+    run_tti_coop_group_level,
+)
 from src.utils.metrics import calculate_concept_metrics
 
 # ANSI terminal colors for highlighting
@@ -35,6 +46,26 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=8, help="Number of workers for data loader")
     parser.add_argument('--without-tti', action='store_true', help="Skip the TTI benchmark and run only standard CBM evaluation")
     parser.add_argument('--ignore-bias', action='store_true', help="Ignore saved concept_bias by zeroing it before evaluation")
+    parser.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
+    parser.add_argument('--without-coop-fit', action='store_true', help="Skip validation fitting and use --coop-alpha/--coop-gamma directly")
+    parser.add_argument('--coop-alpha', '--coop_alpha', type=float, default=1.0, dest='coop_alpha', help="Manual CooP weight for concept prediction uncertainty (CPU), used when --without-coop-fit is set")
+    parser.add_argument('--coop-beta', '--coop_beta', type=float, default=1.0, dest='coop_beta', help="CooP weight for concept importance score (CIS)")
+    parser.add_argument('--coop-gamma', '--coop_gamma', type=float, default=0.0, dest='coop_gamma', help="Manual CooP weight for acquisition cost, used when --without-coop-fit is set")
+    parser.add_argument('--coop-alpha-grid', type=str, default='0,0.25,0.5,1,2,4', help="Comma-separated alpha values for validation fitting")
+    parser.add_argument('--coop-gamma-grid', type=str, default='0,0.25,0.5,1,2,4', help="Comma-separated gamma values for validation fitting")
+    parser.add_argument('--coop-fit-k', type=int, default=5, help="Group-level TTI budget K used to select fitted alpha/gamma on validation")
+    parser.add_argument('--coop-fit-metric', type=str, default='acc', choices=['acc', 'macro_f1', 'macro_f2'], help="Validation metric used to select fitted alpha/gamma")
+    parser.add_argument('--coop-costs', '--coop_costs', type=str, default=None, dest='coop_costs', help="Optional comma-separated group costs or JSON file containing a list or group-name mapping")
+    parser.add_argument('--coop-candidate-batch-size', '--coop_candidate_batch_size', type=int, default=16384, dest='coop_candidate_batch_size', help="Maximum number of CooP counterfactual candidate rows evaluated per classifier-head call")
+    parser.add_argument(
+        '--coop-influence-mode',
+        '--coop_influence_mode',
+        type=str,
+        default='abs_change',
+        dest='coop_influence_mode',
+        choices=['abs_change', 'confidence_drop', 'paper_delta'],
+        help="How CooP converts candidate interventions into CIS. abs_change is the default influence magnitude."
+    )
     return parser.parse_args()
 
 
@@ -62,88 +93,6 @@ def resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict):
     return "full"
 
 
-def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
-    """Helper to calculate Top-K accuracy for target classes."""
-    if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
-        # Multi-label classification (like CheXpert)
-        preds = (outputs > 0.0).float()
-        correct = (preds == targets).float().sum().item()
-        return {1: correct / targets.numel()}
-        
-    batch_size = targets.size(0)
-    if outputs.dim() == 1 or outputs.shape[-1] <= 1:
-        preds = (outputs > 0.0).float()
-        correct = (preds == targets.view_as(preds)).float().sum().item()
-        return {1: correct / batch_size}
-    maxk = min(outputs.shape[-1], max(topk))
-    _, pred = outputs.topk(maxk, 1, True, True)
-    pred = pred.t()
-    targets_flat = targets.view(1, -1).expand_as(pred)
-    correct = pred.eq(targets_flat)
-    res = {}
-    for k in topk:
-        if k <= outputs.shape[-1]:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
-            res[k] = (correct_k / batch_size).item()
-    return res
-
-
-def calculate_target_macro_fbeta(outputs, targets, beta=1.0):
-    """Calculate macro F-beta for target predictions."""
-    if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
-        preds = (outputs > 0.0).float()
-        targets = (targets > 0.5).float()
-        tp = (preds * targets).sum(dim=0)
-        fp = (preds * (1.0 - targets)).sum(dim=0)
-        fn = ((1.0 - preds) * targets).sum(dim=0)
-        beta_sq = beta ** 2
-        denom = (1.0 + beta_sq) * tp + beta_sq * fn + fp
-        scores = torch.where(denom > 0, ((1.0 + beta_sq) * tp) / (denom + 1e-8), torch.zeros_like(tp))
-        return scores.mean().item()
-
-    if outputs.dim() == 1 or outputs.shape[-1] <= 1:
-        preds = (outputs.view(-1) > 0.0).long()
-        targets_flat = targets.view(-1).long()
-        num_classes = 2
-    else:
-        preds = torch.argmax(outputs, dim=1).long()
-        targets_flat = targets.view(-1).long()
-        num_classes = int(outputs.shape[-1])
-
-    labels = torch.unique(torch.cat([targets_flat, preds]))
-    labels = labels[(labels >= 0) & (labels < num_classes)]
-    if labels.numel() == 0:
-        return 0.0
-
-    scores = []
-    beta_sq = beta ** 2
-    for label in labels:
-        pred_pos = preds == label
-        target_pos = targets_flat == label
-        tp = (pred_pos & target_pos).sum().float()
-        fp = (pred_pos & ~target_pos).sum().float()
-        fn = (~pred_pos & target_pos).sum().float()
-        denom = (1.0 + beta_sq) * tp + beta_sq * fn + fp
-        scores.append(torch.where(denom > 0, ((1.0 + beta_sq) * tp) / (denom + 1e-8), torch.zeros_like(tp)))
-    return torch.stack(scores).mean().item()
-
-
-def calculate_target_metrics(outputs, targets):
-    """Calculate Top-1 target accuracy plus macro F1/F2."""
-    top1_acc = calculate_topk_accuracy(outputs, targets, topk=(1,)).get(1, 0.0)
-    return {
-        "acc": top1_acc,
-        "macro_f1": calculate_target_macro_fbeta(outputs, targets, beta=1.0),
-        "macro_f2": calculate_target_macro_fbeta(outputs, targets, beta=2.0),
-    }
-
-
-@torch.no_grad()
-def calculate_classifier_metrics(model, concept_logits, targets, device):
-    class_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device))).cpu()
-    return calculate_target_metrics(class_logits, targets)
-
-
 def make_tti_budgets(max_k, requested_k_values=TTI_K_VALUES):
     """Return baseline plus requested TTI budgets, clipped to the available intervention count."""
     if max_k <= 0:
@@ -161,7 +110,7 @@ def make_tti_budgets(max_k, requested_k_values=TTI_K_VALUES):
 
 
 @torch.no_grad()
-def run_evaluation(model, dataloader, concept_groups_info, concept_groups, device):
+def run_evaluation(model, dataloader, concept_groups_info, concept_groups, device, desc="Evaluating CBM"):
     """Runs a standard evaluation pass over the dataloader."""
     model.eval()
 
@@ -170,7 +119,7 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
     all_gt_concepts = []
     all_gt_targets = []
     
-    pbar = tqdm(dataloader, desc="Evaluating CBM")
+    pbar = tqdm(dataloader, desc=desc)
     for images, concepts, targets in pbar:
         images = images.to(device)
         concepts = concepts.to(device)
@@ -232,52 +181,6 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
         "target": target_metrics,
     }
     return standard_metrics, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
-
-
-def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
-    """
-    Vectorized translation of ground truth probabilities to logit space with soft intervention.
-    For mutually exclusive categorical groups, if one class is positive (value=1.0),
-    we perform a soft intervention:
-    - The positive class gets probability p_pos (0.999 for prob, 0.95 for non-prob).
-    - The other classes in the group split the remaining probability (1 - p_pos)
-      equally so that the group sum is 1.0, making their probabilities close to 0.
-    For numerical concepts, we just use standard clipping.
-    """
-    p_pos = 0.999 if use_probabilistic else 0.95
-    p_neg_default = 0.001 if use_probabilistic else 0.05
-    
-    p_custom = gt_concepts.clone()
-    
-    for group in concept_groups:
-        indices = group["flat_indices"]
-        M = len(indices)
-        if M > 1:
-            group_gt = gt_concepts[:, indices]  # [N, M]
-            # Find the argmax and max values for each sample
-            max_vals, correct_idxs = torch.max(group_gt, dim=1)  # [N], [N]
-            
-            # Create a tensor of shape [N, M] filled with p_others
-            p_others = (1.0 - p_pos) / (M - 1)
-            group_custom = torch.full_like(group_gt, p_others)
-            
-            # Set the correct class to p_pos
-            group_custom.scatter_(1, correct_idxs.unsqueeze(1), p_pos)
-            
-            # For samples where max_val <= 0.5 (no positive class), fallback to clamped original GT
-            is_positive = (max_vals > 0.5).unsqueeze(1)  # [N, 1]
-            group_fallback = torch.clamp(group_gt, min=p_neg_default, max=p_pos)
-            
-            # Combine based on whether a positive class exists
-            p_custom[:, indices] = torch.where(is_positive, group_custom, group_fallback)
-        else:
-            # Numerical concept
-            c_idx = indices[0]
-            p_custom[:, c_idx] = torch.clamp(gt_concepts[:, c_idx], min=p_neg_default, max=p_pos)
-            
-    p_custom = torch.clamp(p_custom, min=1e-6, max=1.0 - 1e-6)
-    gt_logits = torch.log(p_custom / (1.0 - p_custom))
-    return gt_logits
 
 
 def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
@@ -438,7 +341,7 @@ def get_tti_metrics_at_k(results, target_k=1):
     return results[-1]
 
 
-def print_tti_metric_summary(group_results, concept_results, uncertainty_results):
+def print_tti_metric_summary(group_results, concept_results, uncertainty_results, coop_results=None):
     baseline = group_results[0][1]
     group_k, group_summary = get_tti_metrics_at_k(group_results, target_k=1)
     concept_k, concept_summary = get_tti_metrics_at_k(concept_results, target_k=1)
@@ -452,7 +355,7 @@ def print_tti_metric_summary(group_results, concept_results, uncertainty_results
     print(
         f"| Metric   | Standard K=0 | Group K={group_k:<4} | "
         f"Concept K={concept_k:<2} | Uncertainty K={uncertainty_k:<2} | "
-        "| Group Delta | Concept Delta | Uncert Delta |"
+        "Group Delta | Concept Delta | Uncert Delta |"
     )
     print(border)
     for key, label in TTI_METRICS:
@@ -471,9 +374,31 @@ def print_tti_metric_summary(group_results, concept_results, uncertainty_results
             f"{uncertainty_value - standard:>11.2f}% |"
         )
     print(border)
+    if coop_results is not None:
+        coop_k, coop_summary = get_tti_metrics_at_k(coop_results, target_k=5)
+        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K={coop_k}")
+        for key, label in TTI_METRICS:
+            standard = baseline[key] * 100
+            coop_value = coop_summary[key] * 100
+            print(f"  [TTI] CooP Group Policy {label}: {coop_value:.2f}% ({coop_value - standard:+.2f}%p)")
 
 
-def run_tti_benchmark(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+def run_tti_benchmark(
+    model,
+    concept_logits,
+    gt_concepts,
+    gt_targets,
+    concept_groups,
+    device,
+    coop_alpha=1.0,
+    coop_beta=1.0,
+    coop_gamma=0.0,
+    coop_costs=None,
+    coop_influence_mode='abs_change',
+    coop_candidate_batch_size=16384,
+    without_coop_tti=False,
+    coop_fit_result=None,
+):
     """Run all TTI variants and print Top-1 target metric tables."""
     group_budgets = make_tti_budgets(len(concept_groups))
     concept_budgets = group_budgets
@@ -492,6 +417,49 @@ def run_tti_benchmark(model, concept_logits, gt_concepts, gt_targets, concept_gr
         group_budgets
     )
     print_tti_metric_table("[TTI - Group Level]", group_tti_results)
+
+    coop_tti_results = None
+    if not without_coop_tti:
+        tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+        tqdm.write(f"  {BOLD}{BLUE}[TTI - CooP Group Level]{RESET} Top-1 target metrics")
+        tqdm.write(
+            f"  score={coop_alpha:.2f}*CPU + {coop_beta:.2f}*CIS - "
+            f"{coop_gamma:.2f}*cost | influence={coop_influence_mode}; K={group_budgets[1:]}"
+        )
+        if coop_fit_result is not None:
+            tqdm.write(
+                f"  fitted on validation K={coop_fit_result.budget}: "
+                f"alpha={coop_fit_result.alpha:.4g}, gamma={coop_fit_result.gamma:.4g}, "
+                f"{coop_fit_result.metric_name}={coop_fit_result.metric_value*100:.2f}%"
+            )
+        tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
+        if isinstance(coop_costs, torch.Tensor):
+            coop_cost_tensor = coop_costs
+        else:
+            coop_cost_tensor = parse_coop_costs(coop_costs, concept_groups)
+        coop_tti_results, coop_query_stats = run_tti_coop_group_level(
+            model,
+            concept_logits,
+            gt_concepts,
+            gt_targets,
+            concept_groups,
+            device,
+            group_budgets,
+            metric_fn=calculate_classifier_metrics,
+            alpha=coop_alpha,
+            beta=coop_beta,
+            gamma=coop_gamma,
+            costs=coop_cost_tensor,
+            influence_mode=coop_influence_mode,
+            candidate_batch_size=coop_candidate_batch_size,
+        )
+        print_tti_metric_table("[TTI - CooP Group Level]", coop_tti_results)
+
+        first_counts = coop_query_stats["first"]
+        top_first = torch.topk(first_counts, k=min(5, len(concept_groups)))
+        print("\n  [CooP] Most frequently selected first-query groups:")
+        for count, group_idx in zip(top_first.values.tolist(), top_first.indices.tolist()):
+            print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets)} samples")
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
     tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Top-1 target metrics")
@@ -523,7 +491,7 @@ def run_tti_benchmark(model, concept_logits, gt_concepts, gt_targets, concept_gr
     )
     print_tti_metric_table("[TTI - Uncertainty Group Level]", uncertainty_tti_results)
 
-    print_tti_metric_summary(group_tti_results, concept_tti_results, uncertainty_tti_results)
+    print_tti_metric_summary(group_tti_results, concept_tti_results, uncertainty_tti_results, coop_tti_results)
 
 
 def main():
@@ -673,6 +641,7 @@ def main():
     dataset_config["concept_config_path"] = concept_config_path
     dataset_config["filter_rare_concepts"] = filter_rare_concepts
     dataset_config["use_paper_preprocessing"] = use_paper_preprocessing
+    should_fit_coop = not args.without_tti and not args.without_coop_tti and not args.without_coop_fit
     
     # Load test split
     test_dataset = dataset_class(
@@ -683,6 +652,16 @@ def main():
         cache_in_memory=True
     )
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    val_loader = None
+    if should_fit_coop:
+        val_dataset = dataset_class(
+            csv_path=csv_path,
+            image_dir=image_dir,
+            split='val',
+            config=dataset_config,
+            cache_in_memory=True
+        )
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
     
     # Resolve exact dimensions
     num_supervised_concepts = test_dataset.config["num_concepts"]
@@ -774,7 +753,8 @@ def main():
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
         concept_groups,
-        device
+        device,
+        desc="Evaluating CBM (test)"
     )
     
     tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM Test Performance:{RESET}")
@@ -801,6 +781,59 @@ def main():
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     
+    coop_alpha = args.coop_alpha
+    coop_gamma = args.coop_gamma
+    coop_cost_tensor = None
+    coop_fit_result = None
+
+    if not args.without_tti and not args.without_coop_tti:
+        coop_cost_tensor = parse_coop_costs(args.coop_costs, concept_groups)
+        if should_fit_coop:
+            tqdm.write(f"\n{BOLD}{MAGENTA}============================================================{RESET}")
+            tqdm.write(f"  {BOLD}{MAGENTA}[CooP Fit]{RESET} Running Validation Set Evaluation...")
+            tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
+            _, _, val_concept_logits, val_gt_concepts, val_gt_targets = run_evaluation(
+                model,
+                val_loader,
+                concept_groups_info if not use_group_broadcasting else None,
+                concept_groups,
+                device,
+                desc="Evaluating CBM (val)"
+            )
+
+            alpha_grid = parse_float_grid(args.coop_alpha_grid)
+            gamma_grid = parse_float_grid(args.coop_gamma_grid)
+            coop_fit_budget = min(max(1, args.coop_fit_k), len(concept_groups))
+            tqdm.write(
+                f"  {BOLD}{BLUE}[CooP Fit]{RESET} Grid search "
+                f"alpha={alpha_grid}, gamma={gamma_grid}, K={coop_fit_budget}, "
+                f"metric={args.coop_fit_metric}"
+            )
+            coop_fit_result = fit_alpha_gamma(
+                model=model,
+                concept_logits=val_concept_logits,
+                gt_concepts=val_gt_concepts,
+                gt_targets=val_gt_targets,
+                concept_groups=concept_groups,
+                device=device,
+                alpha_grid=alpha_grid,
+                gamma_grid=gamma_grid,
+                fit_budget=coop_fit_budget,
+                metric_fn=calculate_classifier_metrics,
+                metric_name=args.coop_fit_metric,
+                beta=args.coop_beta,
+                costs=coop_cost_tensor,
+                influence_mode=args.coop_influence_mode,
+                candidate_batch_size=args.coop_candidate_batch_size,
+            )
+            coop_alpha = coop_fit_result.alpha
+            coop_gamma = coop_fit_result.gamma
+            tqdm.write(
+                f"  {BOLD}{GREEN}[CooP Fit]{RESET} Selected "
+                f"alpha={coop_alpha:.4g}, gamma={coop_gamma:.4g} "
+                f"with val {coop_fit_result.metric_name}={coop_fit_result.metric_value*100:.2f}%"
+            )
+
     if args.without_tti:
         tqdm.write(f"\n{BOLD}{YELLOW}[TTI]{RESET} Skipped because --without-tti was set.")
     else:
@@ -810,7 +843,15 @@ def main():
             gt_concepts,
             gt_targets,
             concept_groups,
-            device
+            device,
+            coop_alpha=coop_alpha,
+            coop_beta=args.coop_beta,
+            coop_gamma=coop_gamma,
+            coop_costs=coop_cost_tensor,
+            coop_influence_mode=args.coop_influence_mode,
+            coop_candidate_batch_size=args.coop_candidate_batch_size,
+            without_coop_tti=args.without_coop_tti,
+            coop_fit_result=coop_fit_result,
         )
 
     # 6. Export Active Pairwise NAM Interactions
