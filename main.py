@@ -679,6 +679,22 @@ def main():
             resolved_config=resolved_config,
             num_classes=num_classes
         )
+        
+        # Safety Backup: Save intermediate Phase 2 checkpoint to allow resuming Phase 3
+        save_subdir = os.path.join(args.save_dir, args.backbone_name)
+        os.makedirs(save_subdir, exist_ok=True)
+        phase2_save_filename = args.save_filename or f"{args.dataset}_{args.backbone_name}_latent{args.latent_concepts}_phase2.pt"
+        if not phase2_save_filename.endswith("_phase2.pt") and not phase2_save_filename.endswith("_phase2.pth"):
+            phase2_save_filename = phase2_save_filename.replace(".pt", "_phase2.pt").replace(".pth", "_phase2.pth")
+        phase2_save_path = os.path.join(save_subdir, phase2_save_filename)
+        
+        checkpoint_p2 = {
+            'state_dict': model.state_dict(),
+            'config': config_data,
+            'args': vars(args)
+        }
+        torch.save(checkpoint_p2, phase2_save_path)
+        tqdm.write(f"\n{BOLD}{GREEN}[Safety Backup]{RESET} Phase 2 complete! Saved intermediate checkpoint to: {phase2_save_path}\n")
     else:
         tqdm.write(f"  {BOLD}{YELLOW}[Skip]{RESET} Skipping Phase 2: phase2_epochs is 0.")
     
