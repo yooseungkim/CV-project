@@ -35,13 +35,97 @@ def parse_args():
     return parser.parse_args()
 
 
+def calculate_multilabel_metrics(outputs: torch.Tensor, targets: torch.Tensor, class_names=None):
+    """Compute per-class and macro F1 + AUC for multi-label classification.
+    
+    Args:
+        outputs: Raw logits [N, C]
+        targets: Binary ground-truth [N, C]
+        class_names: Optional list of class name strings
+    Returns:
+        dict with keys: per_class_f1, macro_f1, per_class_auc, macro_auc, element_accuracy
+    """
+    preds = (outputs > 0.0).float()
+    targets_bin = (targets > 0.5).float()
+    N, C = targets_bin.shape
+
+    tp = (preds * targets_bin).sum(dim=0)       # [C]
+    fp = (preds * (1 - targets_bin)).sum(dim=0) # [C]
+    fn = ((1 - preds) * targets_bin).sum(dim=0) # [C]
+
+    per_class_f1 = torch.where(
+        tp + fp + fn > 0,
+        (2 * tp) / (2 * tp + fp + fn + 1e-8),
+        torch.zeros(C)
+    )  # [C]
+    macro_f1 = per_class_f1.mean().item()
+
+    # Element-wise accuracy
+    correct = (preds == targets_bin).float().sum().item()
+    element_acc = correct / targets_bin.numel()
+
+    # AUC per class (trapezoidal rule over sigmoid probabilities)
+    probs = torch.sigmoid(outputs).numpy()  # [N, C]
+    targets_np = targets_bin.numpy()        # [N, C]
+    per_class_auc = []
+    for c in range(C):
+        gt_c = targets_np[:, c]
+        pr_c = probs[:, c]
+        # Skip if only one class present
+        if gt_c.sum() == 0 or (1 - gt_c).sum() == 0:
+            per_class_auc.append(float('nan'))
+            continue
+        # Trapezoidal AUC (no sklearn dependency)
+        thresholds = np.unique(pr_c)
+        tprs, fprs = [], []
+        for t in thresholds:
+            pred_c = (pr_c >= t).astype(float)
+            tp_c = (pred_c * gt_c).sum()
+            fp_c = (pred_c * (1 - gt_c)).sum()
+            fn_c = ((1 - pred_c) * gt_c).sum()
+            tn_c = ((1 - pred_c) * (1 - gt_c)).sum()
+            tprs.append(tp_c / (tp_c + fn_c + 1e-8))
+            fprs.append(fp_c / (fp_c + tn_c + 1e-8))
+        # Sort by FPR ascending and compute AUC via trapz
+        sorted_pairs = sorted(zip(fprs, tprs))
+        fprs_s = [p[0] for p in sorted_pairs]
+        tprs_s = [p[1] for p in sorted_pairs]
+        auc = float(np.trapezoid(tprs_s, fprs_s))
+        # AUC can be negative if FPR is descending — take abs
+        per_class_auc.append(abs(auc))
+
+    valid_aucs = [a for a in per_class_auc if not np.isnan(a)]
+    macro_auc = float(np.mean(valid_aucs)) if valid_aucs else float('nan')
+
+    return {
+        "per_class_f1": per_class_f1.tolist(),
+        "macro_f1": macro_f1,
+        "per_class_auc": per_class_auc,
+        "macro_auc": macro_auc,
+        "element_accuracy": element_acc,
+        "class_names": class_names or [f"Class_{c}" for c in range(C)],
+    }
+
+
 def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     """Helper to calculate Top-K accuracy for target classes."""
     if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
-        # Multi-label classification (like CheXpert)
+        # Multi-label classification (like CheXpert) — use sigmoid threshold, not argmax
         preds = (outputs > 0.0).float()
-        correct = (preds == targets).float().sum().item()
-        return {1: correct / targets.numel()}
+        targets_bin = (targets > 0.5).float()
+        # Compute F1 per class and macro
+        tp = (preds * targets_bin).sum(dim=0)
+        fp = (preds * (1 - targets_bin)).sum(dim=0)
+        fn = ((1 - preds) * targets_bin).sum(dim=0)
+        per_class_f1 = torch.where(
+            tp + fp + fn > 0,
+            (2 * tp) / (2 * tp + fp + fn + 1e-8),
+            torch.zeros_like(tp)
+        )
+        macro_f1 = per_class_f1.mean().item()
+        correct = (preds == targets_bin).float().sum().item()
+        element_acc = correct / targets_bin.numel()
+        return {1: element_acc, "multilabel_f1": macro_f1, "per_class_f1": per_class_f1.tolist()}
         
     maxk = min(outputs.shape[-1], max(topk))
     batch_size = targets.size(0)
@@ -62,8 +146,9 @@ def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
 
 
 
+
 @torch.no_grad()
-def run_evaluation(model, dataloader, concept_groups_info, device):
+def run_evaluation(model, dataloader, concept_groups_info, device, target_class_names=None):
     """Runs a standard evaluation pass over the dataloader."""
     model.eval()
     
@@ -99,8 +184,21 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     # Calculate concept probabilities through model's registered activation
     all_concept_probs = model.concept_activation(all_concept_logits.to(device)).cpu()
     
-    # Compute Target Classification Accuracy
+    # Determine if multi-label (2D targets with same width as outputs)
+    is_multilabel = (
+        all_class_logits.dim() > 1
+        and all_gt_targets.dim() > 1
+        and all_class_logits.shape[-1] == all_gt_targets.shape[-1]
+        and all_class_logits.shape[-1] > 1
+    )
+
+    # Compute Target Classification metrics
     topk_accs = calculate_topk_accuracy(all_class_logits, all_gt_targets)
+    multilabel_metrics = None
+    if is_multilabel:
+        multilabel_metrics = calculate_multilabel_metrics(
+            all_class_logits, all_gt_targets, class_names=target_class_names
+        )
     
     # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
@@ -111,7 +209,8 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     )
     
     # Return all_concept_logits instead of all_concept_probs to enable Inverse Sigmoid Intervention
-    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets, all_tabular_features
+    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets, all_tabular_features, multilabel_metrics
+
 
 
 def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
@@ -605,19 +704,36 @@ def main():
     tqdm.write(f"  {BOLD}{MAGENTA}[Evaluation]{RESET} Running {args.split.upper()} Set Evaluation...")
     tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
     
+    # Extract target class names if available
+    target_class_names = test_dataset.config.get("target_classes", None)
+
     # 5. Run standard evaluation
-    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets, all_tabular_features = run_evaluation(
+    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets, all_tabular_features, multilabel_metrics = run_evaluation(
         model, 
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
-        device
+        device,
+        target_class_names=target_class_names
     )
     
     tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM {args.split.upper()} Performance:{RESET}")
-    tqdm.write(f"   Target Accuracy (Top-1)  : {BOLD}{GREEN}{topk_accs.get(1, 0.0)*100:.2f}%{RESET}")
-    if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
-    if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
-    if 10 in topk_accs: tqdm.write(f"   Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
+    if multilabel_metrics is not None:
+        # ── Multi-label reporting ──────────────────────────────────────────────
+        tqdm.write(f"   {BOLD}[Multi-Label Classification]{RESET} (sigmoid threshold @ 0.0, NOT argmax/softmax)")
+        tqdm.write(f"   Element-wise Accuracy : {BOLD}{GREEN}{multilabel_metrics['element_accuracy']*100:.2f}%{RESET}")
+        tqdm.write(f"   Macro F1 (all classes): {BOLD}{GREEN}{multilabel_metrics['macro_f1']*100:.2f}%{RESET}")
+        tqdm.write(f"   Macro AUC (all classes): {multilabel_metrics['macro_auc']*100:.2f}%")
+        tqdm.write(f"   Per-class F1 / AUC:")
+        for i, cname in enumerate(multilabel_metrics['class_names']):
+            f1_val = multilabel_metrics['per_class_f1'][i] * 100
+            auc_val = multilabel_metrics['per_class_auc'][i]
+            auc_str = f"{auc_val*100:.2f}%" if not (isinstance(auc_val, float) and auc_val != auc_val) else "N/A"
+            tqdm.write(f"     ├─ {cname:<30} F1: {f1_val:6.2f}%  AUC: {auc_str}")
+    else:
+        tqdm.write(f"   Target Accuracy (Top-1)  : {BOLD}{GREEN}{topk_accs.get(1, 0.0)*100:.2f}%{RESET}")
+        if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
+        if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
+        if 10 in topk_accs: tqdm.write(f"   Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
@@ -642,13 +758,18 @@ def main():
     )
     
     # Print beautiful ASCII table for group-level TTI with Top-K metrics
-    available_ks = sorted(list(group_tti_results[0][1].keys()))
+    # Filter to integer keys only (exclude multilabel_f1 / per_class_f1 string keys)
+    available_ks = sorted([k for k in group_tti_results[0][1].keys() if isinstance(k, int)])
     header = "| Number of Groups Corrected (TTI)   "
     for k in available_ks:
         header += f"| Top-{k:<4} "
+    if multilabel_metrics is not None:
+        header += "| Macro F1  "
     header += "|"
     border = "+" + "-"*36
     for k in available_ks:
+        border += "+" + "-"*10
+    if multilabel_metrics is not None:
         border += "+" + "-"*10
     border += "+"
     
@@ -660,6 +781,9 @@ def main():
         for k in available_ks:
             val = accs_dict.get(k, 0.0) * 100
             row += f"| {val:>8.2f}% "
+        if multilabel_metrics is not None:
+            f1_val = accs_dict.get("multilabel_f1", 0.0) * 100
+            row += f"| {f1_val:>8.2f}% "
         row += "|"
         print(row)
     print(border)
@@ -682,13 +806,18 @@ def main():
     )
     
     # Print beautiful ASCII table for concept-level TTI with Top-K metrics
-    available_ks_concept = sorted(list(concept_tti_results[0][1].keys()))
+    # Filter to integer keys only (exclude multilabel_f1 / per_class_f1 string keys)
+    available_ks_concept = sorted([k for k in concept_tti_results[0][1].keys() if isinstance(k, int)])
     header_concept = "| Percentage of Concepts Corrected   "
     for k in available_ks_concept:
         header_concept += f"| Top-{k:<4} "
+    if multilabel_metrics is not None:
+        header_concept += "| Macro F1  "
     header_concept += "|"
     border_concept = "+" + "-"*36
     for k in available_ks_concept:
+        border_concept += "+" + "-"*10
+    if multilabel_metrics is not None:
         border_concept += "+" + "-"*10
     border_concept += "+"
     
@@ -700,9 +829,13 @@ def main():
         for k in available_ks_concept:
             val = accs_dict.get(k, 0.0) * 100
             row += f"| {val:>8.2f}% "
+        if multilabel_metrics is not None:
+            f1_val = accs_dict.get("multilabel_f1", 0.0) * 100
+            row += f"| {f1_val:>8.2f}% "
         row += "|"
         print(row)
     print(border_concept)
+
     
     # 8. Run "Not Visible / Occluded" Only TTI under different logit margins
     print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
@@ -753,8 +886,8 @@ def main():
     print(f"\n{BOLD}{GREEN}============================================================{RESET}")
     print(f"  {BOLD}{GREEN}[Success] TTI Benchmark Evaluation Complete!{RESET}")
     for k in available_ks:
-        val_0 = group_tti_results[0][1][k] * 100
-        val_all = group_tti_results[-1][1][k] * 100
+        val_0 = group_tti_results[0][1].get(k, 0.0) * 100
+        val_all = group_tti_results[-1][1].get(k, 0.0) * 100
         val_unconf = unconf_topk.get(k, 0.0) * 100
         delta = val_all - val_0
         delta_unconf = val_unconf - val_0
@@ -762,6 +895,13 @@ def main():
         print(f"  [TTI] Unconfident-Only (Margin=0.30) Top-{k} Accuracy: {val_unconf:.2f}% ({BOLD}{YELLOW}{delta_unconf:+.2f}%{RESET})")
         print(f"  [TTI] Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
         print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
+        print(f"  ----------------------------------------------------------")
+    if multilabel_metrics is not None:
+        val_0_f1 = group_tti_results[0][1].get("multilabel_f1", 0.0) * 100
+        val_all_f1 = group_tti_results[-1][1].get("multilabel_f1", 0.0) * 100
+        print(f"  [TTI] Standard (K=0) Macro F1: {val_0_f1:.2f}%")
+        print(f"  [TTI] Perfect Concept (K=All) Macro F1: {val_all_f1:.2f}%")
+        print(f"  [TTI] F1 Intervention headroom (TTI Delta): {BOLD}{GREEN}{val_all_f1 - val_0_f1:+.2f}%{RESET}")
         print(f"  ----------------------------------------------------------")
     print(f"  [TTI] Unconfident Avg Groups Corrected: {avg_corrected:.2f} / {num_groups}")
     print(f"{BOLD}{GREEN}============================================================{RESET}\n")

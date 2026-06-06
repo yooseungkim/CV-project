@@ -909,6 +909,12 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 monitor_score = avg_val_loss_t
             elif "acc" in monitor_target or "accuracy" in monitor_target:
                 monitor_score = avg_val_acc_t
+            elif "f1" in monitor_target:
+                # Use proxy val F1 if available, otherwise fall back to val loss
+                if proxy_val_loader is not None and 'avg_proxy_f1_t' in locals():
+                    monitor_score = avg_proxy_f1_t
+                else:
+                    monitor_score = avg_val_loss_t
             else:
                 monitor_score = avg_val_loss_t
                 
