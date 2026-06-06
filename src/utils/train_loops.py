@@ -81,15 +81,16 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 concept_groups_indices.append(indices)
         tqdm.write(f"  {BOLD}{BLUE}[Orthogonality]{RESET} Detected {len(concept_groups_indices)} semantic attribute groups for separation.")
     
-    # classifier_head 가중치 동결
+
     for param in model.classifier_head.parameters():
         param.requires_grad = False
         
     if not args.freeze_backbone:
-        for param in model.backbone.parameters():
-            param.requires_grad = True
+        model.unfreeze_backbone()
+
     model.unfreeze_supervised_attention()
     model.freeze_latent_attention()
+
         
     opt_cfg = config_data.get("optimizer", {})
     opt_type = opt_cfg.get("type", "adam").lower()
@@ -541,8 +542,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
     model.unfreeze_latent_attention()
     for param in model.classifier_head.parameters():
         param.requires_grad = True
-        
-    # 💧 Phase 2용 드롭아웃 설정 (사용자 요청: dropout 약하게 적용)
+
     original_dropout_p = getattr(model.dropout, 'p', 0.2)
     phase2_dropout_p = getattr(args, "phase2_dropout", None)
     if phase2_dropout_p is None:

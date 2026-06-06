@@ -1244,30 +1244,28 @@ class UniversalFlexibleCBM(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-            
-
-def unfreeze_backbone(self):
-    """Unfreezes the vision backbone parameters while maintaining 
-    BatchNorm statistics in evaluation mode to prevent training instability.
-    """
-    if getattr(self, 'lora_active', False):
-        for name, param in self.backbone.named_parameters():
-            if 'lora_' in name:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
-        print(f"{BOLD}{GREEN}[LoRA Unfreeze]{RESET} Activated only LoRA adapter parameters for training.")
-    else:
-        for param in self.backbone.parameters():
-            param.requires_grad = True
-        
-        for m in self.backbone.modules():
-            if isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
-                m.eval()
-                for param in m.parameters():
+    def unfreeze_backbone(self):
+        """Unfreezes the vision backbone parameters while maintaining 
+        BatchNorm statistics in evaluation mode to prevent training instability.
+        """
+        if getattr(self, 'lora_active', False):
+            for name, param in self.backbone.named_parameters():
+                if 'lora_' in name:
+                    param.requires_grad = True
+                else:
                     param.requires_grad = False
-                    
-        print(f"{BOLD}{GREEN}[Full Unfreeze]{RESET} Activated all backbone parameters, BatchNorm layers fixed.")
+            print(f"{BOLD}{GREEN}[LoRA Unfreeze]{RESET} Activated only LoRA adapter parameters for training.")
+        else:
+            for param in self.backbone.parameters():
+                param.requires_grad = True
+            
+            for m in self.backbone.modules():
+                if isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+                    m.eval()
+                    for param in m.parameters():
+                        param.requires_grad = False
+                        
+            print(f"{BOLD}{GREEN}[Full Unfreeze]{RESET} Activated all backbone parameters, BatchNorm layers fixed.")
 
     def freeze_classifier(self):
         """Freezes the classifier head parameters."""
