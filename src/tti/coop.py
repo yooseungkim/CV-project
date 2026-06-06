@@ -16,16 +16,19 @@ from src.tti.common import (
 )
 
 MetricFn = Callable[[torch.nn.Module, torch.Tensor, torch.Tensor, torch.device], MetricDict]
+VALID_SCORE_MODES = {"additive", "product", "power"}
 
 
 @dataclass(frozen=True)
 class CoopFitResult:
     alpha: float
+    beta: float
     gamma: float
+    score_mode: str
     metric_name: str
     metric_value: float
     budget: int
-    search_results: List[Dict[str, float]]
+    search_results: List[Dict[str, object]]
 
 
 def parse_float_grid(values: str | Sequence[float]) -> List[float]:
@@ -109,6 +112,36 @@ def _normalized_entropy(weights: torch.Tensor) -> torch.Tensor:
     return entropy / max_entropy
 
 
+def _validate_score_mode(score_mode: str) -> str:
+    if score_mode not in VALID_SCORE_MODES:
+        raise ValueError(f"Unsupported CooP score_mode: {score_mode}. Expected one of {sorted(VALID_SCORE_MODES)}.")
+    return score_mode
+
+
+def _compute_coop_scores(
+    cpu_norm: torch.Tensor,
+    cis_norm: torch.Tensor,
+    normalized_costs: torch.Tensor,
+    valid_mask: torch.Tensor,
+    alpha: float,
+    beta: float,
+    gamma: float,
+    score_mode: str,
+) -> torch.Tensor:
+    score_mode = _validate_score_mode(score_mode)
+    if score_mode == "power":
+        scores = (
+            torch.pow(cpu_norm.clamp_min(1e-8), alpha)
+            * torch.pow(cis_norm.clamp_min(1e-8), beta)
+            - gamma * normalized_costs.view(1, -1)
+        )
+    elif score_mode == "product":
+        scores = alpha * cpu_norm * cis_norm - gamma * normalized_costs.view(1, -1)
+    else:
+        scores = alpha * cpu_norm + beta * cis_norm - gamma * normalized_costs.view(1, -1)
+    return scores.masked_fill(~valid_mask, float("-inf"))
+
+
 @torch.no_grad()
 def run_tti_coop_group_level(
     model: torch.nn.Module,
@@ -124,11 +157,13 @@ def run_tti_coop_group_level(
     gamma: float = 0.0,
     costs: Optional[torch.Tensor] = None,
     influence_mode: str = "abs_change",
+    score_mode: str = "additive",
     candidate_batch_size: int = 16384,
     show_progress: bool = True,
 ) -> Tuple[List[Tuple[int, MetricDict]], Dict[str, torch.Tensor]]:
     """Runs CooP group-level TTI and returns metrics at the requested budgets."""
     model.eval()
+    score_mode = _validate_score_mode(score_mode)
     num_samples = concept_logits.shape[0]
     num_groups = len(concept_groups)
     max_budget = max(budgets)
@@ -219,8 +254,16 @@ def run_tti_coop_group_level(
 
         cpu_norm = _minmax_normalize_rows(cpu_scores, valid_mask)
         cis_norm = _minmax_normalize_rows(cis_scores, valid_mask)
-        scores = alpha * cpu_norm + beta * cis_norm - gamma * normalized_costs.view(1, -1)
-        scores = scores.masked_fill(~valid_mask, float("-inf"))
+        scores = _compute_coop_scores(
+            cpu_norm=cpu_norm,
+            cis_norm=cis_norm,
+            normalized_costs=normalized_costs,
+            valid_mask=valid_mask,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            score_mode=score_mode,
+        )
         selected_groups = torch.argmax(scores, dim=1)
 
         if step == 1:
@@ -250,7 +293,7 @@ def run_tti_coop_group_level(
     return coop_tti_metrics, query_stats
 
 
-def fit_alpha_gamma(
+def fit_coop_parameters(
     model: torch.nn.Module,
     concept_logits: torch.Tensor,
     gt_concepts: torch.Tensor,
@@ -263,62 +306,74 @@ def fit_alpha_gamma(
     metric_fn: MetricFn = calculate_classifier_metrics,
     metric_name: str = "acc",
     beta: float = 1.0,
+    beta_grid: Optional[Iterable[float]] = None,
     costs: Optional[torch.Tensor] = None,
     influence_mode: str = "abs_change",
+    score_mode: str = "additive",
     candidate_batch_size: int = 16384,
 ) -> CoopFitResult:
-    """Fits alpha and gamma by grid search on a held-out validation set."""
+    """Fits CooP score parameters by grid search on a held-out validation set."""
+    score_mode = _validate_score_mode(score_mode)
     best: Optional[CoopFitResult] = None
-    search_results: List[Dict[str, float]] = []
+    search_results: List[Dict[str, object]] = []
     budgets = [0, int(fit_budget)]
+    beta_candidates = [float(value) for value in beta_grid] if beta_grid is not None else [float(beta)]
 
     for alpha in alpha_grid:
-        for gamma in gamma_grid:
-            results, _ = run_tti_coop_group_level(
-                model=model,
-                concept_logits=concept_logits,
-                gt_concepts=gt_concepts,
-                gt_targets=gt_targets,
-                concept_groups=concept_groups,
-                device=device,
-                budgets=budgets,
-                metric_fn=metric_fn,
-                alpha=float(alpha),
-                beta=beta,
-                gamma=float(gamma),
-                costs=costs,
-                influence_mode=influence_mode,
-                candidate_batch_size=candidate_batch_size,
-                show_progress=False,
-            )
-            metrics = dict(results)[int(fit_budget)]
-            if metric_name not in metrics:
-                raise KeyError(f"Metric '{metric_name}' was not returned by metric_fn. Available: {sorted(metrics)}")
-            metric_value = float(metrics[metric_name])
-            row = {
-                "alpha": float(alpha),
-                "gamma": float(gamma),
-                metric_name: metric_value,
-                "acc": float(metrics.get("acc", 0.0)),
-                "macro_f1": float(metrics.get("macro_f1", 0.0)),
-                "macro_f2": float(metrics.get("macro_f2", 0.0)),
-            }
-            search_results.append(row)
-
-            if best is None or metric_value > best.metric_value:
-                best = CoopFitResult(
+        for beta_candidate in beta_candidates:
+            for gamma in gamma_grid:
+                results, _ = run_tti_coop_group_level(
+                    model=model,
+                    concept_logits=concept_logits,
+                    gt_concepts=gt_concepts,
+                    gt_targets=gt_targets,
+                    concept_groups=concept_groups,
+                    device=device,
+                    budgets=budgets,
+                    metric_fn=metric_fn,
                     alpha=float(alpha),
+                    beta=float(beta_candidate),
                     gamma=float(gamma),
-                    metric_name=metric_name,
-                    metric_value=metric_value,
-                    budget=int(fit_budget),
-                    search_results=[],
+                    costs=costs,
+                    influence_mode=influence_mode,
+                    score_mode=score_mode,
+                    candidate_batch_size=candidate_batch_size,
+                    show_progress=False,
                 )
+                metrics = dict(results)[int(fit_budget)]
+                if metric_name not in metrics:
+                    raise KeyError(f"Metric '{metric_name}' was not returned by metric_fn. Available: {sorted(metrics)}")
+                metric_value = float(metrics[metric_name])
+                row = {
+                    "alpha": float(alpha),
+                    "beta": float(beta_candidate),
+                    "gamma": float(gamma),
+                    "score_mode": score_mode,
+                    metric_name: metric_value,
+                    "acc": float(metrics.get("acc", 0.0)),
+                    "macro_f1": float(metrics.get("macro_f1", 0.0)),
+                    "macro_f2": float(metrics.get("macro_f2", 0.0)),
+                }
+                search_results.append(row)
+
+                if best is None or metric_value > best.metric_value:
+                    best = CoopFitResult(
+                        alpha=float(alpha),
+                        beta=float(beta_candidate),
+                        gamma=float(gamma),
+                        score_mode=score_mode,
+                        metric_name=metric_name,
+                        metric_value=metric_value,
+                        budget=int(fit_budget),
+                        search_results=[],
+                    )
 
     assert best is not None
     return CoopFitResult(
         alpha=best.alpha,
+        beta=best.beta,
         gamma=best.gamma,
+        score_mode=best.score_mode,
         metric_name=best.metric_name,
         metric_value=best.metric_value,
         budget=best.budget,

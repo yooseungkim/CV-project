@@ -16,7 +16,7 @@ from src.tti.common import (
     translate_gt_to_logits,
 )
 from src.tti.coop import (
-    fit_alpha_gamma,
+    fit_coop_parameters,
     parse_coop_costs,
     parse_float_grid,
     run_tti_coop_group_level,
@@ -37,31 +37,105 @@ TTI_METRICS = (
     ("macro_f1", "Macro-F1"),
     ("macro_f2", "Macro-F2"),
 )
+COOP_SCORE_MODES = ("additive", "product", "power")
+COOP_SCORE_MODE_CHOICES = (*COOP_SCORE_MODES, "all")
+
+
+def load_config_file(config_path):
+    if config_path is None:
+        return {}
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found at: {config_path}")
+
+    ext = os.path.splitext(config_path)[1].lower()
+    with open(config_path, "r", encoding="utf-8") as f:
+        if ext in (".yaml", ".yml"):
+            import yaml
+
+            config_data = yaml.safe_load(f) or {}
+        else:
+            config_data = json.load(f)
+
+    if not isinstance(config_data, dict):
+        raise ValueError(f"Config file must contain a mapping at the top level: {config_path}")
+    return config_data
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def get_eval_defaults(config_data):
+    eval_cfg = as_dict(config_data.get("evaluation"))
+    tti_cfg = as_dict(eval_cfg.get("tti"))
+    coop_cfg = as_dict(eval_cfg.get("coop"))
+    defaults = {}
+
+    for key in ("batch_size", "device", "num_workers"):
+        if key in eval_cfg:
+            defaults[key] = eval_cfg[key]
+
+    for key in ("without_tti", "without_coop_tti", "without_coop_fit"):
+        if key in tti_cfg:
+            defaults[key] = tti_cfg[key]
+        elif key in eval_cfg:
+            defaults[key] = eval_cfg[key]
+
+    coop_mappings = {
+        "alpha": "coop_alpha",
+        "beta": "coop_beta",
+        "gamma": "coop_gamma",
+        "alpha_grid": "coop_alpha_grid",
+        "beta_grid": "coop_beta_grid",
+        "gamma_grid": "coop_gamma_grid",
+        "fit_k": "coop_fit_k",
+        "objective": "coop_fit_metric",
+        "fit_metric": "coop_fit_metric",
+        "score_mode": "coop_score_mode",
+        "costs": "coop_costs",
+        "candidate_batch_size": "coop_candidate_batch_size",
+        "influence_mode": "coop_influence_mode",
+    }
+    for config_key, arg_key in coop_mappings.items():
+        if config_key in coop_cfg:
+            defaults[arg_key] = coop_cfg[config_key]
+
+    return defaults
+
 
 def parse_args():
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument('--config_path', type=str, default=None)
+    config_args, _ = config_parser.parse_known_args()
+    config_data = load_config_file(config_args.config_path)
+    config_defaults = get_eval_defaults(config_data)
+
     parser = argparse.ArgumentParser(description="Concept Bottleneck Model Evaluation & Test-Time Intervention (TTI) Benchmark")
+    parser.add_argument('--config_path', type=str, default=config_args.config_path, help="Optional training/evaluation config YAML or JSON")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to saved CBM model checkpoint (.pt or .pth)")
-    parser.add_argument('--batch_size', type=int, default=64, help="Batch size for testing")
-    parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help="Computation device")
-    parser.add_argument('--num_workers', type=int, default=8, help="Number of workers for data loader")
-    parser.add_argument('--without-tti', action='store_true', help="Skip the TTI benchmark and run only standard CBM evaluation")
+    parser.add_argument('--batch_size', type=int, default=config_defaults.get('batch_size', 64), help="Batch size for testing")
+    parser.add_argument('--device', type=str, default=config_defaults.get('device', 'cuda'), choices=['cuda', 'cpu'], help="Computation device")
+    parser.add_argument('--num_workers', type=int, default=config_defaults.get('num_workers', 8), help="Number of workers for data loader")
+    parser.add_argument('--without-tti', action='store_true', default=config_defaults.get('without_tti', False), help="Skip the TTI benchmark and run only standard CBM evaluation")
     parser.add_argument('--ignore-bias', action='store_true', help="Ignore saved concept_bias by zeroing it before evaluation")
-    parser.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
-    parser.add_argument('--without-coop-fit', action='store_true', help="Skip validation fitting and use --coop-alpha/--coop-gamma directly")
-    parser.add_argument('--coop-alpha', '--coop_alpha', type=float, default=1.0, dest='coop_alpha', help="Manual CooP weight for concept prediction uncertainty (CPU), used when --without-coop-fit is set")
-    parser.add_argument('--coop-beta', '--coop_beta', type=float, default=1.0, dest='coop_beta', help="CooP weight for concept importance score (CIS)")
-    parser.add_argument('--coop-gamma', '--coop_gamma', type=float, default=0.0, dest='coop_gamma', help="Manual CooP weight for acquisition cost, used when --without-coop-fit is set")
-    parser.add_argument('--coop-alpha-grid', type=str, default='0,0.25,0.5,1,2,4', help="Comma-separated alpha values for validation fitting")
-    parser.add_argument('--coop-gamma-grid', type=str, default='0,0.25,0.5,1,2,4', help="Comma-separated gamma values for validation fitting")
-    parser.add_argument('--coop-fit-k', type=int, default=5, help="Group-level TTI budget K used to select fitted alpha/gamma on validation")
-    parser.add_argument('--coop-fit-metric', type=str, default='acc', choices=['acc', 'macro_f1', 'macro_f2'], help="Validation metric used to select fitted alpha/gamma")
-    parser.add_argument('--coop-costs', '--coop_costs', type=str, default=None, dest='coop_costs', help="Optional comma-separated group costs or JSON file containing a list or group-name mapping")
-    parser.add_argument('--coop-candidate-batch-size', '--coop_candidate_batch_size', type=int, default=16384, dest='coop_candidate_batch_size', help="Maximum number of CooP counterfactual candidate rows evaluated per classifier-head call")
+    parser.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', default=config_defaults.get('without_coop_tti', False), dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
+    parser.add_argument('--without-coop-fit', action='store_true', default=config_defaults.get('without_coop_fit', False), help="Skip validation fitting and use manual CooP score parameters directly")
+    parser.add_argument('--coop-alpha', '--coop_alpha', type=float, default=config_defaults.get('coop_alpha', 1.0), dest='coop_alpha', help="Manual CooP weight for concept prediction uncertainty (CPU), used when --without-coop-fit is set")
+    parser.add_argument('--coop-beta', '--coop_beta', type=float, default=config_defaults.get('coop_beta', 1.0), dest='coop_beta', help="CooP weight for concept importance score (CIS)")
+    parser.add_argument('--coop-gamma', '--coop_gamma', type=float, default=config_defaults.get('coop_gamma', 0.0), dest='coop_gamma', help="Manual CooP weight for acquisition cost, used when --without-coop-fit is set")
+    parser.add_argument('--coop-alpha-grid', type=str, default=config_defaults.get('coop_alpha_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated alpha values for validation fitting")
+    parser.add_argument('--coop-beta-grid', type=str, default=config_defaults.get('coop_beta_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated beta values for validation fitting in power score mode")
+    parser.add_argument('--coop-gamma-grid', type=str, default=config_defaults.get('coop_gamma_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated gamma values for validation fitting")
+    parser.add_argument('--coop-fit-k', type=int, default=config_defaults.get('coop_fit_k', 5), help="Group-level TTI budget K used to select fitted CooP parameters on validation")
+    parser.add_argument('--coop-fit-metric', type=str, default=config_defaults.get('coop_fit_metric', 'acc'), choices=['acc', 'macro_f1', 'macro_f2'], help="Validation metric used to select fitted CooP parameters")
+    parser.add_argument('--coop-score-mode', type=str, default=config_defaults.get('coop_score_mode', 'additive'), choices=COOP_SCORE_MODE_CHOICES, help="CooP score variant: additive is alpha*CPU + beta*CIS; product is legacy alpha*CPU*CIS; power is CPU^alpha*CIS^beta; all evaluates every variant")
+    parser.add_argument('--coop-costs', '--coop_costs', type=str, default=config_defaults.get('coop_costs', None), dest='coop_costs', help="Optional comma-separated group costs or JSON file containing a list or group-name mapping")
+    parser.add_argument('--coop-candidate-batch-size', '--coop_candidate_batch_size', type=int, default=config_defaults.get('coop_candidate_batch_size', 16384), dest='coop_candidate_batch_size', help="Maximum number of CooP counterfactual candidate rows evaluated per classifier-head call")
     parser.add_argument(
         '--coop-influence-mode',
         '--coop_influence_mode',
         type=str,
-        default='abs_change',
+        default=config_defaults.get('coop_influence_mode', 'abs_change'),
         dest='coop_influence_mode',
         choices=['abs_change', 'confidence_drop', 'paper_delta'],
         help="How CooP converts candidate interventions into CIS. abs_change is the default influence magnitude."
@@ -341,6 +415,28 @@ def get_tti_metrics_at_k(results, target_k=1):
     return results[-1]
 
 
+def get_coop_score_modes(score_mode_arg):
+    if score_mode_arg == "all":
+        return list(COOP_SCORE_MODES)
+    return [score_mode_arg]
+
+
+def get_coop_variant_label(score_mode):
+    if score_mode == "power":
+        return "CooP Power (CPU^alpha*CIS^beta)"
+    if score_mode == "product":
+        return "CooP Product (alpha*CPU*CIS)"
+    return "CooP Additive (alpha*CPU + beta*CIS)"
+
+
+def format_coop_score_formula(alpha, beta, gamma, score_mode):
+    if score_mode == "power":
+        return f"score=CPU^{alpha:.2f}*CIS^{beta:.2f} - {gamma:.2f}*cost"
+    if score_mode == "product":
+        return f"score={alpha:.2f}*CPU*CIS - {gamma:.2f}*cost"
+    return f"score={alpha:.2f}*CPU + {beta:.2f}*CIS - {gamma:.2f}*cost"
+
+
 def print_tti_metric_summary(group_results, concept_results, uncertainty_results, coop_results=None):
     baseline = group_results[0][1]
     group_k, group_summary = get_tti_metrics_at_k(group_results, target_k=1)
@@ -374,13 +470,15 @@ def print_tti_metric_summary(group_results, concept_results, uncertainty_results
             f"{uncertainty_value - standard:>11.2f}% |"
         )
     print(border)
-    if coop_results is not None:
-        coop_k, coop_summary = get_tti_metrics_at_k(coop_results, target_k=5)
-        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K={coop_k}")
-        for key, label in TTI_METRICS:
-            standard = baseline[key] * 100
-            coop_value = coop_summary[key] * 100
-            print(f"  [TTI] CooP Group Policy {label}: {coop_value:.2f}% ({coop_value - standard:+.2f}%p)")
+    if coop_results:
+        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K=5")
+        for variant_label, variant_results in coop_results:
+            coop_k, coop_summary = get_tti_metrics_at_k(variant_results, target_k=5)
+            print(f"  [{variant_label}] K={coop_k}")
+            for key, label in TTI_METRICS:
+                standard = baseline[key] * 100
+                coop_value = coop_summary[key] * 100
+                print(f"    - {label}: {coop_value:.2f}% ({coop_value - standard:+.2f}%p)")
 
 
 def run_tti_benchmark(
@@ -395,9 +493,11 @@ def run_tti_benchmark(
     coop_gamma=0.0,
     coop_costs=None,
     coop_influence_mode='abs_change',
+    coop_score_mode='additive',
     coop_candidate_batch_size=16384,
     without_coop_tti=False,
     coop_fit_result=None,
+    coop_configs=None,
 ):
     """Run all TTI variants and print Top-1 target metric tables."""
     group_budgets = make_tti_budgets(len(concept_groups))
@@ -418,48 +518,72 @@ def run_tti_benchmark(
     )
     print_tti_metric_table("[TTI - Group Level]", group_tti_results)
 
-    coop_tti_results = None
+    coop_tti_results = []
     if not without_coop_tti:
-        tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
-        tqdm.write(f"  {BOLD}{BLUE}[TTI - CooP Group Level]{RESET} Top-1 target metrics")
-        tqdm.write(
-            f"  score={coop_alpha:.2f}*CPU + {coop_beta:.2f}*CIS - "
-            f"{coop_gamma:.2f}*cost | influence={coop_influence_mode}; K={group_budgets[1:]}"
-        )
-        if coop_fit_result is not None:
-            tqdm.write(
-                f"  fitted on validation K={coop_fit_result.budget}: "
-                f"alpha={coop_fit_result.alpha:.4g}, gamma={coop_fit_result.gamma:.4g}, "
-                f"{coop_fit_result.metric_name}={coop_fit_result.metric_value*100:.2f}%"
-            )
-        tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
+        if coop_configs is None:
+            coop_configs = [
+                {
+                    "label": get_coop_variant_label(score_mode),
+                    "score_mode": score_mode,
+                    "alpha": coop_alpha,
+                    "beta": coop_beta,
+                    "gamma": coop_gamma,
+                    "fit_result": coop_fit_result,
+                }
+                for score_mode in get_coop_score_modes(coop_score_mode)
+            ]
         if isinstance(coop_costs, torch.Tensor):
             coop_cost_tensor = coop_costs
         else:
             coop_cost_tensor = parse_coop_costs(coop_costs, concept_groups)
-        coop_tti_results, coop_query_stats = run_tti_coop_group_level(
-            model,
-            concept_logits,
-            gt_concepts,
-            gt_targets,
-            concept_groups,
-            device,
-            group_budgets,
-            metric_fn=calculate_classifier_metrics,
-            alpha=coop_alpha,
-            beta=coop_beta,
-            gamma=coop_gamma,
-            costs=coop_cost_tensor,
-            influence_mode=coop_influence_mode,
-            candidate_batch_size=coop_candidate_batch_size,
-        )
-        print_tti_metric_table("[TTI - CooP Group Level]", coop_tti_results)
 
-        first_counts = coop_query_stats["first"]
-        top_first = torch.topk(first_counts, k=min(5, len(concept_groups)))
-        print("\n  [CooP] Most frequently selected first-query groups:")
-        for count, group_idx in zip(top_first.values.tolist(), top_first.indices.tolist()):
-            print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets)} samples")
+        for config in coop_configs:
+            variant_label = config["label"]
+            score_mode = config["score_mode"]
+            alpha = config["alpha"]
+            beta = config["beta"]
+            gamma = config["gamma"]
+            fit_result = config.get("fit_result")
+
+            tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+            tqdm.write(f"  {BOLD}{BLUE}[TTI - {variant_label}]{RESET} Top-1 target metrics")
+            tqdm.write(
+                f"  {format_coop_score_formula(alpha, beta, gamma, score_mode)} | "
+                f"influence={coop_influence_mode}; K={group_budgets[1:]}"
+            )
+            if fit_result is not None:
+                tqdm.write(
+                    f"  fitted on validation K={fit_result.budget}: "
+                    f"alpha={fit_result.alpha:.4g}, beta={fit_result.beta:.4g}, "
+                    f"gamma={fit_result.gamma:.4g}, "
+                    f"{fit_result.metric_name}={fit_result.metric_value*100:.2f}%"
+                )
+            tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
+            variant_results, coop_query_stats = run_tti_coop_group_level(
+                model,
+                concept_logits,
+                gt_concepts,
+                gt_targets,
+                concept_groups,
+                device,
+                group_budgets,
+                metric_fn=calculate_classifier_metrics,
+                alpha=alpha,
+                beta=beta,
+                gamma=gamma,
+                costs=coop_cost_tensor,
+                influence_mode=coop_influence_mode,
+                score_mode=score_mode,
+                candidate_batch_size=coop_candidate_batch_size,
+            )
+            print_tti_metric_table(f"[TTI - {variant_label}]", variant_results)
+            coop_tti_results.append((variant_label, variant_results))
+
+            first_counts = coop_query_stats["first"]
+            top_first = torch.topk(first_counts, k=min(5, len(concept_groups)))
+            print(f"\n  [{variant_label}] Most frequently selected first-query groups:")
+            for count, group_idx in zip(top_first.values.tolist(), top_first.indices.tolist()):
+                print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets)} samples")
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
     tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Top-1 target metrics")
@@ -651,7 +775,7 @@ def main():
         config=dataset_config,
         cache_in_memory=True
     )
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     val_loader = None
     if should_fit_coop:
         val_dataset = dataset_class(
@@ -661,7 +785,7 @@ def main():
             config=dataset_config,
             cache_in_memory=True
         )
-        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     
     # Resolve exact dimensions
     num_supervised_concepts = test_dataset.config["num_concepts"]
@@ -781,10 +905,13 @@ def main():
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     
-    coop_alpha = args.coop_alpha
-    coop_gamma = args.coop_gamma
+    coop_score_modes = get_coop_score_modes(args.coop_score_mode)
+    coop_alphas = {score_mode: args.coop_alpha for score_mode in coop_score_modes}
+    coop_betas = {score_mode: args.coop_beta for score_mode in coop_score_modes}
+    coop_gammas = {score_mode: args.coop_gamma for score_mode in coop_score_modes}
     coop_cost_tensor = None
-    coop_fit_result = None
+    coop_fit_results = {}
+    coop_configs = []
 
     if not args.without_tti and not args.without_coop_tti:
         coop_cost_tensor = parse_coop_costs(args.coop_costs, concept_groups)
@@ -802,37 +929,57 @@ def main():
             )
 
             alpha_grid = parse_float_grid(args.coop_alpha_grid)
+            beta_grid = parse_float_grid(args.coop_beta_grid)
             gamma_grid = parse_float_grid(args.coop_gamma_grid)
             coop_fit_budget = min(max(1, args.coop_fit_k), len(concept_groups))
-            tqdm.write(
-                f"  {BOLD}{BLUE}[CooP Fit]{RESET} Grid search "
-                f"alpha={alpha_grid}, gamma={gamma_grid}, K={coop_fit_budget}, "
-                f"metric={args.coop_fit_metric}"
-            )
-            coop_fit_result = fit_alpha_gamma(
-                model=model,
-                concept_logits=val_concept_logits,
-                gt_concepts=val_gt_concepts,
-                gt_targets=val_gt_targets,
-                concept_groups=concept_groups,
-                device=device,
-                alpha_grid=alpha_grid,
-                gamma_grid=gamma_grid,
-                fit_budget=coop_fit_budget,
-                metric_fn=calculate_classifier_metrics,
-                metric_name=args.coop_fit_metric,
-                beta=args.coop_beta,
-                costs=coop_cost_tensor,
-                influence_mode=args.coop_influence_mode,
-                candidate_batch_size=args.coop_candidate_batch_size,
-            )
-            coop_alpha = coop_fit_result.alpha
-            coop_gamma = coop_fit_result.gamma
-            tqdm.write(
-                f"  {BOLD}{GREEN}[CooP Fit]{RESET} Selected "
-                f"alpha={coop_alpha:.4g}, gamma={coop_gamma:.4g} "
-                f"with val {coop_fit_result.metric_name}={coop_fit_result.metric_value*100:.2f}%"
-            )
+            for score_mode in coop_score_modes:
+                active_beta_grid = beta_grid if score_mode == "power" else [args.coop_beta]
+                tqdm.write(
+                    f"  {BOLD}{BLUE}[CooP Fit - {score_mode}]{RESET} Grid search "
+                    f"alpha={alpha_grid}, beta={active_beta_grid}, gamma={gamma_grid}, K={coop_fit_budget}, "
+                    f"metric={args.coop_fit_metric}"
+                )
+                coop_fit_result = fit_coop_parameters(
+                    model=model,
+                    concept_logits=val_concept_logits,
+                    gt_concepts=val_gt_concepts,
+                    gt_targets=val_gt_targets,
+                    concept_groups=concept_groups,
+                    device=device,
+                    alpha_grid=alpha_grid,
+                    gamma_grid=gamma_grid,
+                    fit_budget=coop_fit_budget,
+                    metric_fn=calculate_classifier_metrics,
+                    metric_name=args.coop_fit_metric,
+                    beta=args.coop_beta,
+                    beta_grid=active_beta_grid,
+                    costs=coop_cost_tensor,
+                    influence_mode=args.coop_influence_mode,
+                    score_mode=score_mode,
+                    candidate_batch_size=args.coop_candidate_batch_size,
+                )
+                coop_fit_results[score_mode] = coop_fit_result
+                coop_alphas[score_mode] = coop_fit_result.alpha
+                coop_betas[score_mode] = coop_fit_result.beta
+                coop_gammas[score_mode] = coop_fit_result.gamma
+                tqdm.write(
+                    f"  {BOLD}{GREEN}[CooP Fit - {score_mode}]{RESET} Selected "
+                    f"alpha={coop_fit_result.alpha:.4g}, beta={coop_fit_result.beta:.4g}, "
+                    f"gamma={coop_fit_result.gamma:.4g} "
+                    f"with val {coop_fit_result.metric_name}={coop_fit_result.metric_value*100:.2f}%"
+                )
+
+        coop_configs = [
+            {
+                "label": get_coop_variant_label(score_mode),
+                "score_mode": score_mode,
+                "alpha": coop_alphas[score_mode],
+                "beta": coop_betas[score_mode],
+                "gamma": coop_gammas[score_mode],
+                "fit_result": coop_fit_results.get(score_mode),
+            }
+            for score_mode in coop_score_modes
+        ]
 
     if args.without_tti:
         tqdm.write(f"\n{BOLD}{YELLOW}[TTI]{RESET} Skipped because --without-tti was set.")
@@ -844,14 +991,16 @@ def main():
             gt_targets,
             concept_groups,
             device,
-            coop_alpha=coop_alpha,
+            coop_alpha=args.coop_alpha,
             coop_beta=args.coop_beta,
-            coop_gamma=coop_gamma,
+            coop_gamma=args.coop_gamma,
             coop_costs=coop_cost_tensor,
             coop_influence_mode=args.coop_influence_mode,
+            coop_score_mode=args.coop_score_mode,
             coop_candidate_batch_size=args.coop_candidate_batch_size,
             without_coop_tti=args.without_coop_tti,
-            coop_fit_result=coop_fit_result,
+            coop_fit_result=None,
+            coop_configs=coop_configs,
         )
 
     # 6. Export Active Pairwise NAM Interactions

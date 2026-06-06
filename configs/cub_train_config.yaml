@@ -87,7 +87,22 @@ training:
   run_eval: true               # Run evaluation script after training
   run_app: false               # Launch Gradio app after training
 
-# 5. Optimizer Configurations
+# 5. Evaluation and TTI Benchmark Settings
+evaluation:
+  batch_size: 64               # Batch size for eval_cbm.py
+  device: "cuda"               # Evaluation device
+  num_workers: 0               # Keep eval deterministic and avoid worker startup overhead
+  coop:
+    score_mode: "all"          # Evaluate additive, legacy product, and power CooP variants
+    objective: "macro_f1"      # Validation objective for CooP hyperparameter fitting
+    fit_k: 5                   # Group-level TTI budget used for fitting
+    alpha_grid: "0,0.25,0.5,1,2,4"
+    beta_grid: "0,0.25,0.5,1,2,4"
+    gamma_grid: "0"            # Uniform/default costs normalize to zero for CUB
+    candidate_batch_size: 8192
+    influence_mode: "abs_change"
+
+# 6. Optimizer Configurations
 optimizer:
   type: "adamw"                # Choices: ["adam", "adamw", "sgd"]
   lr: 0.001                    # General default learning rate
@@ -109,7 +124,7 @@ optimizer:
   lambda_latent_ortho: 0.1     # Latent projection loss weight
   lambda_latent_l1: 0.01       # Latent activation L1 loss weight
 
-# 6. Learning Rate Scheduler Options
+# 7. Learning Rate Scheduler Options
 scheduler:
   type: "cosine"               # Choices: ["none", "cosine", "step", "plateau"]
   T_max: 30                    # T_max for cosine annealing scheduler
@@ -128,7 +143,7 @@ scheduler:
   phase2_patience: 3           # [Dataset-Specific: cub, derm7pt]
   phase2_factor: 0.5           # [Dataset-Specific: cub, derm7pt]
 
-# 7. Early Stopping Criteria
+# 8. Early Stopping Criteria
 early_stopping:
   enabled: true                # Enable early stopping
   monitor: "val_target_loss"   # Target validation metric to monitor

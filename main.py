@@ -826,6 +826,8 @@ def main():
             sys.executable, "eval_cbm.py",
             "--checkpoint", save_path
         ]
+        if args.config_path:
+            cmd.extend(["--config_path", args.config_path])
         tqdm.write(f"  Running: {' '.join(cmd)}")
         try:
             subprocess.run(cmd)
