@@ -1,19 +1,11 @@
 [
     {
-        "index": 14,
+        "index": 8,
         "concept_i_idx": 1,
-        "concept_j_idx": 8,
+        "concept_j_idx": 2,
         "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Support Devices",
-        "gate_weight": -0.045543331652879715
-    },
-    {
-        "index": 21,
-        "concept_i_idx": 3,
-        "concept_j_idx": 4,
-        "concept_i": "Lung Lesion",
-        "concept_j": "Pneumonia",
-        "gate_weight": -0.04385225847363472
+        "concept_j": "Lung Opacity",
+        "gate_weight": 0.08081209659576416
     },
     {
         "index": 16,
@@ -21,31 +13,7 @@
         "concept_j_idx": 4,
         "concept_i": "Lung Opacity",
         "concept_j": "Pneumonia",
-        "gate_weight": -0.03618963435292244
-    },
-    {
-        "index": 3,
-        "concept_i_idx": 0,
-        "concept_j_idx": 4,
-        "concept_i": "No Finding",
-        "concept_j": "Pneumonia",
-        "gate_weight": -0.027977807447314262
-    },
-    {
-        "index": 31,
-        "concept_i_idx": 5,
-        "concept_j_idx": 7,
-        "concept_i": "Pneumothorax",
-        "concept_j": "Fracture",
-        "gate_weight": -0.0156530924141407
-    },
-    {
-        "index": 20,
-        "concept_i_idx": 2,
-        "concept_j_idx": 8,
-        "concept_i": "Lung Opacity",
-        "concept_j": "Support Devices",
-        "gate_weight": -0.015496836043894291
+        "gate_weight": -0.0202192310243845
     },
     {
         "index": 26,
@@ -53,79 +21,7 @@
         "concept_j_idx": 5,
         "concept_i": "Pneumonia",
         "concept_j": "Pneumothorax",
-        "gate_weight": 0.014740011654794216
-    },
-    {
-        "index": 4,
-        "concept_i_idx": 0,
-        "concept_j_idx": 5,
-        "concept_i": "No Finding",
-        "concept_j": "Pneumothorax",
-        "gate_weight": -0.013746936805546284
-    },
-    {
-        "index": 11,
-        "concept_i_idx": 1,
-        "concept_j_idx": 5,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Pneumothorax",
-        "gate_weight": -0.013382106088101864
-    },
-    {
-        "index": 33,
-        "concept_i_idx": 6,
-        "concept_j_idx": 7,
-        "concept_i": "Pleural Other",
-        "concept_j": "Fracture",
-        "gate_weight": -0.013371641747653484
-    },
-    {
-        "index": 35,
-        "concept_i_idx": 7,
-        "concept_j_idx": 8,
-        "concept_i": "Fracture",
-        "concept_j": "Support Devices",
-        "gate_weight": 0.013275950215756893
-    },
-    {
-        "index": 13,
-        "concept_i_idx": 1,
-        "concept_j_idx": 7,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Fracture",
-        "gate_weight": -0.01298550609499216
-    },
-    {
-        "index": 17,
-        "concept_i_idx": 2,
-        "concept_j_idx": 5,
-        "concept_i": "Lung Opacity",
-        "concept_j": "Pneumothorax",
-        "gate_weight": -0.011910990811884403
-    },
-    {
-        "index": 0,
-        "concept_i_idx": 0,
-        "concept_j_idx": 1,
-        "concept_i": "No Finding",
-        "concept_j": "Enlarged Cardiomediastinum",
-        "gate_weight": 0.011817904189229012
-    },
-    {
-        "index": 12,
-        "concept_i_idx": 1,
-        "concept_j_idx": 6,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Pleural Other",
-        "gate_weight": 0.010509341955184937
-    },
-    {
-        "index": 25,
-        "concept_i_idx": 3,
-        "concept_j_idx": 8,
-        "concept_i": "Lung Lesion",
-        "concept_j": "Support Devices",
-        "gate_weight": -0.010503750294446945
+        "gate_weight": -0.018785588443279266
     },
     {
         "index": 34,
@@ -133,7 +29,7 @@
         "concept_j_idx": 8,
         "concept_i": "Pleural Other",
         "concept_j": "Support Devices",
-        "gate_weight": -0.01044353749603033
+        "gate_weight": -0.01779410056769848
     },
     {
         "index": 7,
@@ -141,127 +37,31 @@
         "concept_j_idx": 8,
         "concept_i": "No Finding",
         "concept_j": "Support Devices",
-        "gate_weight": -0.010332674719393253
+        "gate_weight": -0.017737824469804764
     },
     {
-        "index": 6,
-        "concept_i_idx": 0,
-        "concept_j_idx": 7,
-        "concept_i": "No Finding",
-        "concept_j": "Fracture",
-        "gate_weight": -0.00896533951163292
-    },
-    {
-        "index": 15,
-        "concept_i_idx": 2,
-        "concept_j_idx": 3,
-        "concept_i": "Lung Opacity",
-        "concept_j": "Lung Lesion",
-        "gate_weight": -0.008716759271919727
-    },
-    {
-        "index": 19,
-        "concept_i_idx": 2,
-        "concept_j_idx": 7,
-        "concept_i": "Lung Opacity",
-        "concept_j": "Fracture",
-        "gate_weight": -0.008211626671254635
-    },
-    {
-        "index": 32,
-        "concept_i_idx": 5,
-        "concept_j_idx": 8,
-        "concept_i": "Pneumothorax",
-        "concept_j": "Support Devices",
-        "gate_weight": 0.007563984952867031
-    },
-    {
-        "index": 22,
-        "concept_i_idx": 3,
-        "concept_j_idx": 5,
-        "concept_i": "Lung Lesion",
-        "concept_j": "Pneumothorax",
-        "gate_weight": -0.007285197731107473
-    },
-    {
-        "index": 23,
-        "concept_i_idx": 3,
-        "concept_j_idx": 6,
-        "concept_i": "Lung Lesion",
-        "concept_j": "Pleural Other",
-        "gate_weight": -0.007269284687936306
-    },
-    {
-        "index": 2,
-        "concept_i_idx": 0,
-        "concept_j_idx": 3,
-        "concept_i": "No Finding",
-        "concept_j": "Lung Lesion",
-        "gate_weight": -0.006476213689893484
-    },
-    {
-        "index": 9,
+        "index": 12,
         "concept_i_idx": 1,
-        "concept_j_idx": 3,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Lung Lesion",
-        "gate_weight": 0.004693123511970043
-    },
-    {
-        "index": 18,
-        "concept_i_idx": 2,
         "concept_j_idx": 6,
-        "concept_i": "Lung Opacity",
+        "concept_i": "Enlarged Cardiomediastinum",
         "concept_j": "Pleural Other",
-        "gate_weight": -0.004397325683385134
+        "gate_weight": -0.0166668388992548
     },
     {
-        "index": 24,
-        "concept_i_idx": 3,
+        "index": 13,
+        "concept_i_idx": 1,
         "concept_j_idx": 7,
-        "concept_i": "Lung Lesion",
+        "concept_i": "Enlarged Cardiomediastinum",
         "concept_j": "Fracture",
-        "gate_weight": 0.004103412386029959
+        "gate_weight": 0.014963879249989986
     },
     {
-        "index": 1,
-        "concept_i_idx": 0,
-        "concept_j_idx": 2,
-        "concept_i": "No Finding",
-        "concept_j": "Lung Opacity",
-        "gate_weight": -0.003945053555071354
-    },
-    {
-        "index": 30,
-        "concept_i_idx": 5,
+        "index": 27,
+        "concept_i_idx": 4,
         "concept_j_idx": 6,
-        "concept_i": "Pneumothorax",
+        "concept_i": "Pneumonia",
         "concept_j": "Pleural Other",
-        "gate_weight": 0.003162034787237644
-    },
-    {
-        "index": 5,
-        "concept_i_idx": 0,
-        "concept_j_idx": 6,
-        "concept_i": "No Finding",
-        "concept_j": "Pleural Other",
-        "gate_weight": -0.002851891564205289
-    },
-    {
-        "index": 10,
-        "concept_i_idx": 1,
-        "concept_j_idx": 4,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Pneumonia",
-        "gate_weight": 0.0020899041555821896
-    },
-    {
-        "index": 8,
-        "concept_i_idx": 1,
-        "concept_j_idx": 2,
-        "concept_i": "Enlarged Cardiomediastinum",
-        "concept_j": "Lung Opacity",
-        "gate_weight": -0.0016256759408861399
+        "gate_weight": -0.01450392883270979
     },
     {
         "index": 29,
@@ -269,6 +69,214 @@
         "concept_j_idx": 8,
         "concept_i": "Pneumonia",
         "concept_j": "Support Devices",
-        "gate_weight": 0.0011864015832543373
+        "gate_weight": -0.0137395691126585
+    },
+    {
+        "index": 30,
+        "concept_i_idx": 5,
+        "concept_j_idx": 6,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.013523374684154987
+    },
+    {
+        "index": 19,
+        "concept_i_idx": 2,
+        "concept_j_idx": 7,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Fracture",
+        "gate_weight": 0.012446598149836063
+    },
+    {
+        "index": 14,
+        "concept_i_idx": 1,
+        "concept_j_idx": 8,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Support Devices",
+        "gate_weight": -0.012186670675873756
+    },
+    {
+        "index": 21,
+        "concept_i_idx": 3,
+        "concept_j_idx": 4,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pneumonia",
+        "gate_weight": -0.01198263093829155
+    },
+    {
+        "index": 9,
+        "concept_i_idx": 1,
+        "concept_j_idx": 3,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Lung Lesion",
+        "gate_weight": 0.011227857321500778
+    },
+    {
+        "index": 28,
+        "concept_i_idx": 4,
+        "concept_j_idx": 7,
+        "concept_i": "Pneumonia",
+        "concept_j": "Fracture",
+        "gate_weight": -0.011131228879094124
+    },
+    {
+        "index": 10,
+        "concept_i_idx": 1,
+        "concept_j_idx": 4,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Pneumonia",
+        "gate_weight": 0.010613520629703999
+    },
+    {
+        "index": 31,
+        "concept_i_idx": 5,
+        "concept_j_idx": 7,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Fracture",
+        "gate_weight": 0.010516966693103313
+    },
+    {
+        "index": 33,
+        "concept_i_idx": 6,
+        "concept_j_idx": 7,
+        "concept_i": "Pleural Other",
+        "concept_j": "Fracture",
+        "gate_weight": -0.008912300691008568
+    },
+    {
+        "index": 32,
+        "concept_i_idx": 5,
+        "concept_j_idx": 8,
+        "concept_i": "Pneumothorax",
+        "concept_j": "Support Devices",
+        "gate_weight": -0.008056186139583588
+    },
+    {
+        "index": 24,
+        "concept_i_idx": 3,
+        "concept_j_idx": 7,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Fracture",
+        "gate_weight": -0.007252336945384741
+    },
+    {
+        "index": 2,
+        "concept_i_idx": 0,
+        "concept_j_idx": 3,
+        "concept_i": "No Finding",
+        "concept_j": "Lung Lesion",
+        "gate_weight": -0.007012135349214077
+    },
+    {
+        "index": 25,
+        "concept_i_idx": 3,
+        "concept_j_idx": 8,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.006186187732964754
+    },
+    {
+        "index": 22,
+        "concept_i_idx": 3,
+        "concept_j_idx": 5,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pneumothorax",
+        "gate_weight": -0.006085107568651438
+    },
+    {
+        "index": 1,
+        "concept_i_idx": 0,
+        "concept_j_idx": 2,
+        "concept_i": "No Finding",
+        "concept_j": "Lung Opacity",
+        "gate_weight": -0.005472003947943449
+    },
+    {
+        "index": 4,
+        "concept_i_idx": 0,
+        "concept_j_idx": 5,
+        "concept_i": "No Finding",
+        "concept_j": "Pneumothorax",
+        "gate_weight": -0.005418817978352308
+    },
+    {
+        "index": 0,
+        "concept_i_idx": 0,
+        "concept_j_idx": 1,
+        "concept_i": "No Finding",
+        "concept_j": "Enlarged Cardiomediastinum",
+        "gate_weight": 0.004896632395684719
+    },
+    {
+        "index": 35,
+        "concept_i_idx": 7,
+        "concept_j_idx": 8,
+        "concept_i": "Fracture",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.0037498334422707558
+    },
+    {
+        "index": 18,
+        "concept_i_idx": 2,
+        "concept_j_idx": 6,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.0032069494482129812
+    },
+    {
+        "index": 5,
+        "concept_i_idx": 0,
+        "concept_j_idx": 6,
+        "concept_i": "No Finding",
+        "concept_j": "Pleural Other",
+        "gate_weight": -0.002669095993041992
+    },
+    {
+        "index": 11,
+        "concept_i_idx": 1,
+        "concept_j_idx": 5,
+        "concept_i": "Enlarged Cardiomediastinum",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.00260219257324934
+    },
+    {
+        "index": 23,
+        "concept_i_idx": 3,
+        "concept_j_idx": 6,
+        "concept_i": "Lung Lesion",
+        "concept_j": "Pleural Other",
+        "gate_weight": 0.001970767742022872
+    },
+    {
+        "index": 20,
+        "concept_i_idx": 2,
+        "concept_j_idx": 8,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Support Devices",
+        "gate_weight": 0.0016654266510158777
+    },
+    {
+        "index": 17,
+        "concept_i_idx": 2,
+        "concept_j_idx": 5,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Pneumothorax",
+        "gate_weight": 0.0016239096876233816
+    },
+    {
+        "index": 6,
+        "concept_i_idx": 0,
+        "concept_j_idx": 7,
+        "concept_i": "No Finding",
+        "concept_j": "Fracture",
+        "gate_weight": -0.0012989338720217347
+    },
+    {
+        "index": 15,
+        "concept_i_idx": 2,
+        "concept_j_idx": 3,
+        "concept_i": "Lung Opacity",
+        "concept_j": "Lung Lesion",
+        "gate_weight": 0.0012336568906903267
     }
 ]

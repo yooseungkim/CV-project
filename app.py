@@ -131,24 +131,37 @@ def plot_concept_contributions(model, concept_logits_tensor, concept_names, targ
     with torch.no_grad():
         if hasattr(model, "classifier_head") and hasattr(model.classifier_head, "conv1") and hasattr(model.classifier_head, "concept_gates"):
             # GatedSparseNAMHead case
-            supervised_x = concept_logits_tensor[:, :model.num_supervised_concepts].unsqueeze(-1)
+            if getattr(model, 'use_multimodal', False):
+                x = torch.cat([concept_logits_tensor, torch.zeros(concept_logits_tensor.size(0), 3, device=concept_logits_tensor.device)], dim=-1)
+            else:
+                x = concept_logits_tensor
+            
+            supervised_x = x[:, :model.classifier_head.num_concepts].unsqueeze(-1)
             h = F.relu(model.classifier_head.conv1(supervised_x))
             y = model.classifier_head.conv2(h)
-            y = y.view(1, model.num_supervised_concepts, model.num_classes)
-            gated_y = y * model.classifier_head.concept_gates.view(1, model.num_supervised_concepts, 1)
+            y = y.view(1, model.classifier_head.num_concepts, model.num_classes)
+            gated_y = y * model.classifier_head.concept_gates.view(1, model.classifier_head.num_concepts, 1)
             contributions = gated_y[0, :, target_class_idx].cpu().numpy()
         elif hasattr(model, "classifier_head") and hasattr(model.classifier_head, "weight"):
             # Standard nn.Linear case
             weight = model.classifier_head.weight[target_class_idx].cpu().numpy()
-            x = concept_logits_tensor[0, :model.num_supervised_concepts].cpu().numpy()
+            if getattr(model, 'use_multimodal', False):
+                x = torch.cat([concept_logits_tensor, torch.zeros(concept_logits_tensor.size(0), 3, device=concept_logits_tensor.device)], dim=-1)
+            else:
+                x = concept_logits_tensor
+            x = x[0, :weight.shape[0]].cpu().numpy()
             contributions = weight * x
         else:
             return None
 
     import numpy as np
-    names = concept_names[:len(contributions)]
+    names = list(concept_names)
     if len(names) < len(contributions):
-        names += [f"Concept {i}" for i in range(len(names), len(contributions))]
+        extra_names = ["Age", "Sex (Male)", "Sex (Female)"]
+        names += extra_names[:len(contributions) - len(names)]
+        if len(names) < len(contributions):
+            names += [f"Concept {i}" for i in range(len(names), len(contributions))]
+    names = names[:len(contributions)]
         
     abs_contribs = np.abs(contributions)
     top_indices = np.argsort(abs_contribs)[-12:]
@@ -474,7 +487,11 @@ def repredict_with_adjusted_concepts(original_state, *args):
             for _ in range(num_samples):
                 eps = torch.randn_like(std)
                 sampled_logits = logits_mutated + std * eps
-                class_logits_sample = MODEL.classifier_head(sampled_logits)
+                if getattr(MODEL, "use_multimodal", False):
+                    inputs_sampled = torch.cat([sampled_logits, torch.zeros(sampled_logits.size(0), 3, device=sampled_logits.device)], dim=-1)
+                else:
+                    inputs_sampled = sampled_logits
+                class_logits_sample = MODEL.classifier_head(inputs_sampled)
                 
                 if NUM_CLASSES == 1:
                     probs_sample = torch.sigmoid(class_logits_sample)
@@ -507,7 +524,11 @@ def repredict_with_adjusted_concepts(original_state, *args):
                 pred_text = "\n".join(lines)
                 target_class_idx = top_idxs[0].item()
         else:
-            class_logits = MODEL.classifier_head(logits_mutated)
+            if getattr(MODEL, "use_multimodal", False):
+                inputs_mutated = torch.cat([logits_mutated, torch.zeros(logits_mutated.size(0), 3, device=logits_mutated.device)], dim=-1)
+            else:
+                inputs_mutated = logits_mutated
+            class_logits = MODEL.classifier_head(inputs_mutated)
             if NUM_CLASSES == 1:
                 prob = torch.sigmoid(class_logits).item()
                 pred_label = "Malignant" if prob >= 0.5 else "Benign"
@@ -965,6 +986,14 @@ def parse_app_args():
         '--lora_alpha', type=float, default=16.0
     )
     parser.add_argument(
+        '--use_multimodal', type=str2bool, default=False,
+        help="Enable late fusion with tabular features (Age, Sex) by concatenating them INTO classifier head input"
+    )
+    parser.add_argument(
+        '--age_sex_skip_connection', type=str2bool, default=False,
+        help="Bypass NAM with Age/Sex: add a dedicated linear(tabular -> classes) directly to final logits"
+    )
+    parser.add_argument(
         '--port', type=int, default=7860,
         help="Port to serve the Gradio app on"
     )
@@ -1018,7 +1047,9 @@ def main():
                     print(f"[Config] Auto-detected dataset from checkpoint: {DATASET_NAME}")
                 else:
                     # Fallback detection
-                    if ckpt_args.get("num_classes") in [5, 20]:
+                    if "chexpert" in str(ckpt_args.get("concept_config_path", "")).lower() or "chexpert" in str(args.checkpoint).lower():
+                        DATASET_NAME = "chexpert"
+                    elif ckpt_args.get("num_classes") in [5, 20]:
                         DATASET_NAME = "derm7pt"
                     elif ckpt_args.get("num_classes") == 200:
                         DATASET_NAME = "cub"
@@ -1092,6 +1123,10 @@ def main():
             print(f"[Config] Pre-loading checkpoint failed to auto-detect filtering settings: {e}")
 
     # 1. Load concept config
+    if (args.concept_config_path == 'data/MILK10K/concept_config.json' or not os.path.exists(args.concept_config_path)) and DATASET_NAME == 'chexpert':
+        args.concept_config_path = 'data/CheXpert/concept_config.json'
+        print(f"[Config] Automatically redirecting concept config to: {args.concept_config_path}")
+
     if not os.path.exists(args.concept_config_path):
         raise FileNotFoundError(f"Concept config not found: {args.concept_config_path}")
 
@@ -1137,7 +1172,9 @@ def main():
     if args.target_classes:
         TARGET_CLASSES = [c.strip() for c in args.target_classes.split(',')]
     elif NUM_CLASSES > 1:
-        if NUM_CLASSES in [5, 20]:
+        if DATASET_NAME == "chexpert":
+            TARGET_CLASSES = ['Cardiomegaly', 'Edema', 'Consolidation', 'Atelectasis', 'Pleural Effusion']
+        elif NUM_CLASSES in [5, 20]:
             try:
                 from src.data.derm7pt import Derm7PtDataset
                 dataset = Derm7PtDataset(cache_in_memory=False)
@@ -1196,7 +1233,8 @@ def main():
         # GatedSparseNAMHead uses conv1 grouped conv. Out channels is num_concepts * hidden_dim
         if "classifier_head.conv1.weight" in state_dict:
             out_ch = state_dict["classifier_head.conv1.weight"].shape[0]
-            nam_hidden_dim = out_ch // NUM_CONCEPTS
+            num_nam_gates = state_dict["classifier_head.concept_gates"].shape[0]
+            nam_hidden_dim = out_ch // num_nam_gates
             print(f"[Config] Auto-detected GatedSparseNAMHead: use_nam_head=True, nam_hidden_dim={nam_hidden_dim}")
         
         # Detect latent concepts in NAM: check if latent_linear layer weights exist
@@ -1231,6 +1269,8 @@ def main():
     use_pairwise_nam = getattr(args, 'use_pairwise_nam', False)
     use_probabilistic_cbm = getattr(args, 'use_probabilistic_cbm', False)
     use_concept_attention = getattr(args, 'use_concept_attention', False)
+    use_multimodal = getattr(args, 'use_multimodal', False)
+    age_sex_skip_connection = getattr(args, 'age_sex_skip_connection', False)
     
     if isinstance(loaded_checkpoint, dict) and 'args' in loaded_checkpoint:
         checkpoint_args = loaded_checkpoint['args']
@@ -1258,7 +1298,11 @@ def main():
             use_probabilistic_cbm = checkpoint_args['use_probabilistic_cbm']
         if 'use_concept_attention' in checkpoint_args:
             use_concept_attention = checkpoint_args['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        if 'use_multimodal' in checkpoint_args:
+            use_multimodal = checkpoint_args['use_multimodal']
+        if 'age_sex_skip_connection' in checkpoint_args:
+            age_sex_skip_connection = checkpoint_args['age_sex_skip_connection']
+        print(f"[Config] Auto-detected Config from checkpoint args: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}, use_multimodal={use_multimodal}, age_sex_skip_connection={age_sex_skip_connection}")
     elif isinstance(loaded_checkpoint, dict) and 'config' in loaded_checkpoint:
         checkpoint_cfg = loaded_checkpoint['config']
         bb_cfg = checkpoint_cfg.get('backbone', {})
@@ -1288,7 +1332,15 @@ def main():
             use_probabilistic_cbm = tr_cfg['use_probabilistic_cbm']
         if 'use_concept_attention' in bb_cfg:
             use_concept_attention = bb_cfg['use_concept_attention']
-        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}")
+        if 'use_multimodal' in ds_cfg:
+            use_multimodal = ds_cfg['use_multimodal']
+        elif 'use_multimodal' in tr_cfg:
+            use_multimodal = tr_cfg['use_multimodal']
+        if 'age_sex_skip_connection' in ds_cfg:
+            age_sex_skip_connection = ds_cfg['age_sex_skip_connection']
+        elif 'age_sex_skip_connection' in tr_cfg:
+            age_sex_skip_connection = tr_cfg['age_sex_skip_connection']
+        print(f"[Config] Auto-detected Config from checkpoint config: backbone={backbone_name} ({backbone_type}), use_lora={use_lora}, r={lora_r}, alpha={lora_alpha}, use_concept_groups={use_concept_groups}, use_group_broadcasting={use_group_broadcasting}, use_probabilistic_cbm={use_probabilistic_cbm}, use_concept_attention={use_concept_attention}, use_multimodal={use_multimodal}, age_sex_skip_connection={age_sex_skip_connection}")
     else:
         # Fallback to key scanning: if "backbone.vit.blocks.0.attn.qkv.lora_A" exists, LoRA must be True!
         has_lora_keys = any("lora_" in key for key in state_dict.keys())
@@ -1307,7 +1359,18 @@ def main():
         is_vit_keys = any("blocks." in key for key in state_dict.keys())
         if is_vit_keys:
             backbone_name = "vit_base_patch16_224"
-        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}")
+        # Fallback multimodal / skip-connection detection from state_dict keys
+        if "classifier_head.concept_gates" in state_dict:
+            num_supervised_gates = state_dict["classifier_head.concept_gates"].shape[0]
+            if num_supervised_gates > NUM_CONCEPTS and DATASET_NAME == 'chexpert':
+                use_multimodal = True
+        elif "classifier_head.weight" in state_dict:
+            checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
+            if checkpoint_dims > NUM_CONCEPTS and DATASET_NAME == 'chexpert':
+                use_multimodal = True
+        if 'tabular_skip_head.weight' in state_dict:
+            age_sex_skip_connection = True
+        print(f"[Config] Auto-detected from state_dict keys: backbone={backbone_name}, use_lora={use_lora}, use_cosine_attention={use_cosine_attention}, use_concept_groups=True, use_group_broadcasting={use_group_broadcasting}, use_multimodal={use_multimodal}, age_sex_skip_connection={age_sex_skip_connection}")
     
     # Command line argument override
     if getattr(args, 'no_grouping', False):
@@ -1393,7 +1456,9 @@ def main():
         nam_hidden_dim=nam_hidden_dim,
         use_probabilistic_cbm=use_probabilistic_cbm,
         use_concept_attention=use_concept_attention,
-        use_pairwise_nam=use_pairwise_nam
+        use_pairwise_nam=use_pairwise_nam,
+        use_multimodal=use_multimodal,
+        age_sex_skip_connection=age_sex_skip_connection,
     )
 
     # ── State-dict migration: old MHA → new Cosine Attention keys ─────────────

@@ -76,6 +76,7 @@ def parse_args():
     if "filter_rare_concepts" in ds_cfg: flat_defaults["filter_rare_concepts"] = ds_cfg["filter_rare_concepts"]
     if "use_paper_preprocessing" in ds_cfg: flat_defaults["use_paper_preprocessing"] = ds_cfg["use_paper_preprocessing"]
     if "use_multimodal" in ds_cfg: flat_defaults["use_multimodal"] = ds_cfg["use_multimodal"]
+    if "age_sex_skip_connection" in ds_cfg: flat_defaults["age_sex_skip_connection"] = ds_cfg["age_sex_skip_connection"]
     if "policy" in ds_cfg: flat_defaults["policy"] = ds_cfg["policy"]
     if "subset_ratio" in ds_cfg: flat_defaults["subset_ratio"] = ds_cfg["subset_ratio"]
     
@@ -220,6 +221,8 @@ def parse_args():
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
+    parser.add_argument('--use_multimodal', type=str2bool, default=flat_defaults.get('use_multimodal', False), help="Enable late fusion with tabular features (Age, Sex) by concatenating them INTO the classifier head input")
+    parser.add_argument('--age_sex_skip_connection', type=str2bool, default=flat_defaults.get('age_sex_skip_connection', False), help="Bypass NAM with Age/Sex: add a dedicated linear(tabular -> classes) directly to final logits (independent channel from X-ray CBM)")
     # (use_dino_mask and dino_mask_threshold parser arguments removed)
     parser.add_argument('--use_dynamic_threshold', type=str2bool, default=flat_defaults.get('use_dynamic_threshold', True), help="Optimize validation concept decision thresholds via Youden's J statistic")
     parser.add_argument('--use_weighted_sampler', type=str2bool, default=flat_defaults.get('use_weighted_sampler', False), help="Use WeightedRandomSampler to balance training batch distribution")
@@ -295,7 +298,7 @@ def main():
     if args.num_classes != 1:  # Only override if explicitly customized via CLI
         dataset_config["num_classes"] = args.num_classes
 
-    # Instantiate train and validation datasets
+    # Instantiate train dataset
     train_dataset = dataset_class(
         csv_path=args.csv_path,
         image_dir=args.image_dir,
@@ -304,14 +307,87 @@ def main():
         cache_in_memory=args.cache_in_memory,
         max_cache_size_gb=args.max_cache_size_gb
     )
-    val_dataset = dataset_class(
-        csv_path=args.csv_path,
-        image_dir=args.image_dir,
-        split='val',
-        config=dataset_config,
-        cache_in_memory=args.cache_in_memory,
-        max_cache_size_gb=args.max_cache_size_gb
-    )
+    
+    # Split train_dataset into train_split (95%) and val_split (5%) ONLY for CheXpert to prevent overfitting on the small 200-sample val set
+    if args.dataset == 'chexpert' and train_dataset.df is not None and not train_dataset.dummy_mode:
+        # We need a robust stratification vector over targets and rare concepts
+        stratify_cols = list(train_dataset.targets_cols)
+        for c in ['Lung Lesion', 'Pleural Other', 'Fracture']:
+            if c in train_dataset.concepts_cols and c not in stratify_cols:
+                stratify_cols.append(c)
+                
+        # Combine columns into a single string label
+        y_str = train_dataset.df[stratify_cols].astype(int).astype(str).agg('-'.join, axis=1).copy()
+        counts = y_str.value_counts()
+        y_str = y_str.apply(lambda val: val if counts[val] >= 2 else "other")
+        
+        new_counts = y_str.value_counts()
+        if "other" in new_counts and new_counts["other"] < 2:
+            mode_val = new_counts.index[0] if new_counts.index[0] != "other" else new_counts.index[1]
+            y_str = y_str.replace("other", mode_val)
+            
+        # Perform manual stratified split: 95% train / 5% val
+        groups = train_dataset.df.groupby(y_str)
+        train_indices = []
+        val_indices = []
+        rng = np.random.default_rng(42)
+        
+        for name, group in groups:
+            indices = group.index.values
+            n_samples = len(indices)
+            n_val = int(np.round(n_samples * 0.05))
+            if n_val == 0 and n_samples >= 2:
+                n_val = 1
+            if n_samples == 1:
+                n_val = 0
+            shuffled = rng.permutation(indices)
+            val_indices.extend(shuffled[:n_val])
+            train_indices.extend(shuffled[n_val:])
+            
+        train_df = train_dataset.df.loc[train_indices].reset_index(drop=True)
+        val_df = train_dataset.df.loc[val_indices].reset_index(drop=True)
+        
+        tqdm.write(f"  [Split] Split training subset into Train ({len(train_df)} samples) and Validation ({len(val_df)} samples) | Stratified on targets and rare concepts.")
+        
+        # Original 200-sample validation dataset used as proxy test logging
+        proxy_val_dataset = dataset_class(
+            csv_path=args.csv_path,
+            image_dir=args.image_dir,
+            split='val',
+            config=dataset_config,
+            cache_in_memory=args.cache_in_memory,
+            max_cache_size_gb=args.max_cache_size_gb
+        )
+        
+        # Re-instantiate train_dataset and val_dataset using the split dataframes
+        train_dataset = dataset_class(
+            csv_path=args.csv_path,
+            image_dir=args.image_dir,
+            split='train',
+            config=dataset_config,
+            cache_in_memory=args.cache_in_memory,
+            max_cache_size_gb=args.max_cache_size_gb,
+            custom_df=train_df
+        )
+        val_dataset = dataset_class(
+            csv_path=args.csv_path,
+            image_dir=args.image_dir,
+            split='val',
+            config=dataset_config,
+            cache_in_memory=args.cache_in_memory,
+            max_cache_size_gb=args.max_cache_size_gb,
+            custom_df=val_df
+        )
+    else:
+        # Standard validation dataset creation for other datasets
+        val_dataset = dataset_class(
+            csv_path=args.csv_path,
+            image_dir=args.image_dir,
+            split='val',
+            config=dataset_config,
+            cache_in_memory=args.cache_in_memory,
+            max_cache_size_gb=args.max_cache_size_gb
+        )
 
     # Use final resolved configuration from dataset instance
     resolved_config = train_dataset.config
@@ -389,6 +465,17 @@ def main():
         pin_memory=args.pin_memory,
         persistent_workers=(num_workers > 0)
     )
+    
+    proxy_val_loader = None
+    if args.dataset == 'chexpert' and 'proxy_val_dataset' in locals():
+        proxy_val_loader = DataLoader(
+            proxy_val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=args.pin_memory,
+            persistent_workers=(num_workers > 0)
+        )
 
     # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax
     concept_groups_info = None
@@ -441,7 +528,9 @@ def main():
         nam_hidden_dim=args.nam_hidden_dim,
         use_probabilistic_cbm=args.use_probabilistic_cbm,
         use_concept_attention=args.use_concept_attention,
-        use_pairwise_nam=args.use_pairwise_nam
+        use_pairwise_nam=args.use_pairwise_nam,
+        use_multimodal=args.use_multimodal,
+        age_sex_skip_connection=getattr(args, 'age_sex_skip_connection', False),
     )
 
     
@@ -637,7 +726,8 @@ def main():
             run_name=run_name,
             num_concepts_supervised=num_concepts_supervised,
             resolved_config=resolved_config,
-            concept_groups_info=concept_groups_info
+            concept_groups_info=concept_groups_info,
+            proxy_val_loader=proxy_val_loader
         )
         
         # Safety Backup: Save intermediate Phase 1 checkpoint to allow resuming Phase 2
@@ -672,7 +762,8 @@ def main():
             run_name=run_name,
             num_concepts_supervised=num_concepts_supervised,
             resolved_config=resolved_config,
-            num_classes=num_classes
+            num_classes=num_classes,
+            proxy_val_loader=proxy_val_loader
         )
         
         # Safety Backup: Save intermediate Phase 2 checkpoint to allow resuming Phase 3
@@ -707,7 +798,8 @@ def main():
             run_name=run_name,
             num_concepts_supervised=num_concepts_supervised,
             resolved_config=resolved_config,
-            num_classes=num_classes
+            num_classes=num_classes,
+            proxy_val_loader=proxy_val_loader
         )
 
     # Save Model Weights

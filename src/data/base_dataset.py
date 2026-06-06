@@ -110,8 +110,14 @@ class BaseDataset(Dataset, ABC):
     def __len__(self) -> int:
         pass
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Returns a sample, from cache if available, otherwise loads from disk."""
         if self._cache_populated and self._cache is not None:
-            return self._cache[idx]
-        return self._load_sample(idx)
+            sample = self._cache[idx]
+        else:
+            sample = self._load_sample(idx)
+            
+        if len(sample) == 3:
+            dummy_tabular = torch.zeros(3, dtype=torch.float32)
+            return sample + (dummy_tabular,)
+        return sample

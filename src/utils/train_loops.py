@@ -49,7 +49,7 @@ def apply_label_smoothing(hard_labels, epsilon=0.05):
         return hard_labels
     return torch.where(hard_labels >= 0.5, 1.0 - epsilon, epsilon)
 
-def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, concept_groups_info=None):
+def train_phase1(model, train_loader, val_loader, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, concept_groups_info=None, proxy_val_loader=None):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
     tqdm.write(f"  {BOLD}{MAGENTA}[Phase 1] Concept Learning (Backbone & Concept Head){RESET}")
     tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
@@ -156,7 +156,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         total_acc_c = 0.0
         
         train_pbar = tqdm(train_loader, desc=f"  P1 Epoch {epoch+1}/{phase1_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
-        for images, concepts, _ in train_pbar:
+        for images, concepts, _, _ in train_pbar:
             images = images.to(device, non_blocking=True)
             concepts = concepts.to(device, non_blocking=True)
             
@@ -246,7 +246,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         val_vis_data = None
         
         with torch.no_grad():
-            for val_images, val_concepts, _ in val_loader:
+            for val_images, val_concepts, _, _ in val_loader:
                 val_images = val_images.to(device, non_blocking=True)
                 val_concepts = val_concepts.to(device, non_blocking=True)
                 
@@ -335,8 +335,29 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
             val_tnr = 0.0
             val_f1 = 0.0
             
+        proxy_info = ""
+        if proxy_val_loader is not None:
+            model.eval()
+            all_proxy_probs = []
+            all_proxy_targets = []
+            with torch.no_grad():
+                for p_images, p_concepts, _, _ in proxy_val_loader:
+                    p_images = p_images.to(device, non_blocking=True)
+                    p_concepts = p_concepts.to(device, non_blocking=True)
+                    _, p_concept_logits, _ = model(p_images)
+                    all_proxy_probs.append(p_concept_logits[:, :num_concepts_supervised].cpu())
+                    all_proxy_targets.append(p_concepts.cpu())
+            if all_proxy_probs:
+                proxy_logits_all = torch.cat(all_proxy_probs, dim=0)
+                proxy_targets_all = torch.cat(all_proxy_targets, dim=0)
+                proxy_metrics = calculate_concept_metrics(proxy_logits_all, proxy_targets_all, concept_groups_info=concept_groups_info)
+                avg_proxy_f1_c = proxy_metrics["mean_f1"]
+            else:
+                avg_proxy_f1_c = 0.0
+            proxy_info = f" | Proxy Test F1: {avg_proxy_f1_c * 100:.2f}%"
+
         # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
-        tqdm.write(f"[Phase 1] Epoch {epoch+1:02d}/{phase1_epochs:02d} | Train Concept Loss: {avg_loss_c:.4f} | Val Concept Loss: {avg_val_loss_c:.4f} | Val Concept Balanced Acc: {avg_val_acc_c * 100:.2f}% | TPR: {val_tpr * 100:.2f}% | TNR: {val_tnr * 100:.2f}% | F1-Score: {val_f1 * 100:.2f}%")
+        tqdm.write(f"[Phase 1] Epoch {epoch+1:02d}/{phase1_epochs:02d} | Train Concept Loss: {avg_loss_c:.4f} | Val Concept Loss: {avg_val_loss_c:.4f} | Val BAcc: {avg_val_acc_c * 100:.2f}% | Val TPR/TNR/F1: {val_tpr * 100:.2f}%/{val_tnr * 100:.2f}%/{val_f1 * 100:.2f}%{proxy_info}")
         
         concepts_list = resolved_config.get("concepts_flat", resolved_config.get("concepts", []))
         
@@ -414,6 +435,10 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
                 "val/concept_tnr": val_tnr,
                 "val/concept_f1": val_f1
             }
+            if proxy_val_loader is not None and 'avg_proxy_f1_c' in locals():
+                log_dict.update({
+                    "proxy_val/concept_f1": avg_proxy_f1_c
+                })
             if 'val_individual_accs' in locals():
                 log_dict.update(val_individual_accs)
             wandb.log(log_dict)
@@ -429,7 +454,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     all_val_targets = []
     
     with torch.no_grad():
-        for val_images, val_concepts, _ in val_loader:
+        for val_images, val_concepts, _, _ in val_loader:
             val_images = val_images.to(device, non_blocking=True)
             val_concepts = val_concepts.to(device, non_blocking=True)
             
@@ -504,7 +529,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         model.concept_thresholds.zero_()
         tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}\n")
 
-def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
+def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes, proxy_val_loader=None):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
     tqdm.write(f"  {BOLD}{MAGENTA}[Phase 2] Target Learning (Classifier Head){RESET}")
     tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
@@ -590,10 +615,11 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         total_acc_t = 0.0
         
         train_pbar = tqdm(train_loader, desc=f"  P2 Epoch {epoch+1}/{phase2_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
-        for images, concepts, targets in train_pbar:
+        for images, concepts, targets, tabular_features in train_pbar:
             images = images.to(device, non_blocking=True)
             concepts = concepts.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
+            tabular_features = tabular_features.to(device, non_blocking=True)
             
             # 이전 단계에서 학습된 수퍼바이즈드 컨셉 예측값을 그래프 연산 분리하여 추출
             with torch.no_grad():
@@ -695,7 +721,15 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 
             concept_probs = model.concept_activation(concept_logits)
             concept_logits_dropout = model.dropout(concept_logits)
-            class_logits = model.classifier_head(concept_logits_dropout)
+            if getattr(args, "use_multimodal", False) and args.dataset == "chexpert":
+                combined_logits = torch.cat([concept_logits_dropout, tabular_features], dim=-1)
+                class_logits = model.classifier_head(combined_logits)
+            elif getattr(model, "age_sex_skip_connection", False):
+                # Age/Sex added AFTER the NAM (independent channels, skip over NAM)
+                class_logits = model.classifier_head(concept_logits_dropout)
+                class_logits = class_logits + model.tabular_skip_head(tabular_features)
+            else:
+                class_logits = model.classifier_head(concept_logits_dropout)
             
             if isinstance(target_criterion, nn.BCEWithLogitsLoss):
                 loss_t = target_criterion(class_logits, targets)
@@ -785,13 +819,15 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
         model.eval()
         val_loss_t = 0.0
         val_acc_t = 0.0
+        val_acc_t_no_tabular = 0.0
         
         with torch.no_grad():
-            for val_images, _, val_targets in val_loader:
+            for val_images, _, val_targets, val_tabular in val_loader:
                 val_images = val_images.to(device, non_blocking=True)
                 val_targets = val_targets.to(device, non_blocking=True)
+                val_tabular = val_tabular.to(device, non_blocking=True)
                 
-                v_class_logits, _, _ = model(val_images)
+                v_class_logits, _, _ = model(val_images, tabular_features=val_tabular)
                 
                 if isinstance(target_criterion, nn.BCEWithLogitsLoss):
                     v_loss_t = target_criterion(v_class_logits, val_targets)
@@ -803,11 +839,51 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 val_loss_t += v_loss_t.item()
                 val_acc_t += calculate_accuracy(v_class_logits, val_targets)
                 
+                # Evaluate without tabular features (zeroed-out age/sex) to measure contribution
+                val_tabular_zeros = torch.zeros_like(val_tabular)
+                v_class_logits_no_tab, _, _ = model(val_images, tabular_features=val_tabular_zeros)
+                val_acc_t_no_tabular += calculate_accuracy(v_class_logits_no_tab, val_targets)
+                
         avg_val_loss_t = val_loss_t / len(val_loader)
         avg_val_acc_t = val_acc_t / len(val_loader)
+        avg_val_acc_t_no_tabular = val_acc_t_no_tabular / len(val_loader)
         
+        proxy_info = ""
+        if proxy_val_loader is not None:
+            model.eval()
+            all_proxy_logits = []
+            all_proxy_targets = []
+            with torch.no_grad():
+                for p_images, _, p_targets, p_tabular in proxy_val_loader:
+                    p_images = p_images.to(device, non_blocking=True)
+                    p_tabular = p_tabular.to(device, non_blocking=True)
+                    p_class_logits, _, _ = model(p_images, tabular_features=p_tabular)
+                    all_proxy_logits.append(p_class_logits.cpu())
+                    all_proxy_targets.append(p_targets.cpu())
+            if all_proxy_logits:
+                proxy_logits_all = torch.cat(all_proxy_logits, dim=0)
+                proxy_targets_all = torch.cat(all_proxy_targets, dim=0)
+                # Calculate multi-label F1 for targets
+                preds = (proxy_logits_all > 0.0).float()
+                targets_bin = (proxy_targets_all > 0.5).float()
+                tp = (preds * targets_bin).sum(dim=0)
+                fp = (preds * (1 - targets_bin)).sum(dim=0)
+                fn = ((1 - preds) * targets_bin).sum(dim=0)
+                f1_scores = torch.where(
+                    tp + fp + fn > 0,
+                    (2 * tp) / (2 * tp + fp + fn + 1e-8),
+                    torch.zeros_like(tp)
+                )
+                avg_proxy_f1_t = f1_scores.mean().item()
+            else:
+                avg_proxy_f1_t = 0.0
+            proxy_info = f" | Proxy Test F1: {avg_proxy_f1_t * 100:.2f}%"
+
         # 에포크 정보 한 줄 출력 (스크롤 이력 보존)
-        tqdm.write(f"{BOLD}{MAGENTA}[Phase 2]{RESET} Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
+        tabular_delta = avg_val_acc_t - avg_val_acc_t_no_tabular
+        tabular_delta_str = f"(+{tabular_delta*100:.2f}%)" if tabular_delta >= 0 else f"({tabular_delta*100:.2f}%)"
+        tqdm.write(f"{BOLD}{MAGENTA}[Phase 2]{RESET} Epoch {epoch+1:02d}/{phase2_epochs:02d} | Train Target Loss: {avg_loss_t:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}{proxy_info}")
+        tqdm.write(f"  {BOLD}{CYAN}[Age/Sex Impact]{RESET} With age/sex: {avg_val_acc_t*100:.2f}% | Without age/sex: {avg_val_acc_t_no_tabular*100:.2f}% | Δ: {BOLD}{GREEN if tabular_delta >= 0 else YELLOW}{tabular_delta_str}{RESET}")
         
         # Track Active Gates if GatedSparseNAMHead is used
         active_count = None
@@ -850,6 +926,10 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
                 "val/target_loss": avg_val_loss_t,
                 "val/accuracy": avg_val_acc_t
             }
+            if proxy_val_loader is not None and 'avg_proxy_f1_t' in locals():
+                log_dict.update({
+                    "proxy_val/target_f1": avg_proxy_f1_t
+                })
             if active_count is not None:
                 log_dict.update({
                     "val/active_gates": active_count,
@@ -878,7 +958,7 @@ def train_phase2(model, train_loader, val_loader, target_criterion, device, args
             final_l_active = (l_gates.abs() > 0.0).sum().item()
             tqdm.write(f"  {BOLD}{GREEN}[NAM Latent Gating Post-Phase 2]{RESET} Final Active Latent Gates (threshold=0.05): {final_l_active}/{l_gates.size(0)}")
 
-def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
+def train_phase3(model, train_loader, val_loader, target_criterion, concept_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes, proxy_val_loader=None):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")
     tqdm.write(f"  {BOLD}{MAGENTA}[Phase 3] Backbone & Classifier Fine-Tuning (Concept Head Frozen){RESET}")
     tqdm.write(f"{BOLD}{MAGENTA}{'-'*60}{RESET}")
@@ -989,10 +1069,11 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         total_acc_t = 0.0
         
         train_pbar = tqdm(train_loader, desc=f"  P3 Epoch {epoch+1}/{phase3_epochs}", bar_format="{l_bar}{bar:25}{r_bar}", leave=False)
-        for images, concepts, targets in train_pbar:
+        for images, concepts, targets, tabular_features in train_pbar:
             images = images.to(device, non_blocking=True)
             concepts = concepts.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
+            tabular_features = tabular_features.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             
@@ -1239,7 +1320,15 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                     concept_logits_for_classifier = supervised_logits_injected
 
             concept_logits_dropout = model.dropout(concept_logits_for_classifier)
-            class_logits = model.classifier_head(concept_logits_dropout)
+            if getattr(args, "use_multimodal", False) and args.dataset == "chexpert":
+                combined_logits = torch.cat([concept_logits_dropout, tabular_features], dim=-1)
+                class_logits = model.classifier_head(combined_logits)
+            elif getattr(model, "age_sex_skip_connection", False):
+                # Age/Sex added AFTER the NAM (independent channels, skip over NAM)
+                class_logits = model.classifier_head(concept_logits_dropout)
+                class_logits = class_logits + model.tabular_skip_head(tabular_features)
+            else:
+                class_logits = model.classifier_head(concept_logits_dropout)
             
             # 1. Target Loss
             if isinstance(target_criterion, nn.BCEWithLogitsLoss):
@@ -1358,13 +1447,15 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
         model.eval()
         val_loss_t = 0.0
         val_acc_t = 0.0
+        val_acc_t_no_tabular = 0.0
         
         with torch.no_grad():
-            for val_images, _, val_targets in val_loader:
+            for val_images, _, val_targets, val_tabular in val_loader:
                 val_images = val_images.to(device, non_blocking=True)
                 val_targets = val_targets.to(device, non_blocking=True)
+                val_tabular = val_tabular.to(device, non_blocking=True)
                 
-                v_class_logits, _, _ = model(val_images)
+                v_class_logits, _, _ = model(val_images, tabular_features=val_tabular)
                 
                 if isinstance(target_criterion, nn.BCEWithLogitsLoss):
                     v_loss_t = target_criterion(v_class_logits, val_targets)
@@ -1376,10 +1467,50 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 val_loss_t += v_loss_t.item()
                 val_acc_t += calculate_accuracy(v_class_logits, val_targets)
                 
+                # Evaluate without tabular features (zeroed-out age/sex) to measure contribution
+                val_tabular_zeros = torch.zeros_like(val_tabular)
+                v_class_logits_no_tab, _, _ = model(val_images, tabular_features=val_tabular_zeros)
+                val_acc_t_no_tabular += calculate_accuracy(v_class_logits_no_tab, val_targets)
+                
         avg_val_loss_t = val_loss_t / len(val_loader)
         avg_val_acc_t = val_acc_t / len(val_loader)
+        avg_val_acc_t_no_tabular = val_acc_t_no_tabular / len(val_loader)
         
-        tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}")
+        proxy_info = ""
+        if proxy_val_loader is not None:
+            model.eval()
+            all_proxy_logits = []
+            all_proxy_targets = []
+            with torch.no_grad():
+                for p_images, _, p_targets, p_tabular in proxy_val_loader:
+                    p_images = p_images.to(device, non_blocking=True)
+                    p_tabular = p_tabular.to(device, non_blocking=True)
+                    p_class_logits, _, _ = model(p_images, tabular_features=p_tabular)
+                    all_proxy_logits.append(p_class_logits.cpu())
+                    all_proxy_targets.append(p_targets.cpu())
+            if all_proxy_logits:
+                proxy_logits_all = torch.cat(all_proxy_logits, dim=0)
+                proxy_targets_all = torch.cat(all_proxy_targets, dim=0)
+                # Calculate multi-label F1 for targets
+                preds = (proxy_logits_all > 0.0).float()
+                targets_bin = (proxy_targets_all > 0.5).float()
+                tp = (preds * targets_bin).sum(dim=0)
+                fp = (preds * (1 - targets_bin)).sum(dim=0)
+                fn = ((1 - preds) * targets_bin).sum(dim=0)
+                f1_scores = torch.where(
+                    tp + fp + fn > 0,
+                    (2 * tp) / (2 * tp + fp + fn + 1e-8),
+                    torch.zeros_like(tp)
+                )
+                avg_proxy_f1_t = f1_scores.mean().item()
+            else:
+                avg_proxy_f1_t = 0.0
+            proxy_info = f" | Proxy Test F1: {avg_proxy_f1_t * 100:.2f}%"
+
+        tabular_delta = avg_val_acc_t - avg_val_acc_t_no_tabular
+        tabular_delta_str = f"(+{tabular_delta*100:.2f}%)" if tabular_delta >= 0 else f"({tabular_delta*100:.2f}%)"
+        tqdm.write(f"{BOLD}{MAGENTA}[Phase 3]{RESET} Epoch {epoch+1:02d}/{phase3_epochs:02d} | Train Joint Loss: {avg_loss_joint:.4f} | Val Target Loss: {avg_val_loss_t:.4f} | Val Target Acc: {BOLD}{GREEN}{avg_val_acc_t * 100:.2f}%{RESET}{proxy_info}")
+        tqdm.write(f"  {BOLD}{CYAN}[Age/Sex Impact]{RESET} With age/sex: {avg_val_acc_t*100:.2f}% | Without age/sex: {avg_val_acc_t_no_tabular*100:.2f}% | Δ: {BOLD}{GREEN if tabular_delta >= 0 else YELLOW}{tabular_delta_str}{RESET}")
         
         # Track Active Gates if GatedSparseNAMHead is used
         active_count = None
@@ -1424,6 +1555,11 @@ def train_phase3(model, train_loader, val_loader, target_criterion, concept_crit
                 "val/joint_target_loss": avg_val_loss_t,
                 "val/joint_accuracy": avg_val_acc_t
             }
+            if proxy_val_loader is not None:
+                log_dict.update({
+                    "proxy_val/target_loss": avg_proxy_loss_t,
+                    "proxy_val/accuracy": avg_proxy_acc_t
+                })
             if active_count is not None:
                 log_dict.update({
                     "val/active_gates": active_count,

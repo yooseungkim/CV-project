@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=64, help="Batch size for testing")
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help="Computation device")
     parser.add_argument('--num_workers', type=int, default=8, help="Number of workers for data loader")
+    parser.add_argument('--split', type=str, default='test', choices=['test', 'val', 'validation'], help="Dataset split to evaluate")
     return parser.parse_args()
 
 
@@ -70,26 +71,30 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     all_concept_logits = []
     all_gt_concepts = []
     all_gt_targets = []
+    all_tabular_features = []
     
     pbar = tqdm(dataloader, desc="Evaluating CBM")
-    for images, concepts, targets in pbar:
+    for images, concepts, targets, tabular_features in pbar:
         images = images.to(device)
         concepts = concepts.to(device)
         targets = targets.to(device)
+        tabular_features = tabular_features.to(device)
         
         # Forward pass
-        class_logits, concept_logits, _ = model(images)
+        class_logits, concept_logits, _ = model(images, tabular_features=tabular_features)
         
         all_class_logits.append(class_logits.cpu())
         all_concept_logits.append(concept_logits.cpu())
         all_gt_concepts.append(concepts.cpu())
         all_gt_targets.append(targets.cpu())
+        all_tabular_features.append(tabular_features.cpu())
         
     # Concatenate all test outputs
     all_class_logits = torch.cat(all_class_logits, dim=0)
     all_concept_logits = torch.cat(all_concept_logits, dim=0)
     all_gt_concepts = torch.cat(all_gt_concepts, dim=0)
     all_gt_targets = torch.cat(all_gt_targets, dim=0)
+    all_tabular_features = torch.cat(all_tabular_features, dim=0)
     
     # Calculate concept probabilities through model's registered activation
     all_concept_probs = model.concept_activation(all_concept_logits.to(device)).cpu()
@@ -106,7 +111,7 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     )
     
     # Return all_concept_logits instead of all_concept_probs to enable Inverse Sigmoid Intervention
-    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
+    return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets, all_tabular_features
 
 
 def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
@@ -155,7 +160,7 @@ def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
     return gt_logits
 
 
-def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
+def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, all_tabular_features=None):
     """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
     num_samples = concept_logits.shape[0]
@@ -165,7 +170,14 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     group_tti_accuracies = []
     
     # Calculate initial predictions (K=0 interventions) using predicted logits directly
-    init_logits = model.classifier_head(concept_logits.to(device))
+    if getattr(model, "use_multimodal", False) and all_tabular_features is not None:
+        inputs = torch.cat([concept_logits.to(device), all_tabular_features.to(device)], dim=-1)
+        init_logits = model.classifier_head(inputs)
+    elif getattr(model, "age_sex_skip_connection", False) and all_tabular_features is not None:
+        init_logits = model.classifier_head(concept_logits.to(device)) + model.tabular_skip_head(all_tabular_features.to(device))
+    else:
+        inputs = concept_logits.to(device)
+        init_logits = model.classifier_head(inputs)
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     group_tti_accuracies.append((0, init_topk))
     
@@ -204,7 +216,14 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
             
         # Predict class targets using the updated concept logits
         with torch.no_grad():
-            updated_logits = model.classifier_head(logits_mutated.to(device))
+            if getattr(model, "use_multimodal", False) and all_tabular_features is not None:
+                inputs_mutated = torch.cat([logits_mutated.to(device), all_tabular_features.to(device)], dim=-1)
+                updated_logits = model.classifier_head(inputs_mutated)
+            elif getattr(model, "age_sex_skip_connection", False) and all_tabular_features is not None:
+                updated_logits = model.classifier_head(logits_mutated.to(device)) + model.tabular_skip_head(all_tabular_features.to(device))
+            else:
+                inputs_mutated = logits_mutated.to(device)
+                updated_logits = model.classifier_head(inputs_mutated)
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         group_tti_accuracies.append((K, updated_topk))
@@ -213,7 +232,7 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     return group_tti_accuracies
 
 
-def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device):
+def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, all_tabular_features=None):
     """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
     num_samples, num_supervised = gt_concepts.shape
@@ -221,7 +240,14 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     concept_tti_accuracies = []
     
     # Init (K=0)
-    init_logits = model.classifier_head(concept_logits.to(device))
+    if getattr(model, "use_multimodal", False) and all_tabular_features is not None:
+        inputs = torch.cat([concept_logits.to(device), all_tabular_features.to(device)], dim=-1)
+        init_logits = model.classifier_head(inputs)
+    elif getattr(model, "age_sex_skip_connection", False) and all_tabular_features is not None:
+        init_logits = model.classifier_head(concept_logits.to(device)) + model.tabular_skip_head(all_tabular_features.to(device))
+    else:
+        inputs = concept_logits.to(device)
+        init_logits = model.classifier_head(inputs)
     init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
     concept_tti_accuracies.append((0, init_topk))
     
@@ -252,7 +278,14 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
             logits_mutated[i, indices_to_correct] = gt_logits[i, indices_to_correct]
             
         with torch.no_grad():
-            updated_logits = model.classifier_head(logits_mutated.to(device))
+            if getattr(model, "use_multimodal", False) and all_tabular_features is not None:
+                inputs_mutated = torch.cat([logits_mutated.to(device), all_tabular_features.to(device)], dim=-1)
+                updated_logits = model.classifier_head(inputs_mutated)
+            elif getattr(model, "age_sex_skip_connection", False) and all_tabular_features is not None:
+                updated_logits = model.classifier_head(logits_mutated.to(device)) + model.tabular_skip_head(all_tabular_features.to(device))
+            else:
+                inputs_mutated = logits_mutated.to(device)
+                updated_logits = model.classifier_head(inputs_mutated)
             updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
             
         concept_tti_accuracies.append((pct, updated_topk))
@@ -261,7 +294,7 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     return concept_tti_accuracies
 
 
-def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, logit_margin=0.0):
+def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, concept_groups, latent_concepts, device, logit_margin=0.0, all_tabular_features=None):
     """Simulates TTI by correcting concept groups predicted as "Not Visible / Occluded" or within a logit margin of optimal dynamic thresholds."""
     model.eval()
     num_samples = concept_logits.shape[0]
@@ -297,7 +330,14 @@ def run_tti_unconfident_only(model, concept_logits, gt_concepts, gt_targets, con
         
     # Predict target classes using mutated logits
     with torch.no_grad():
-        updated_logits = model.classifier_head(logits_mutated.to(device))
+        if getattr(model, "use_multimodal", False) and all_tabular_features is not None:
+            inputs_mutated = torch.cat([logits_mutated.to(device), all_tabular_features.to(device)], dim=-1)
+            updated_logits = model.classifier_head(inputs_mutated)
+        elif getattr(model, "age_sex_skip_connection", False) and all_tabular_features is not None:
+            updated_logits = model.classifier_head(logits_mutated.to(device)) + model.tabular_skip_head(all_tabular_features.to(device))
+        else:
+            inputs_mutated = logits_mutated.to(device)
+            updated_logits = model.classifier_head(inputs_mutated)
         updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
         
     avg_corrected = np.mean(corrected_counts)
@@ -403,6 +443,29 @@ def main():
     elif 'supervised_attention.concept_queries' in state_dict:
         use_concept_attention = True
 
+    use_multimodal = False
+    if 'use_multimodal' in checkpoint_args:
+        use_multimodal = checkpoint_args['use_multimodal']
+    elif 'use_multimodal' in checkpoint_config.get('dataset', {}):
+        use_multimodal = checkpoint_config['dataset']['use_multimodal']
+    elif "classifier_head.concept_gates" in state_dict:
+        num_supervised_gates = state_dict["classifier_head.concept_gates"].shape[0]
+        if num_supervised_gates > 9 and dataset_name == 'chexpert':
+            use_multimodal = True
+    elif "classifier_head.weight" in state_dict:
+        checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
+        if checkpoint_dims > 9 and dataset_name == 'chexpert':
+            use_multimodal = True
+
+    # Auto-detect age_sex_skip_connection from checkpoint
+    age_sex_skip_connection = False
+    if 'age_sex_skip_connection' in checkpoint_args:
+        age_sex_skip_connection = checkpoint_args['age_sex_skip_connection']
+    elif 'age_sex_skip_connection' in checkpoint_config.get('dataset', {}):
+        age_sex_skip_connection = checkpoint_config['dataset']['age_sex_skip_connection']
+    elif 'tabular_skip_head.weight' in state_dict:
+        age_sex_skip_connection = True
+
     tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
@@ -416,6 +479,8 @@ def main():
     tqdm.write(f"     ├─ use_paper_preprocessing: {use_paper_preprocessing}")
     tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
     tqdm.write(f"     ├─ use_pairwise_nam: {use_pairwise_nam}")
+    tqdm.write(f"     ├─ use_multimodal: {use_multimodal}")
+    tqdm.write(f"     ├─ age_sex_skip_connection: {age_sex_skip_connection}")
     tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
@@ -450,11 +515,12 @@ def main():
     dataset_config["filter_rare_concepts"] = filter_rare_concepts
     dataset_config["use_paper_preprocessing"] = use_paper_preprocessing
     
-    # Load test split
+    # Load split
+    split_name = 'val' if args.split in ['val', 'validation'] else 'test'
     test_dataset = dataset_class(
         csv_path=csv_path,
         image_dir=image_dir,
-        split='test',
+        split=split_name,
         config=dataset_config,
         cache_in_memory=True
     )
@@ -526,7 +592,9 @@ def main():
         nam_hidden_dim=nam_hidden_dim,
         use_probabilistic_cbm=use_probabilistic_cbm,
         use_concept_attention=use_concept_attention,
-        use_pairwise_nam=use_pairwise_nam
+        use_pairwise_nam=use_pairwise_nam,
+        use_multimodal=use_multimodal,
+        age_sex_skip_connection=age_sex_skip_connection,
     )
     
     # Load state dict
@@ -534,18 +602,18 @@ def main():
     model = model.to(device)
     
     tqdm.write(f"\n{BOLD}{MAGENTA}============================================================{RESET}")
-    tqdm.write(f"  {BOLD}{MAGENTA}[Evaluation]{RESET} Running Test Set Evaluation...")
+    tqdm.write(f"  {BOLD}{MAGENTA}[Evaluation]{RESET} Running {args.split.upper()} Set Evaluation...")
     tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
     
     # 5. Run standard evaluation
-    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
+    topk_accs, concept_metrics, concept_logits, gt_concepts, gt_targets, all_tabular_features = run_evaluation(
         model, 
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
         device
     )
     
-    tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM Test Performance:{RESET}")
+    tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM {args.split.upper()} Performance:{RESET}")
     tqdm.write(f"   Target Accuracy (Top-1)  : {BOLD}{GREEN}{topk_accs.get(1, 0.0)*100:.2f}%{RESET}")
     if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
     if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
@@ -569,7 +637,8 @@ def main():
         gt_targets, 
         concept_groups, 
         latent_concepts, 
-        device
+        device,
+        all_tabular_features=all_tabular_features
     )
     
     # Print beautiful ASCII table for group-level TTI with Top-K metrics
@@ -608,7 +677,8 @@ def main():
         gt_targets, 
         concept_groups, 
         latent_concepts, 
-        device
+        device,
+        all_tabular_features=all_tabular_features
     )
     
     # Print beautiful ASCII table for concept-level TTI with Top-K metrics
@@ -651,7 +721,8 @@ def main():
             concept_groups, 
             latent_concepts, 
             device,
-            logit_margin=margin
+            logit_margin=margin,
+            all_tabular_features=all_tabular_features
         )
         print(f"| {margin:>12.2f} | {unconf_topk.get(1, 0.0)*100:>12.2f}% | {unconf_topk.get(3, 0.0)*100:>12.2f}% | {avg_corrected:>20.2f} / {num_groups} |")
     print("============================================================\n")
@@ -668,7 +739,8 @@ def main():
         concept_groups, 
         latent_concepts, 
         device,
-        logit_margin=0.30
+        logit_margin=0.30,
+        all_tabular_features=all_tabular_features
     )
     print(f"  Unconfident-Only (Margin 0.30) Top-1 Accuracy : {unconf_topk.get(1, 0.0)*100:.2f}%")
     if 3 in unconf_topk: print(f"  Unconfident-Only (Margin 0.30) Top-3 Accuracy : {unconf_topk[3]*100:.2f}%")
@@ -699,8 +771,10 @@ def main():
         tqdm.write(f"\n{BOLD}{CYAN}[Interaction Logging]{RESET} Analyzing pairwise concept interactions...")
         gates = model.classifier_head.pairwise_gates.detach().cpu().numpy()
         pair_indices = model.classifier_head.pair_indices
-        concepts_list = test_dataset.config.get("concepts_flat", test_dataset.config.get("concepts", []))
-        
+        concepts_list = list(test_dataset.config.get("concepts_flat", test_dataset.config.get("concepts", [])))
+        if getattr(model, "use_multimodal", False) and len(concepts_list) == 9:
+            concepts_list += ["Age", "Sex (Male)", "Sex (Female)"]
+            
         active_interactions = []
         threshold = 1e-3
         for idx, g_val in enumerate(gates):

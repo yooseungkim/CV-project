@@ -17,7 +17,8 @@ BOLD = "\033[1m"
 class GatedSparseNAMHead(nn.Module):
     def __init__(self, num_concepts: int = 312, num_classes: int = 200, 
                  hidden_dim: int = 64, num_latent_concepts: int = 0,
-                 use_pairwise_nam: bool = False, max_pairs: int = 128):
+                 use_pairwise_nam: bool = False, max_pairs: int = 128,
+                 input_dropout_p: float = 0.2):
         super().__init__()
         self.num_concepts = num_concepts
         self.num_classes = num_classes
@@ -41,6 +42,7 @@ class GatedSparseNAMHead(nn.Module):
             groups=num_concepts
         )
         
+        self.input_dropout = nn.Dropout(p=input_dropout_p)
         self.dropout = nn.Dropout(p=0.2)
         
         # Learnable gating parameter initialized to 1.0
@@ -102,7 +104,9 @@ class GatedSparseNAMHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch_size = x.size(0)
-        supervised_x = x[:, :self.num_concepts].unsqueeze(-1)
+        # Apply explicit Input Dropout specifically to concatenated features before entering sub-networks
+        x_dropped = self.input_dropout(x)
+        supervised_x = x_dropped[:, :self.num_concepts].unsqueeze(-1)
         
         h = F.relu(self.conv1(supervised_x))
         h = self.dropout(h)
@@ -120,8 +124,8 @@ class GatedSparseNAMHead(nn.Module):
             pair_inputs = []
             for idx in topk_indices.tolist():
                 i, j = self.pair_indices[idx]
-                c_i = x[:, i].unsqueeze(-1)
-                c_j = x[:, j].unsqueeze(-1)
+                c_i = x_dropped[:, i].unsqueeze(-1)
+                c_j = x_dropped[:, j].unsqueeze(-1)
                 pair_inputs.append(torch.cat([c_i, c_j], dim=-1))
                 
             pair_features = torch.cat(pair_inputs, dim=1).unsqueeze(-1) # [B, M * 2, 1]
@@ -136,7 +140,7 @@ class GatedSparseNAMHead(nn.Module):
             supervised_out = supervised_out + pairwise_out
             
         if self.num_latent_concepts > 0 and self.latent_linear is not None:
-            latent_x = x[:, self.num_concepts:]
+            latent_x = x_dropped[:, self.num_concepts:]
             if self.latent_gates is not None:
                 latent_x = latent_x * self.latent_gates.view(1, -1)
             latent_out = self.latent_linear(latent_x)
@@ -648,6 +652,9 @@ class UniversalFlexibleCBM(nn.Module):
         use_concept_attention: bool = False,
         use_pairwise_nam: bool = False,
         use_multimodal: bool = False,
+        # ── Age/Sex Skip Connection ───────────────────────────────────────────
+        age_sex_skip_connection: bool = False,
+        num_tabular_features: int = 3,
     ):
         super().__init__()
         self.backbone_type = backbone_type.lower()
@@ -662,6 +669,8 @@ class UniversalFlexibleCBM(nn.Module):
         self.use_concept_attention = use_concept_attention
         self.use_pairwise_nam = use_pairwise_nam
         self.use_multimodal = use_multimodal
+        self.age_sex_skip_connection = age_sex_skip_connection
+        self.num_tabular_features = num_tabular_features
         
         # Placeholders for VAE loss calculation
         self.last_mean = None
@@ -836,17 +845,38 @@ class UniversalFlexibleCBM(nn.Module):
             print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Activated Standard Flat Sigmoid Activation.")
             
         self.dropout = nn.Dropout(p=0.2)
+        
+        # age_sex_skip_connection=True: tabular features are added AFTER the classifier head
+        # (skip over NAM). In this case, the classifier head never sees tabular features.
+        # use_multimodal and age_sex_skip_connection are mutually exclusive.
+        if age_sex_skip_connection and use_multimodal:
+            raise ValueError("`age_sex_skip_connection` and `use_multimodal` are mutually exclusive. "
+                             "Set only one of them to True.")
+        
         if use_nam_head:
-            print(f"{BOLD}{BLUE}[Classifier Head]{RESET} GatedSparseNAMHead (concepts={num_supervised_concepts} -> hidden={nam_hidden_dim} -> classes={num_classes}, use_pairwise_nam={use_pairwise_nam})")
+            num_nam_inputs = num_supervised_concepts + (3 if use_multimodal else 0)
+            print(f"{BOLD}{BLUE}[Classifier Head]{RESET} GatedSparseNAMHead (concepts={num_nam_inputs} -> hidden={nam_hidden_dim} -> classes={num_classes}, use_pairwise_nam={use_pairwise_nam})")
             self.classifier_head = GatedSparseNAMHead(
-                num_concepts=num_supervised_concepts,
+                num_concepts=num_nam_inputs,
                 num_classes=num_classes,
                 hidden_dim=nam_hidden_dim,
                 num_latent_concepts=num_latent_concepts,
                 use_pairwise_nam=use_pairwise_nam
             )
         else:
-            self.classifier_head = nn.Linear(self.num_concepts, num_classes)
+            num_linear_inputs = self.num_concepts + (3 if use_multimodal else 0)
+            self.classifier_head = nn.Linear(num_linear_inputs, num_classes)
+
+        # Independent tabular skip-connection head (Age/Sex -> num_classes)
+        # Initialized to near-zero so it starts as identity (no bias for the x-ray channel)
+        if age_sex_skip_connection:
+            self.tabular_skip_head = nn.Linear(num_tabular_features, num_classes)
+            nn.init.normal_(self.tabular_skip_head.weight, mean=0.0, std=0.01)
+            nn.init.zeros_(self.tabular_skip_head.bias)
+            print(f"{BOLD}{BLUE}[Skip Connection]{RESET} Age/Sex Skip Connection enabled: "
+                  f"tabular_skip_head({num_tabular_features} -> {num_classes}) added directly to final logits (bypasses NAM).")
+        else:
+            self.tabular_skip_head = None
         
         # Register a buffer to store dynamically-found optimal validation logit thresholds
         self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
@@ -927,7 +957,7 @@ class UniversalFlexibleCBM(nn.Module):
             
         return C, H, W
 
-    def forward(self, x: torch.Tensor, return_features: bool = False, stochastic: bool = False):
+    def forward(self, x: torch.Tensor, tabular_features: Optional[torch.Tensor] = None, return_features: bool = False, stochastic: bool = False):
         # Input tensor shape x: [B, 3, H, W] or [B, 2, 3, H, W] (multimodal)
         is_multimodal = (x.dim() == 5)
         if is_multimodal:
@@ -1189,7 +1219,21 @@ class UniversalFlexibleCBM(nn.Module):
         concept_logits_dropout = self.dropout(concept_logits)
         
         # Final classification target output logits (Inverse Sigmoid / Logit Intervention SOTA design)
-        class_logits = self.classifier_head(concept_logits_dropout)  # [B, num_classes]
+        if self.use_multimodal:
+            # Legacy path: tabular features concatenated INTO classifier head input
+            if tabular_features is None:
+                device = concept_logits.device
+                tabular_features = torch.zeros(concept_logits.size(0), self.num_tabular_features, device=device)
+            combined_logits = torch.cat([concept_logits_dropout, tabular_features], dim=-1)
+            class_logits = self.classifier_head(combined_logits)
+        elif self.age_sex_skip_connection:
+            # Skip-connection path: image CBM logits + tabular skip head (independent channels)
+            # X-ray information flows through NAM/Linear, Age/Sex is projected separately.
+            class_logits = self.classifier_head(concept_logits_dropout)  # image-only logits
+            if tabular_features is not None:
+                class_logits = class_logits + self.tabular_skip_head(tabular_features)
+        else:
+            class_logits = self.classifier_head(concept_logits_dropout)  # [B, num_classes]
         
         if return_features:
             return class_logits, concept_logits, attn_weights, supervised_features, latent_features
@@ -1200,21 +1244,30 @@ class UniversalFlexibleCBM(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
 
-    def unfreeze_backbone(self):
-        """Unfreezes the vision backbone parameters.
-        If LoRA is active, unfreezes ONLY the LoRA adapter parameters to preserve ImageNet weights.
-        """
-        if getattr(self, 'lora_active', False):
-            for name, param in self.backbone.named_parameters():
-                if 'lora_' in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            print(f"{BOLD}{GREEN}[LoRA Unfreeze]{RESET} Activated only LoRA adapter parameters for training.")
-        else:
-            for param in self.backbone.parameters():
+            
+
+def unfreeze_backbone(self):
+    """Unfreezes the vision backbone parameters while maintaining 
+    BatchNorm statistics in evaluation mode to prevent training instability.
+    """
+    if getattr(self, 'lora_active', False):
+        for name, param in self.backbone.named_parameters():
+            if 'lora_' in name:
                 param.requires_grad = True
-            print(f"{BOLD}{GREEN}[Full Unfreeze]{RESET} Activated all backbone parameters for training.")
+            else:
+                param.requires_grad = False
+        print(f"{BOLD}{GREEN}[LoRA Unfreeze]{RESET} Activated only LoRA adapter parameters for training.")
+    else:
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+        
+        for m in self.backbone.modules():
+            if isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+                m.eval()
+                for param in m.parameters():
+                    param.requires_grad = False
+                    
+        print(f"{BOLD}{GREEN}[Full Unfreeze]{RESET} Activated all backbone parameters, BatchNorm layers fixed.")
 
     def freeze_classifier(self):
         """Freezes the classifier head parameters."""

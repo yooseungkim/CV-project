@@ -6,7 +6,7 @@
 backbone:
   backbone_type: "torchxrayvision" # Choices: ["timm", "clip", "torchxrayvision"]
   backbone_name: "densenet121"    # Specific model name from the library
-  freeze_backbone: true       # Freeze pre-trained vision backbone weights
+  freeze_backbone: false       # Freeze pre-trained vision backbone weights
   freeze_head: false           # Freeze final classification head weights
   use_lora: false              # Enables Low-Rank Adaptation (LoRA) for parameter-efficient tuning
   lora_r: 8                    # LoRA rank dimension
@@ -25,7 +25,8 @@ dataset:
   use_concept_groups: false    # [Dataset-Specific: cub, derm7pt, milk10k]
   filter_rare_concepts: false  # [Dataset-Specific: cub, derm7pt]
   use_paper_preprocessing: false # [Dataset-Specific: cub, derm7pt]
-  use_multimodal: false        # [Dataset-Specific: derm7pt]
+  use_multimodal: false       # [Dataset-Specific: chexpert, derm7pt] Concat Age/Sex INTO classifier head input (old approach)
+  age_sex_skip_connection: true # [Dataset-Specific: chexpert] Add Age/Sex AFTER NAM via a dedicated linear layer (independent channel, bypasses NAM)
   policy: "u-ones"             # [Dataset-Specific: chexpert] Uncertainty policy: "u-ones" or "u-zeros"
   subset_ratio: 0.3            # [Dataset-Specific: chexpert] Subset ratio of the dataset to load (e.g. 0.2)
 
@@ -84,12 +85,12 @@ optimizer:
   phase3_lr: 0.00001           # Learning rate for Phase 3 joint fine-tuning
   weight_decay: 0.0001         # L2 regularization weight decay
   momentum: 0.9                # Momentum (only applicable when optimizer is sgd)
-  concept_loss_type: "focal"     # Choices: ["focal", "bce", "asl"]
+  concept_loss_type: "asl"     # Choices: ["focal", "bce", "asl"]
   focal_alpha: "dynamic"       # Alpha parameter for Focal Loss ('dynamic' or custom list like [0.8, 0.6, 0.95, ...])
   focal_gamma: 0.5             # Gamma parameter for Focal Loss
   asl_gamma_pos: 0.0           # ASL: gamma for positive samples
-  asl_gamma_neg: 4.0           # ASL: gamma for easy negative samples
-  asl_alpha_pos: 1.2           # ASL: static weight for positive samples
+  asl_gamma_neg: 3.0           # ASL: gamma for easy negative samples
+  asl_alpha_pos: 1.5           # ASL: static weight for positive samples
   asl_clip: 0.05               # ASL: asymmetric clipping threshold
   ortho_lambda: 0          # Orthogonality loss coefficient for attention map separation
   lambda_ce: 0.1               # Scaling factor for Softmax Cross-Entropy loss

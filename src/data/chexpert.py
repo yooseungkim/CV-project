@@ -37,7 +37,8 @@ class CheXpertDataset(BaseDataset):
         split='train',
         config=None,
         cache_in_memory=False,
-        max_cache_size_gb=10.0
+        max_cache_size_gb=10.0,
+        custom_df=None
     ):
         super().__init__()
         self.split = split.lower()
@@ -76,86 +77,114 @@ class CheXpertDataset(BaseDataset):
         ]
         self.all_cols = self.concepts_cols + self.targets_cols
         
-        self.dummy_mode = not os.path.exists(resolved_csv) if resolved_csv else True
-        if self.dummy_mode:
-            print(f"Warning: CSV file not found at {resolved_csv}. Running in dummy mode ({self.split} split).")
-            self.df = pd.DataFrame()
-            self.concepts_data = np.zeros((10, len(self.concepts_cols)), dtype=np.float32)
-            self.targets_data = np.zeros((10, len(self.targets_cols)), dtype=np.float32)
-        else:
-            self.df = pd.read_csv(resolved_csv)
-            
-            # Filter for frontal images only
-            if 'Frontal/Lateral' in self.df.columns:
-                self.df = self.df[self.df['Frontal/Lateral'] == 'Frontal'].reset_index(drop=True)
-            
-            # Preprocess all 14 label columns first so we can use clean values for sampling
-            for col in self.all_cols:
-                self.df[col] = pd.to_numeric(self.df[col], errors='coerce').fillna(0.0)
-                if self.policy == "u-ones":
-                    self.df[col] = self.df[col].replace(-1.0, 1.0)
-                elif self.policy == "u-zeros":
-                    self.df[col] = self.df[col].replace(-1.0, 0.0)
-                    
-            # Optionally sample a subset of the dataset (only for training split) using Smart Stratified Sampling
-            if self.split == 'train' and self.subset_ratio is not None:
-                if not (0.0 < self.subset_ratio <= 1.0):
-                    raise ValueError("subset_ratio must be between 0.0 and 1.0")
-                
-                if self.subset_ratio < 1.0:
-                    total_len = len(self.df)
-                    target_size = max(1, round(total_len * self.subset_ratio))
-                    print(f"  [Sampling] Running Smart Stratified Sampling. Target size: {target_size} ({self.subset_ratio*100:.1f}%)")
-                    
-                    # Compute concept prevalences to identify rare concepts (< 5% prevalence)
-                    prevalences = {col: (self.df[col] == 1.0).mean() for col in self.concepts_cols}
-                    rare_concepts = [col for col, prev in prevalences.items() if prev < 0.05 and col != 'No Finding']
-                    if not rare_concepts:
-                        rare_concepts = ['Pneumothorax', 'Fracture', 'Pleural Other']
-                    
-                    print(f"  [Sampling] Identified Rare Concepts (<5%): {rare_concepts}")
-                    
-                    # Phase 1: Keep 100% of rows containing at least one rare concept
-                    phase1_mask = (self.df[rare_concepts] == 1.0).any(axis=1)
-                    df_phase1 = self.df[phase1_mask]
-                    
-                    if len(df_phase1) >= target_size:
-                        print("  [Sampling] Warning: Phase 1 size exceeds or equals target size. Truncating to target size.")
-                        self.df = df_phase1.sample(n=target_size, random_state=42).reset_index(drop=True)
-                    else:
-                        # Phase 2: Completely normal cases ('No Finding' == 1.0) making up exactly 11% of the target subset size
-                        target_normal_size = int(target_size * 0.11)
-                        
-                        df_remaining = self.df[~phase1_mask]
-                        normal_mask = df_remaining['No Finding'] == 1.0
-                        df_normal_pool = self.df.loc[df_remaining[normal_mask].index]
-                        
-                        if len(df_normal_pool) >= target_normal_size:
-                            df_phase2 = df_normal_pool.sample(n=target_normal_size, random_state=42)
-                        else:
-                            df_phase2 = df_normal_pool
-                            
-                        # Phase 3: Common concepts/remaining rows to fill up the target size
-                        selected_indices = set(df_phase1.index).union(set(df_phase2.index))
-                        df_remaining_pool = self.df[~self.df.index.isin(selected_indices)]
-                        
-                        remaining_needed = target_size - len(df_phase1) - len(df_phase2)
-                        if len(df_remaining_pool) >= remaining_needed:
-                            df_phase3 = df_remaining_pool.sample(n=remaining_needed, random_state=42)
-                        else:
-                            df_phase3 = df_remaining_pool
-                            
-                        # Combine, shuffle and finalize
-                        df_final = pd.concat([df_phase1, df_phase2, df_phase3], axis=0)
-                        self.df = df_final.sample(frac=1.0, random_state=42).reset_index(drop=True)
-                        print(f"  [Sampling] Completed: Phase 1={len(df_phase1)}, Phase 2={len(df_phase2)}, Phase 3={len(df_phase3)} | Final size={len(self.df)}")
-                else:
-                    self.df = self.df.sample(frac=self.subset_ratio, random_state=42).reset_index(drop=True)
-                    
-            # Store preprocessed labels as numpy arrays for efficient access
+        if custom_df is not None:
+            self.dummy_mode = False
+            self.df = custom_df.reset_index(drop=True)
             self.concepts_data = self.df[self.concepts_cols].to_numpy(dtype=np.float32)
             self.targets_data = self.df[self.targets_cols].to_numpy(dtype=np.float32)
+        else:
+            self.dummy_mode = not os.path.exists(resolved_csv) if resolved_csv else True
+            if self.dummy_mode:
+                print(f"Warning: CSV file not found at {resolved_csv}. Running in dummy mode ({self.split} split).")
+                self.df = pd.DataFrame()
+                self.concepts_data = np.zeros((10, len(self.concepts_cols)), dtype=np.float32)
+                self.targets_data = np.zeros((10, len(self.targets_cols)), dtype=np.float32)
+            else:
+                self.df = pd.read_csv(resolved_csv)
+                
+                # Filter for frontal images only
+                if 'Frontal/Lateral' in self.df.columns:
+                    self.df = self.df[self.df['Frontal/Lateral'] == 'Frontal'].reset_index(drop=True)
+                
+                # Preprocess all 14 label columns first so we can use clean values for sampling
+                for col in self.all_cols:
+                    self.df[col] = pd.to_numeric(self.df[col], errors='coerce').fillna(0.0)
+                    if self.policy == "u-ones":
+                        self.df[col] = self.df[col].replace(-1.0, 1.0)
+                    elif self.policy == "u-zeros":
+                        self.df[col] = self.df[col].replace(-1.0, 0.0)
+                        
+                # Optionally sample a subset of the dataset (only for training split) using Smart Stratified Sampling
+                if self.split == 'train' and self.subset_ratio is not None:
+                    if not (0.0 < self.subset_ratio <= 1.0):
+                        raise ValueError("subset_ratio must be between 0.0 and 1.0")
+                    
+                    if self.subset_ratio < 1.0:
+                        total_len = len(self.df)
+                        target_size = max(1, round(total_len * self.subset_ratio))
+                        print(f"  [Sampling] Running Smart Stratified Sampling. Target size: {target_size} ({self.subset_ratio*100:.1f}%)")
+                        
+                        # Compute concept prevalences to identify rare concepts (< 5% prevalence)
+                        prevalences = {col: (self.df[col] == 1.0).mean() for col in self.concepts_cols}
+                        rare_concepts = [col for col, prev in prevalences.items() if prev < 0.05 and col != 'No Finding']
+                        if not rare_concepts:
+                            rare_concepts = ['Pneumothorax', 'Fracture', 'Pleural Other']
+                        
+                        print(f"  [Sampling] Identified Rare Concepts (<5%): {rare_concepts}")
+                        
+                        # Phase 1: Keep 100% of rows containing at least one rare concept
+                        phase1_mask = (self.df[rare_concepts] == 1.0).any(axis=1)
+                        df_phase1 = self.df[phase1_mask]
+                        
+                        if len(df_phase1) >= target_size:
+                            print("  [Sampling] Warning: Phase 1 size exceeds or equals target size. Truncating to target size.")
+                            self.df = df_phase1.sample(n=target_size, random_state=42).reset_index(drop=True)
+                        else:
+                            # Phase 2: Completely normal cases ('No Finding' == 1.0) making up exactly 11% of the target subset size
+                            target_normal_size = int(target_size * 0.11)
+                            
+                            df_remaining = self.df[~phase1_mask]
+                            normal_mask = df_remaining['No Finding'] == 1.0
+                            df_normal_pool = self.df.loc[df_remaining[normal_mask].index]
+                            
+                            if len(df_normal_pool) >= target_normal_size:
+                                df_phase2 = df_normal_pool.sample(n=target_normal_size, random_state=42)
+                            else:
+                                df_phase2 = df_normal_pool
+                                
+                            # Phase 3: Common concepts/remaining rows to fill up the target size
+                            selected_indices = set(df_phase1.index).union(set(df_phase2.index))
+                            df_remaining_pool = self.df[~self.df.index.isin(selected_indices)]
+                            
+                            remaining_needed = target_size - len(df_phase1) - len(df_phase2)
+                            if len(df_remaining_pool) >= remaining_needed:
+                                df_phase3 = df_remaining_pool.sample(n=remaining_needed, random_state=42)
+                            else:
+                                df_phase3 = df_remaining_pool
+                                
+                            # Combine, shuffle and finalize
+                            df_final = pd.concat([df_phase1, df_phase2, df_phase3], axis=0)
+                            self.df = df_final.sample(frac=1.0, random_state=42).reset_index(drop=True)
+                            print(f"  [Sampling] Completed: Phase 1={len(df_phase1)}, Phase 2={len(df_phase2)}, Phase 3={len(df_phase3)} | Final size={len(self.df)}")
+                    else:
+                        self.df = self.df.sample(frac=self.subset_ratio, random_state=42).reset_index(drop=True)
+                        
+                # Store preprocessed labels as numpy arrays for efficient access
+                self.concepts_data = self.df[self.concepts_cols].to_numpy(dtype=np.float32)
+                self.targets_data = self.df[self.targets_cols].to_numpy(dtype=np.float32)
         
+        # Preprocess age and sex data
+        if self.dummy_mode:
+            self.age_data = np.zeros(10, dtype=np.float32)
+            self.sex_data = np.zeros((10, 2), dtype=np.float32)
+        else:
+            # Preprocess Age (mean=60.430653, std=17.820925)
+            if 'Age' in self.df.columns:
+                raw_age = pd.to_numeric(self.df['Age'], errors='coerce')
+                mean_age = 60.430653
+                std_age = 17.820925
+                raw_age = raw_age.fillna(mean_age)
+                self.age_data = ((raw_age - mean_age) / std_age).to_numpy(dtype=np.float32)
+            else:
+                self.age_data = np.zeros(len(self.df), dtype=np.float32)
+            
+            # Preprocess Sex (One-hot: [is_male, is_female], Unknown/Missing is [0.0, 0.0])
+            self.sex_data = np.zeros((len(self.df), 2), dtype=np.float32)
+            if 'Sex' in self.df.columns:
+                sex_series = self.df['Sex'].fillna('Unknown').astype(str).str.lower()
+                self.sex_data[sex_series == 'male', 0] = 1.0
+                self.sex_data[sex_series == 'female', 1] = 1.0
+
         # Set transform (only default if config is provided, otherwise keep None as requested)
         self.transform = transform
         if self.transform is None and config is not None:
@@ -185,7 +214,8 @@ class CheXpertDataset(BaseDataset):
                 image = self.transform(image)
             concepts = torch.tensor(self.concepts_data[idx], dtype=torch.float32)
             targets = torch.tensor(self.targets_data[idx], dtype=torch.float32)
-            return image, concepts, targets
+            tab_feat = torch.tensor([self.age_data[idx], self.sex_data[idx, 0], self.sex_data[idx, 1]], dtype=torch.float32)
+            return image, concepts, targets, tab_feat
             
         row = self.df.iloc[idx]
         path_str = str(row['Path'])
@@ -199,8 +229,9 @@ class CheXpertDataset(BaseDataset):
             
         concepts = torch.tensor(self.concepts_data[idx], dtype=torch.float32)
         targets = torch.tensor(self.targets_data[idx], dtype=torch.float32)
+        tab_feat = torch.tensor([self.age_data[idx], self.sex_data[idx, 0], self.sex_data[idx, 1]], dtype=torch.float32)
         
-        return image, concepts, targets
+        return image, concepts, targets, tab_feat
 
     def _estimate_dataset_size_gb(self) -> float:
         if self.dummy_mode or self.df.empty:
