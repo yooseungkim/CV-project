@@ -60,7 +60,7 @@ training:
   scheduled_sampling_prob: 0.7 # Probability to replace prediction with GT during scheduled sampling
   scheduled_sampling_epsilon: 0.05 # Epsilon value for soft GT probabilities
   intervention_prob: 0.3       # [Dataset-Specific: chexpert] Scheduled sampling probability in Phase 3
-  target_pos_weight: 3.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
+  target_pos_weight: 10.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
   latent_concepts: 0           # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 5               # Number of target classification classes (Cardiomegaly, Edema, Consolidation, Atelectasis, Pleural Effusion)
   use_dynamic_threshold: true  # Optimize validation concept decision thresholds via Youden's J statistic
@@ -92,7 +92,7 @@ optimizer:
   asl_gamma_neg: 3.0           # ASL: gamma for easy negative samples
   asl_alpha_pos: 1.5           # ASL: static weight for positive samples
   asl_clip: 0.05               # ASL: asymmetric clipping threshold
-  ortho_lambda: 0          # Orthogonality loss coefficient for attention map separation
+  ortho_lambda: 0.01          # Orthogonality loss coefficient for attention map separation
   lambda_ce: 0.1               # Scaling factor for Softmax Cross-Entropy loss
   lambda_latent_ortho: 0      # Latent projection loss weight
   lambda_latent_l1: 0.01       # Latent activation L1 loss weight
@@ -122,7 +122,7 @@ early_stopping:
   min_delta: 0.001             # Minimum change to qualify as improvement
   phase1_monitor: "val_concept_f1" # Phase 1: Concept F1-Score
   phase1_patience: 10           # Phase 1 patience
-  phase2_monitor: "val_target_loss" # Phase 2: Target classification loss
+  phase2_monitor: "proxy_val_f1" # Phase 2: Target classification loss
   phase2_patience: 5           # Phase 2 patience
   phase3_monitor: "val_target_loss" # Phase 3: Joint fine-tuning loss
   phase3_patience: 5           # Phase 3 patience

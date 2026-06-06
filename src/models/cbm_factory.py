@@ -826,7 +826,16 @@ class UniversalFlexibleCBM(nn.Module):
                 self.supervised_attention = XRayConceptHead(embed_dim=embed_dim, num_concepts=num_supervised_concepts)
             print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured TorchXRayVision {backbone_name} (embed_dim: {embed_dim})")
             if self.num_latent_concepts > 0:
-                raise NotImplementedError("Latent concepts are not supported with torchxrayvision backbone yet.")
+                if use_concept_attention:
+                    print(f"{BOLD}{BLUE}[Latent Concept Head]{RESET} ConceptAttentionLayer ({embed_dim} -> {num_latent_concepts}) | Mode: Deterministic (TorchXRayVision)")
+                    self.latent_attention = ConceptAttentionLayer(
+                        feature_dim=embed_dim,
+                        num_concepts=num_latent_concepts,
+                        probabilistic=False
+                    )
+                else:
+                    print(f"{BOLD}{BLUE}[Latent Concept Head]{RESET} XRayConceptHead ({embed_dim} -> {num_latent_concepts}) | Mode: Deterministic (TorchXRayVision)")
+                    self.latent_attention = XRayConceptHead(embed_dim=embed_dim, num_concepts=num_latent_concepts)
         else:
             raise ValueError(f"Unsupported backbone_type: {backbone_type} / backbone_name: {backbone_name}. ResNet, ConvNeXt, ViT, and TorchXRayVision backbones are supported.")
 
@@ -984,9 +993,14 @@ class UniversalFlexibleCBM(nn.Module):
             if self.use_probabilistic_cbm:
                 raise NotImplementedError("Probabilistic CBM is not supported with torchxrayvision yet.")
             supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
-            concept_logits = supervised_logits
-            attn_weights = supervised_attn
-            latent_features = None
+            if self.num_latent_concepts > 0:
+                latent_logits, latent_attn, latent_features = self.latent_attention(features)
+                concept_logits = torch.cat([supervised_logits, latent_logits], dim=1)
+                attn_weights = torch.cat([supervised_attn, latent_attn], dim=1)
+            else:
+                concept_logits = supervised_logits
+                attn_weights = supervised_attn
+                latent_features = None
         elif self.backbone_name.startswith('resnet'):
             # ResNet still uses spatial attention conv
             if self.use_probabilistic_cbm:
