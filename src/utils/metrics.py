@@ -161,29 +161,30 @@ def find_optimal_concept_thresholds(
     # We do the search per concept/group
     if concept_groups_info is not None:
         for start_idx, num_feats in concept_groups_info:
-            best_j = -1.0
+            best_j = -2.0
             best_thresh = 0.0
             
-            # For each group, we search for a shared threshold that maximizes the average group F2-score (beta=2.0)
+            # For each group, we search for a shared threshold that maximizes the average group Youden's J
             for thresh in candidate_thresholds:
                 # Calculate metrics for this specific group under candidate threshold
-                # We can construct a temp threshold tensor
                 temp_thresh = torch.tensor([thresh] * num_concepts, device=concept_logits.device)
-                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh, beta=2.0)
+                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh)
                 
-                # Get the group average F2-score
-                group_f2 = metrics["individual_f_beta"][start_idx : start_idx + num_feats].mean().item()
+                # Get the group average Youden's J
+                group_tpr = metrics["individual_tpr"][start_idx : start_idx + num_feats]
+                group_tnr = metrics["individual_tnr"][start_idx : start_idx + num_feats]
+                group_j = (group_tpr + group_tnr - 1.0).mean().item()
                 
-                if group_f2 > best_j:
-                    best_j = group_f2
+                if group_j > best_j:
+                    best_j = group_j
                     best_thresh = thresh.item()
                     
             for idx in range(start_idx, start_idx + num_feats):
                 optimal_thresholds[idx] = best_thresh
     else:
-        # Binary fallback: independent F2-score optimization per concept (beta=2.0)
+        # Binary fallback: independent Youden's J optimization per concept (TPR + TNR - 1)
         for c in range(num_concepts):
-            best_j = -1.0
+            best_j = -2.0
             best_thresh = 0.0
             
             c_logits = concept_logits[:, c]
@@ -202,12 +203,12 @@ def find_optimal_concept_thresholds(
                 fp = (preds * (1 - c_targets)).sum()
                 fn = ((1 - preds) * c_targets).sum()
                 
-                # F2-score: beta^2 = 4.0 -> F2 = (5 * TP) / (5 * TP + 4 * FN + FP)
-                f2_score = (5.0 * tp) / (5.0 * tp + 4.0 * fn + fp + 1e-8)
-                f2_val = f2_score.item()
+                tpr = tp / (tp + fn + 1e-8)
+                tnr = tn / (tn + fp + 1e-8)
+                j_stat = (tpr + tnr - 1.0).item()
                 
-                if f2_val > best_j:
-                    best_j = f2_val
+                if j_stat > best_j:
+                    best_j = j_stat
                     best_thresh = thresh.item()
                     
             optimal_thresholds[c] = best_thresh

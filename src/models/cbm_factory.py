@@ -801,8 +801,25 @@ class UniversalFlexibleCBM(nn.Module):
                     hidden_dim=384,
                     probabilistic=use_probabilistic_cbm
                 )
+        elif self.backbone_type == 'torchxrayvision':
+            from src.models.xray_backbone import XRayDenseNetBackboneWrapper, XRayConceptHead
+            # Default to densenet121 wrapper (we can add more xrv models here in the future)
+            self.backbone = XRayDenseNetBackboneWrapper(pretrained=pretrained, return_spatial=use_concept_attention)
+            embed_dim = 1024
+            if use_concept_attention:
+                print(f"{BOLD}{BLUE}[Concept Head]{RESET} ConceptAttentionLayer ({embed_dim} -> {num_supervised_concepts}) | Mode: Deterministic")
+                self.supervised_attention = ConceptAttentionLayer(
+                    feature_dim=embed_dim,
+                    num_concepts=num_supervised_concepts,
+                    probabilistic=False
+                )
+            else:
+                self.supervised_attention = XRayConceptHead(embed_dim=embed_dim, num_concepts=num_supervised_concepts)
+            print(f"{BOLD}{BLUE}[Backbone Factory]{RESET} Configured TorchXRayVision {backbone_name} (embed_dim: {embed_dim})")
+            if self.num_latent_concepts > 0:
+                raise NotImplementedError("Latent concepts are not supported with torchxrayvision backbone yet.")
         else:
-            raise ValueError(f"Unsupported backbone_name: {backbone_name}. ResNet, ConvNeXt, and ViT backbones are supported.")
+            raise ValueError(f"Unsupported backbone_type: {backbone_type} / backbone_name: {backbone_name}. ResNet, ConvNeXt, ViT, and TorchXRayVision backbones are supported.")
 
         # Common CBM classification/activation layers
         if use_group_broadcasting:
@@ -933,7 +950,14 @@ class UniversalFlexibleCBM(nn.Module):
             if isinstance(features, tuple):
                 features = features[0]
             
-        if self.backbone_name.startswith('resnet'):
+        if self.backbone_type == 'torchxrayvision':
+            if self.use_probabilistic_cbm:
+                raise NotImplementedError("Probabilistic CBM is not supported with torchxrayvision yet.")
+            supervised_logits, supervised_attn, supervised_features = self.supervised_attention(features)
+            concept_logits = supervised_logits
+            attn_weights = supervised_attn
+            latent_features = None
+        elif self.backbone_name.startswith('resnet'):
             # ResNet still uses spatial attention conv
             if self.use_probabilistic_cbm:
                 supervised_mean, supervised_logvar, supervised_attn, supervised_features = self.supervised_attention(features)

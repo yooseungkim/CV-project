@@ -471,10 +471,10 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         concept_groups_info=concept_groups_info
     )
     
-    # 2. Run F2-Optimal search
+    # 2. Run Youden-Optimal search
     use_dynamic = getattr(args, "use_dynamic_threshold", True)
     if use_dynamic:
-        tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Finding optimal per-concept validation thresholds using F2-Optimal Thresholding...")
+        tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Finding optimal per-concept validation thresholds using Youden's J Thresholding...")
         optimal_thresholds = find_optimal_concept_thresholds(
             all_val_logits,
             all_val_targets,
@@ -493,11 +493,11 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         )
         
         tqdm.write(f"\n{BOLD}{CYAN}[Comparison]{RESET} Phase 1 Validation side-by-side comparison:")
-        tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% --> {opt_metrics['mean_balanced_acc']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% --> {opt_metrics['tpr']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean F1-Score          : {std_metrics['mean_f1']*100:.2f}% --> {opt_metrics['mean_f1']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   └─ Concept Mean F2-Score          : {std_metrics['mean_f_beta']*100:.2f}% --> {opt_metrics['mean_f_beta']*100:.2f}% (F2-Optimal)")
+        tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% --> {opt_metrics['mean_balanced_acc']*100:.2f}% (Youden-Optimal)")
+        tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% --> {opt_metrics['tpr']*100:.2f}% (Youden-Optimal)")
+        tqdm.write(f"   ├─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (Youden-Optimal)")
+        tqdm.write(f"   ├─ Concept Mean F1-Score          : {std_metrics['mean_f1']*100:.2f}% --> {opt_metrics['mean_f1']*100:.2f}% (Youden-Optimal)")
+        tqdm.write(f"   └─ Concept Mean F2-Score          : {std_metrics['mean_f_beta']*100:.2f}% --> {opt_metrics['mean_f_beta']*100:.2f}% (Youden-Optimal)")
         tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}\n")
     else:
         tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Dynamic threshold optimization is disabled. Keeping default threshold of 0.0.")

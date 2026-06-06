@@ -6,7 +6,8 @@ import torch
 torch.autograd.set_detect_anomaly(True)
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
+import numpy as np
 from tqdm import tqdm
 from src.data.milk10k import MILK10KDataset
 from src.data.derm7pt import Derm7PtDataset
@@ -63,7 +64,6 @@ def parse_args():
     if "lora_r" in bb_cfg: flat_defaults["lora_r"] = bb_cfg["lora_r"]
     if "lora_alpha" in bb_cfg: flat_defaults["lora_alpha"] = bb_cfg["lora_alpha"]
     if "use_cosine_attention" in bb_cfg: flat_defaults["use_cosine_attention"] = bb_cfg["use_cosine_attention"]
-    if "use_group_broadcasting" in bb_cfg: flat_defaults["use_group_broadcasting"] = bb_cfg["use_group_broadcasting"]
     # (use_dino_mask and dino_mask_threshold flat defaults removed)
     
     # dataset
@@ -100,6 +100,7 @@ def parse_args():
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     if "phase2_dropout" in tr_cfg: flat_defaults["phase2_dropout"] = tr_cfg["phase2_dropout"]
     if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
+    if "use_weighted_sampler" in tr_cfg: flat_defaults["use_weighted_sampler"] = tr_cfg["use_weighted_sampler"]
     if "phase2_scheduled_sampling" in tr_cfg: flat_defaults["phase2_scheduled_sampling"] = tr_cfg["phase2_scheduled_sampling"]
     if "scheduled_sampling_prob" in tr_cfg: flat_defaults["scheduled_sampling_prob"] = tr_cfg["scheduled_sampling_prob"]
     if "scheduled_sampling_epsilon" in tr_cfg: flat_defaults["scheduled_sampling_epsilon"] = tr_cfg["scheduled_sampling_epsilon"]
@@ -165,7 +166,7 @@ def parse_args():
     parser.add_argument('--image_dir', type=str, default=flat_defaults.get('image_dir', None))
     parser.add_argument('--policy', type=str, default=flat_defaults.get('policy', 'u-ones'), choices=['u-ones', 'u-zeros'], help="CheXpert uncertainty policy")
     parser.add_argument('--subset_ratio', type=float, default=flat_defaults.get('subset_ratio', None), help="Fraction of dataset to load")
-    parser.add_argument('--backbone_type', type=str, default=flat_defaults.get('backbone_type', 'timm'), choices=['timm', 'clip'])
+    parser.add_argument('--backbone_type', type=str, default=flat_defaults.get('backbone_type', 'timm'), choices=['timm', 'clip', 'torchxrayvision'])
     parser.add_argument('--backbone_name', type=str, default=flat_defaults.get('backbone_name', 'resnet50'))
     parser.add_argument('--num_concepts', type=int, default=None)
     parser.add_argument('--concept_cols', type=str, default=None)
@@ -219,9 +220,9 @@ def parse_args():
     parser.add_argument('--lora_r', type=int, default=flat_defaults.get('lora_r', 8), help="LoRA Rank parameter r")
     parser.add_argument('--lora_alpha', type=float, default=flat_defaults.get('lora_alpha', 16.0), help="LoRA scaling parameter alpha")
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
-    parser.add_argument('--use_group_broadcasting', type=str2bool, default=flat_defaults.get('use_group_broadcasting', False), help="Use GroupToConceptAttention: group queries → independent BCE classifiers based on concept_config (fixes TPR/TNR collapse from Group Softmax)")
     # (use_dino_mask and dino_mask_threshold parser arguments removed)
     parser.add_argument('--use_dynamic_threshold', type=str2bool, default=flat_defaults.get('use_dynamic_threshold', True), help="Optimize validation concept decision thresholds via Youden's J statistic")
+    parser.add_argument('--use_weighted_sampler', type=str2bool, default=flat_defaults.get('use_weighted_sampler', False), help="Use WeightedRandomSampler to balance training batch distribution")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))
@@ -331,10 +332,51 @@ def main():
         tqdm.write(f"  {BOLD}{GREEN}[Cache]{RESET} In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
         num_workers = 0
 
+    train_sampler = None
+    if args.use_weighted_sampler:
+        tqdm.write(f"  {BOLD}{BLUE}[Sampler]{RESET} Constructing WeightedRandomSampler for batch balancing...")
+        targets = train_dataset.targets_data
+        num_samples = len(targets)
+        
+        # Check if multi-label (2D array of class columns) or single-label (1D array of class indices)
+        if len(targets.shape) > 1 and targets.shape[1] > 1:
+            # Multi-label scenario (e.g. CheXpert)
+            class_pos_counts = targets.sum(axis=0)
+            class_pos_counts = np.clip(class_pos_counts, 1, None)
+            class_weights = num_samples / class_pos_counts
+            
+            # Find completely negative samples
+            neg_mask = (targets.sum(axis=1) == 0)
+            neg_count = neg_mask.sum()
+            neg_weight = num_samples / max(1, neg_count)
+            
+            sample_weights = np.zeros(num_samples)
+            for idx in range(num_samples):
+                if neg_mask[idx]:
+                    sample_weights[idx] = neg_weight
+                else:
+                    # Prioritize rare classes by assigning the maximum weight among the active target classes
+                    active_classes = (targets[idx] == 1.0)
+                    sample_weights[idx] = np.max(class_weights[active_classes])
+        else:
+            # Single-label scenario
+            targets_flat = targets.flatten() if hasattr(targets, 'flatten') else np.array(targets)
+            class_counts = np.bincount(targets_flat.astype(int))
+            class_counts = np.clip(class_counts, 1, None)
+            class_weights = num_samples / class_counts
+            sample_weights = class_weights[targets_flat.astype(int)]
+            
+        train_sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=num_samples,
+            replacement=True
+        )
+
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=args.pin_memory,
         persistent_workers=(num_workers > 0)
@@ -384,49 +426,6 @@ def main():
     tqdm.write(f"  {BOLD}{BLUE}[Model]{RESET} {args.backbone_type}/{args.backbone_name}")
     tqdm.write(f"  {BOLD}{BLUE}[Concepts]{RESET} Supervised: {num_concepts_supervised} | Latent: {args.latent_concepts} | Total Bottleneck: {num_concepts_total}")
 
-    # 2a. Build group_mapping for GroupToConceptAttention (if requested)
-    group_mapping = None
-    num_groups    = None
-    if args.use_group_broadcasting:
-        concept_info_list = None
-        if hasattr(train_dataset, "concept_features_info") and train_dataset.concept_features_info is not None:
-            concept_info_list = train_dataset.concept_features_info
-        elif args.concept_config_path and os.path.exists(args.concept_config_path):
-            try:
-                import json
-                with open(args.concept_config_path, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
-                concept_info_list = []
-                total_dims = 0
-                for name, info in cfg.items():
-                    ctype = info.get("type", "numerical")
-                    if ctype == "categorical":
-                        num_feats = len(info.get("classes", []))
-                    else:
-                        num_feats = 1
-                    concept_info_list.append({
-                        "name": name,
-                        "num_feats": num_feats
-                    })
-            except Exception as e:
-                tqdm.write(f"  ⚠️ Error loading concept config path in main.py: {e}")
-        
-        if concept_info_list is not None:
-            group_mapping = []
-            for group_idx, info in enumerate(concept_info_list):
-                num_in_group = info["num_feats"]
-                group_mapping.extend([group_idx] * num_in_group)
-            num_groups = len(concept_info_list)
-            assert len(group_mapping) == num_concepts_supervised, (
-                f"group_mapping length {len(group_mapping)} != num_supervised_concepts {num_concepts_supervised}"
-                f" (Please check if your concept config JSON matches the supervised concepts dataset)"
-            )
-            # When using group broadcasting, disable Group Softmax (it conflicts with independent BCE)
-            concept_groups_info = None
-            tqdm.write(f"  {BOLD}{BLUE}[Broadcasting]{RESET} {num_groups} anatomical groups -> {num_concepts_supervised} independent BCE classifiers (Group Softmax disabled).")
-        else:
-            tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} use_group_broadcasting=True but concept config information could not be resolved. Falling back to standard attention.")
-
     model = UniversalFlexibleCBM(
         backbone_type=args.backbone_type,
         backbone_name=args.backbone_name,
@@ -438,10 +437,6 @@ def main():
         lora_alpha=args.lora_alpha,
         concept_groups_info=concept_groups_info,
         use_cosine_attention=args.use_cosine_attention,
-        use_group_broadcasting=args.use_group_broadcasting,
-        num_groups=num_groups,
-        group_mapping=group_mapping,
-        # use_dino_mask and dino_mask_threshold parameters removed
         use_nam_head=args.use_nam_head or args.use_gated_nam,
         nam_hidden_dim=args.nam_hidden_dim,
         use_probabilistic_cbm=args.use_probabilistic_cbm,

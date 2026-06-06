@@ -913,7 +913,7 @@ def parse_app_args():
     )
     parser.add_argument(
         '--backbone_type', type=str, default='timm',
-        choices=['timm', 'clip']
+        choices=['timm', 'clip', 'torchxrayvision']
     )
     parser.add_argument(
         '--backbone_name', type=str, default='resnet50'
