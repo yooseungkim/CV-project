@@ -118,14 +118,10 @@ scheduler:
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true                # Enable early stopping
-  monitor: "val_target_loss"   # Target validation metric to monitor
-  patience: 7                  # Patience for early stopping
   min_delta: 0.001             # Minimum change to qualify as improvement
-  
-  # --- Dataset-Specific Early Stopping ---
-  phase1_monitor: "val_concept_f1" # [Dataset-Specific: cub, derm7pt]
-  phase1_patience: 5           # [Dataset-Specific: cub, derm7pt]
-  phase2_monitor: "val_acc"    # [Dataset-Specific: cub, derm7pt]
-  phase2_patience: 10          # [Dataset-Specific: cub, derm7pt]
-  phase3_monitor: "val_joint_loss" # [Dataset-Specific: cub, derm7pt]
-  phase3_patience: 5           # [Dataset-Specific: cub, derm7pt]
+  phase1_monitor: "val_concept_f1" # Phase 1: Concept F1-Score
+  phase1_patience: 5           # Phase 1 patience
+  phase2_monitor: "val_acc"    # Phase 2: Target classification accuracy
+  phase2_patience: 10          # Phase 2 patience
+  phase3_monitor: "val_joint_loss" # Phase 3: Joint fine-tuning loss
+  phase3_patience: 5           # Phase 3 patience

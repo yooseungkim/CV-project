@@ -37,30 +37,30 @@ training:
   phase3_epochs: 10            # Number of epochs for Phase 3 (Joint Fine-Tuning)
   batch_size: 64               # Batch size for training
   lambda_c: 1.0                # Loss balancing weight factor for concepts
-  phase2_dropout: 0.4          # Dropout probability in Phase 2
-  l1_lambda: 0.01              # L1 Lasso Regularization strength for Phase 2 classifier head
+  phase2_dropout: 0.1          # Dropout probability in Phase 2
+  l1_lambda: 1e-4              # L1 Lasso Regularization strength for Phase 2 classifier head
   use_nam_head: true          # Toggle Gated Sparse NAM Head (instead of standard nn.Linear)
   nam_hidden_dim: 16            # Hidden dimension for parallel NAM sub-networks
   l1_warmup_epochs: 5          # Number of warm-up epochs for L1 sparsity
   use_gated_nam: true         # Gated Sparse NAM head activation
   use_pairwise_nam: true      # NAM^2 (Pairwise Interaction) activation
-  use_probabilistic_cbm: true # Deterministic to Probabilistic Concept bottleneck
-  pcbm_beta: 0.001             # Target weight coefficient beta for KL penalty
+  use_probabilistic_cbm: false # Deterministic to Probabilistic Concept bottleneck
+  pcbm_beta: 0.0001             # Target weight coefficient beta for KL penalty
   pcbm_beta_warmup_epochs: 2   # Number of epochs for KL beta warm-up
   pcbm_beta_anneal_epochs: 5   # Number of epochs for KL beta linear annealing/ramp-up
-  pcbm_beta_min: 0.001        # Starting KL beta value after warm-up
+  pcbm_beta_min: 0.00        # Starting KL beta value after warm-up
   pcbm_asymmetric_kl_weight: 0.1 # KL penalty weight multiplier for positive samples
-  l1_lambda_gate: 0.01         # L1 Regularization strength on gating parameters
+  l1_lambda_gate: 1e-4         # L1 Regularization strength on gating parameters
   latent_penalty_scale: 1.0    # Penalty multiplier for latent concept gates
-  weight_decay_nam: 1e-2       # L2 penalty for NAM sub-networks smoothing
+  weight_decay_nam: 1e-3       # L2 penalty for NAM sub-networks smoothing
   use_cb_loss: false            # Use CVPR 2019 Class-Balanced Loss weighting
   cb_beta: 0.995               # Beta parameter for Class-Balanced Loss weight calculation
   phase1_label_smoothing: 0.05 # Epsilon for Phase 1 concept label smoothing
   phase2_scheduled_sampling: true # Enable Scheduled Sampling (Noise Injection) for Phase 2
-  scheduled_sampling_prob: 0.3 # Probability to replace prediction with GT during scheduled sampling
+  scheduled_sampling_prob: 0.7 # Probability to replace prediction with GT during scheduled sampling
   scheduled_sampling_epsilon: 0.05 # Epsilon value for soft GT probabilities
   intervention_prob: 0.3       # [Dataset-Specific: chexpert] Scheduled sampling probability in Phase 3
-  target_pos_weight: 1.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
+  target_pos_weight: 3.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
   latent_concepts: 0           # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 5               # Number of target classification classes (Cardiomegaly, Edema, Consolidation, Atelectasis, Pleural Effusion)
   use_dynamic_threshold: true  # Optimize validation concept decision thresholds via Youden's J statistic
@@ -118,14 +118,10 @@ scheduler:
 # 6. Early Stopping Criteria
 early_stopping:
   enabled: true                # Enable early stopping
-  monitor: "val_target_loss"   # Target validation metric to monitor
-  patience: 5                  # Patience for early stopping
   min_delta: 0.001             # Minimum change to qualify as improvement
-  
-  # --- Dataset-Specific Early Stopping ---
-  phase1_monitor: "val_concept_f1" # [Dataset-Specific: cub, derm7pt]
-  phase1_patience: 5           # [Dataset-Specific: cub, derm7pt]
-  phase2_monitor: "val_target_loss" # [Dataset-Specific: cub, derm7pt]
-  phase2_patience: 5           # [Dataset-Specific: cub, derm7pt]
-  phase3_monitor: "val_target_loss" # [Dataset-Specific: cub, derm7pt]
-  phase3_patience: 5           # [Dataset-Specific: cub, derm7pt]
+  phase1_monitor: "val_concept_f1" # Phase 1: Concept F1-Score
+  phase1_patience: 10           # Phase 1 patience
+  phase2_monitor: "val_target_loss" # Phase 2: Target classification loss
+  phase2_patience: 5           # Phase 2 patience
+  phase3_monitor: "val_target_loss" # Phase 3: Joint fine-tuning loss
+  phase3_patience: 5           # Phase 3 patience

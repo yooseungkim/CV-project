@@ -490,7 +490,7 @@ def main():
                 return migrated
 
             old_mha_keys = {k for k in state_dict if ".cross_attention." in k}
-            if old_mha_keys:
+            if old_mha_keys and getattr(args, 'use_cosine_attention', False):
                 tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} Detected {len(old_mha_keys)} legacy MHA key(s). Migrating to cosine-attention layout...")
                 state_dict = _migrate_state_dict(state_dict)
                 tqdm.write(f"  {BOLD}{GREEN}[Migration]{RESET} State-dict migration complete.")
