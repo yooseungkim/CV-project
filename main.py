@@ -566,6 +566,8 @@ def main():
     model.to(device)
     if use_concept_bias_calibration and hasattr(model, "concept_bias"):
         model.concept_bias.zero_()
+        if hasattr(model, "concept_bias_temperature"):
+            model.concept_bias_temperature.fill_(1.0)
         tqdm.write(
             f"  {BOLD}{CYAN}[Calibration]{RESET} "
             "Concept bias will be learned post-hoc after Phase 3; training phases use zero bias."
@@ -776,16 +778,35 @@ def main():
             device=device,
             config=bias_cfg
         )
+        if bias_summary["metric"] == "target_nll":
+            score_text = (
+                f"{bias_summary['metric']}: {bias_summary['baseline_score']:.4f} "
+                f"-> {bias_summary['calibrated_score']:.4f}"
+            )
+        else:
+            score_text = (
+                f"{bias_summary['metric']}: {bias_summary['baseline_score']*100:.2f}% "
+                f"-> {bias_summary['calibrated_score']*100:.2f}%"
+            )
         tqdm.write(
             f"  {BOLD}{GREEN}[Concept Bias]{RESET} "
-            f"{bias_summary['metric']}: {bias_summary['baseline_score']*100:.2f}% "
-            f"-> {bias_summary['calibrated_score']*100:.2f}%"
+            f"{score_text} | "
+            f"temperature={bias_summary.get('temperature', 1.0):.3g}, "
+            f"parameterization={bias_summary.get('parameterization', 'coordinate')}, "
+            f"search_concepts={bias_summary.get('num_search_concepts', 0)}, "
+            f"l2={bias_summary.get('l2_lambda', 0.0):.3g}"
         )
         if args.use_wandb:
             import wandb
             wandb.log({
                 "calibration/concept_bias_baseline": bias_summary["baseline_score"],
                 "calibration/concept_bias_score": bias_summary["calibrated_score"],
+                "calibration/concept_bias_temperature": bias_summary.get("temperature", 1.0),
+                "calibration/concept_bias_l2_lambda": bias_summary.get("l2_lambda", 0.0),
+                "calibration/concept_bias_l2": bias_summary.get("bias_l2", 0.0),
+                "calibration/concept_bias_max_abs": bias_summary.get("bias_max_abs", 0.0),
+                "calibration/concept_bias_nonzero": bias_summary.get("nonzero_bias", 0),
+                "calibration/concept_bias_num_search_concepts": bias_summary.get("num_search_concepts", 0),
             })
 
     # Save Model Weights

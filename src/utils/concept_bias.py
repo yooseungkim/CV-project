@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Subset
 from tqdm import tqdm
 
@@ -117,18 +118,62 @@ def _target_macro_fbeta_from_logits(class_logits: torch.Tensor, targets: torch.T
     return torch.stack(scores).mean().item()
 
 
-def _score_concept_bias(logits, targets, bias, groups, metric_name):
-    adjusted_logits = logits + bias.unsqueeze(0)
+def _target_labels_for_ce(targets: torch.Tensor):
+    if targets.ndim > 1:
+        targets = targets.squeeze(-1) if targets.size(-1) == 1 else targets.argmax(dim=1)
+    return targets.long()
+
+
+def _calibration_mask_for_parameterization(parameterization: str, groups, num_concepts: int):
+    mask = torch.zeros(num_concepts, dtype=torch.bool)
+    if parameterization == "coordinate":
+        mask.fill_(True)
+    elif parameterization == "singleton_only":
+        for start, size in groups:
+            if size == 1:
+                mask[start] = True
+    return mask
+
+
+def _apply_candidate_calibration(logits, bias, calibration_mask, temperature=1.0):
+    adjusted_logits = logits.clone()
+    bias = bias.to(device=logits.device, dtype=logits.dtype)
+    calibration_mask = calibration_mask.to(device=logits.device)
+    if torch.any(calibration_mask):
+        adjusted_logits[:, calibration_mask] = (
+            adjusted_logits[:, calibration_mask] / float(temperature)
+            + bias[calibration_mask].unsqueeze(0)
+        )
+    return adjusted_logits
+
+
+def _score_concept_bias(logits, targets, bias, calibration_mask, temperature, groups, metric_name):
+    adjusted_logits = _apply_candidate_calibration(logits, bias, calibration_mask, temperature)
     preds = _predict_concepts(adjusted_logits, groups, logits.size(1))
     beta = 2.0 if metric_name == "concept_macro_f2" else 1.0
     return _macro_fbeta(preds, targets, beta=beta)
 
 
 @torch.no_grad()
-def _score_target_bias(model, concept_logits, targets, bias, device, metric_name):
+def _score_target_bias(model, concept_logits, targets, bias, calibration_mask, device, metric_name, temperature=1.0):
     adjusted_logits = concept_logits.clone()
-    adjusted_logits[:, :bias.numel()] = adjusted_logits[:, :bias.numel()] + bias.unsqueeze(0)
+    adjusted_logits[:, :bias.numel()] = _apply_candidate_calibration(
+        adjusted_logits[:, :bias.numel()],
+        bias,
+        calibration_mask,
+        temperature,
+    )
     class_logits = model.classifier_head(adjusted_logits.to(device)).cpu()
+    if metric_name == "target_acc":
+        if class_logits.shape[-1] <= 1:
+            preds = (class_logits.view(-1) > 0.0).long()
+            labels = _target_labels_for_ce(targets).view(-1)
+        else:
+            preds = torch.argmax(class_logits, dim=1).long()
+            labels = _target_labels_for_ce(targets).view(-1)
+        return (preds == labels).float().mean().item()
+    if metric_name == "target_nll":
+        return -float(F.cross_entropy(class_logits, _target_labels_for_ce(targets)).item())
     beta = 2.0 if metric_name == "target_macro_f2" else 1.0
     return _target_macro_fbeta_from_logits(class_logits, targets, beta=beta)
 
@@ -158,10 +203,18 @@ def collect_calibration_outputs(model, dataloader, num_concepts_supervised, devi
 def learn_concept_bias(model, calibration_loader, concept_groups_info, device, config):
     objective = config.get("objective", {})
     metric_name = objective.get("metric", "concept_macro_f1")
-    if metric_name not in {"concept_macro_f1", "concept_macro_f2", "target_macro_f1", "target_macro_f2"}:
+    valid_metrics = {
+        "concept_macro_f1",
+        "concept_macro_f2",
+        "target_macro_f1",
+        "target_macro_f2",
+        "target_acc",
+        "target_nll",
+    }
+    if metric_name not in valid_metrics:
         raise ValueError(
             "learn_concept_bias.objective.metric must be one of: "
-            "concept_macro_f1, concept_macro_f2, target_macro_f1, target_macro_f2"
+            + ", ".join(sorted(valid_metrics))
         )
 
     search_method = config.get("search_method", "coordinate_grid")
@@ -172,54 +225,114 @@ def learn_concept_bias(model, calibration_loader, concept_groups_info, device, c
     if scope != "supervised_concepts":
         raise ValueError("learn_concept_bias.scope currently supports only supervised_concepts")
 
+    parameterization = config.get("parameterization", config.get("bias_parameterization", "coordinate"))
+    if parameterization not in {"coordinate", "singleton_only"}:
+        raise ValueError("learn_concept_bias.parameterization must be one of: coordinate, singleton_only")
+
     max_abs_bias = float(config.get("max_abs_bias", 4.0))
+    grid_steps = int(config.get("grid_steps", 17))
+    max_passes = int(config.get("max_passes", 3))
+    min_improvement = float(config.get("min_improvement", 1e-5))
+    l2_lambda = float(config.get("l2_lambda", 0.0))
+    temperature = float(config.get("temperature", 1.0))
+    if temperature <= 0.0:
+        raise ValueError("learn_concept_bias.temperature must be > 0")
+    if grid_steps < 1:
+        raise ValueError("learn_concept_bias.grid_steps must be >= 1")
+
     num_concepts = model.num_supervised_concepts
     groups = _normalize_groups(concept_groups_info, num_concepts)
+    calibration_mask = _calibration_mask_for_parameterization(parameterization, groups, num_concepts)
+    search_indices = torch.nonzero(calibration_mask, as_tuple=False).view(-1).tolist()
 
     logits, concept_targets, target_labels = collect_calibration_outputs(model, calibration_loader, num_concepts, device)
     supervised_logits = logits[:, :num_concepts]
-    bias = torch.zeros(num_concepts)
-    candidate_values = torch.linspace(-max_abs_bias, max_abs_bias, steps=17)
-    if metric_name in {"target_macro_f1", "target_macro_f2"}:
-        score_fn = lambda candidate: _score_target_bias(model, logits, target_labels, candidate, device, metric_name)
+    candidate_values = torch.linspace(-max_abs_bias, max_abs_bias, steps=grid_steps)
+
+    if metric_name.startswith("target_"):
+        score_fn = lambda candidate: _score_target_bias(
+            model,
+            logits,
+            target_labels,
+            candidate,
+            calibration_mask,
+            device,
+            metric_name,
+            temperature=temperature,
+        )
     else:
-        score_fn = lambda candidate: _score_concept_bias(supervised_logits, concept_targets, candidate, groups, metric_name)
-    best_score = score_fn(bias)
+        score_fn = lambda candidate: _score_concept_bias(
+            supervised_logits,
+            concept_targets,
+            candidate,
+            calibration_mask,
+            temperature,
+            groups,
+            metric_name,
+        )
 
-    max_passes = 3
-    min_improvement = 1e-5
-    for pass_idx in range(max_passes):
+    def penalized_score(candidate):
+        raw_score = score_fn(candidate)
+        penalty = l2_lambda * candidate.pow(2).sum().item()
+        return raw_score - penalty, raw_score
+
+    bias = torch.zeros(num_concepts)
+    best_objective, best_score = penalized_score(bias)
+
+    for _ in range(max_passes):
         pass_improved = False
-        for start, size in groups:
-            for concept_idx in range(start, start + size):
-                local_best_bias = bias
-                local_best_score = best_score
-                for value in candidate_values:
-                    candidate = bias.clone()
-                    candidate[concept_idx] = value
-                    _project_group_biases_(candidate, [(start, size)], max_abs_bias)
-                    score = score_fn(candidate)
-                    if score > local_best_score + min_improvement:
-                        local_best_score = score
-                        local_best_bias = candidate
+        for concept_idx in search_indices:
+            local_best_bias = bias.clone()
+            local_best_objective = best_objective
+            local_best_score = best_score
+            for value in candidate_values:
+                candidate = bias.clone()
+                candidate[concept_idx] = value
+                if parameterization == "coordinate":
+                    for start, size in groups:
+                        if start <= concept_idx < start + size:
+                            _project_group_biases_(candidate, [(start, size)], max_abs_bias)
+                            break
+                objective_value, raw_score = penalized_score(candidate)
+                if objective_value > local_best_objective + min_improvement:
+                    local_best_objective = objective_value
+                    local_best_score = raw_score
+                    local_best_bias = candidate
 
-                if local_best_score > best_score + min_improvement:
-                    bias = local_best_bias
-                    best_score = local_best_score
-                    pass_improved = True
+            if local_best_objective > best_objective + min_improvement:
+                bias = local_best_bias
+                best_objective = local_best_objective
+                best_score = local_best_score
+                pass_improved = True
 
         if not pass_improved:
             break
 
-    _project_group_biases_(bias, groups, max_abs_bias)
-
     with torch.no_grad():
         model.concept_bias.copy_(bias.to(device=model.concept_bias.device, dtype=model.concept_bias.dtype))
+        if hasattr(model, "concept_bias_mask"):
+            model.concept_bias_mask.copy_(
+                calibration_mask.to(device=model.concept_bias_mask.device, dtype=model.concept_bias_mask.dtype)
+            )
+        if hasattr(model, "concept_bias_temperature"):
+            model.concept_bias_temperature.fill_(temperature)
 
     baseline = score_fn(torch.zeros_like(bias))
-    return {
+    summary = {
         "baseline_score": baseline,
         "calibrated_score": best_score,
+        "penalized_score": best_objective,
         "metric": metric_name,
+        "parameterization": parameterization,
         "max_abs_bias": max_abs_bias,
+        "grid_steps": grid_steps,
+        "max_passes": max_passes,
+        "temperature": temperature,
+        "l2_lambda": l2_lambda,
+        "num_search_concepts": len(search_indices),
+        "bias_l2": float(bias.pow(2).sum().sqrt().item()),
+        "bias_mean_abs": float(bias.abs().mean().item()),
+        "bias_max_abs": float(bias.abs().max().item()),
+        "nonzero_bias": int((bias.abs() > 1e-8).sum().item()),
     }
+    return summary

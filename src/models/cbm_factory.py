@@ -846,6 +846,8 @@ class UniversalFlexibleCBM(nn.Module):
         self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
         # Post-hoc supervised concept calibration bias learned on a held-out calibration split.
         self.register_buffer('concept_bias', torch.zeros(self.num_supervised_concepts))
+        self.register_buffer('concept_bias_mask', torch.ones(self.num_supervised_concepts))
+        self.register_buffer('concept_bias_temperature', torch.ones(1))
 
     def load_state_dict(self, state_dict, strict=True):
         # Inject legacy buffers when absent to prevent strict loading errors.
@@ -853,6 +855,10 @@ class UniversalFlexibleCBM(nn.Module):
             state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
         if 'concept_bias' not in state_dict:
             state_dict['concept_bias'] = torch.zeros(self.num_supervised_concepts)
+        if 'concept_bias_mask' not in state_dict:
+            state_dict['concept_bias_mask'] = torch.ones(self.num_supervised_concepts)
+        if 'concept_bias_temperature' not in state_dict:
+            state_dict['concept_bias_temperature'] = torch.ones(1)
             
         # Backward compatibility for concept_gates and latent_gates
         if hasattr(self.classifier_head, 'concept_gates'):
@@ -901,17 +907,25 @@ class UniversalFlexibleCBM(nn.Module):
         return ret
 
     def apply_concept_bias(self, concept_logits: torch.Tensor) -> torch.Tensor:
-        """Apply fixed calibration bias to supervised concept logits only."""
+        """Apply fixed calibration transform to masked supervised concept logits only."""
         if not hasattr(self, "concept_bias") or self.concept_bias.numel() == 0:
             return concept_logits
         if concept_logits.size(-1) < self.num_supervised_concepts:
             return concept_logits
 
-        biased_logits = concept_logits.clone()
         bias = self.concept_bias.to(device=concept_logits.device, dtype=concept_logits.dtype)
-        biased_logits[:, :self.num_supervised_concepts] = (
-            biased_logits[:, :self.num_supervised_concepts] + bias.unsqueeze(0)
-        )
+        if hasattr(self, "concept_bias_mask"):
+            mask = self.concept_bias_mask.to(device=concept_logits.device) > 0.5
+        else:
+            mask = torch.ones_like(bias, dtype=torch.bool)
+        if not torch.any(mask):
+            return concept_logits
+
+        biased_logits = concept_logits.clone()
+        temperature = self.concept_bias_temperature.to(device=concept_logits.device, dtype=concept_logits.dtype)
+        temperature = temperature.clamp(min=1e-6)
+        supervised_logits = biased_logits[:, :self.num_supervised_concepts]
+        supervised_logits[:, mask] = supervised_logits[:, mask] / temperature + bias[mask].unsqueeze(0)
         return biased_logits
 
     def _infer_feature_dim(self) -> tuple[int, int, int]:

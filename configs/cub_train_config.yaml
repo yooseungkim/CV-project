@@ -40,9 +40,15 @@ calibration:
 learn_concept_bias:
   scope: supervised_concepts
   objective:
-    metric: target_macro_f1    # Choices: ["concept_macro_f1", "concept_macro_f2", "target_macro_f1", "target_macro_f2"]
+    metric: target_nll         # Choices: ["concept_macro_f1", "concept_macro_f2", "target_macro_f1", "target_macro_f2", "target_acc", "target_nll"]
   search_method: coordinate_grid # Choices: ["coordinate_grid"]
-  max_abs_bias: 4.0            # Absolute logit-bias bound
+  parameterization: singleton_only # Choices: ["coordinate", "singleton_only"]
+  temperature: 1.1             # Apply z / temperature before adding bias only to calibratable singleton concepts
+  l2_lambda: 0.003             # L2 shrinkage on the learned bias
+  max_abs_bias: 0.75           # Absolute logit-bias bound
+  grid_steps: 13               # Candidate bias values from -max_abs_bias to +max_abs_bias
+  max_passes: 3                # Greedy coordinate passes over eligible concepts
+  min_improvement: 1.0e-8      # Match the benchmark sweep tolerance
 
 # 4. Core Training Hyperparameters
 training:

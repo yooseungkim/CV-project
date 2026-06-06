@@ -861,10 +861,17 @@ def main():
     model = model.to(device)
     if args.ignore_bias and hasattr(model, "concept_bias"):
         nonzero_bias = int((model.concept_bias.detach().abs() > 0).sum().item())
+        old_temperature = None
+        if hasattr(model, "concept_bias_temperature"):
+            old_temperature = float(model.concept_bias_temperature.detach().cpu().item())
         model.concept_bias.zero_()
+        if hasattr(model, "concept_bias_temperature"):
+            model.concept_bias_temperature.fill_(1.0)
+        temp_msg = "" if old_temperature is None else f", reset temperature {old_temperature:.3g} -> 1"
         tqdm.write(
             f"  {BOLD}{YELLOW}[Concept Bias]{RESET} "
-            f"Ignoring checkpoint concept_bias for evaluation (zeroed {nonzero_bias} non-zero entries)."
+            f"Ignoring checkpoint concept_bias for evaluation "
+            f"(zeroed {nonzero_bias} non-zero entries{temp_msg})."
         )
     
     tqdm.write(f"\n{BOLD}{MAGENTA}============================================================{RESET}")
