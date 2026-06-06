@@ -859,20 +859,13 @@ def build_app() -> gr.Blocks:
                     # Categorical concept: select the highest probability class
                     probs = [concept_vals[idx] for idx in flat_indices]
                     max_idx = np.argmax(probs)
-                    
-                    # Extract raw predicted logits for this group
-                    group_logits = [concept_logits_list[idx] for idx in flat_indices]
-                    max_logit = max(group_logits)
-                    
-                    # Fetch optimal validation threshold in logit space from model buffer
-                    if MODEL is not None and hasattr(MODEL, "concept_thresholds") and MODEL.concept_thresholds is not None:
-                        g_threshold = MODEL.concept_thresholds[flat_indices].mean().item()
-                    else:
-                        g_threshold = 0.0  # Fallback to logit 0.0
-                    
-                    # Intervene (open Accordion) if predicted max logit is below threshold + 0.30 logit margin
+                    sorted_probs = sorted(probs, reverse=True)
+                    top1_prob = sorted_probs[0]
+                    top2_prob = sorted_probs[1] if len(sorted_probs) > 1 else 0.0
+                    is_uncertain = (top1_prob - top2_prob) <= 0.15
+
                     selected_cls = group["classes"][max_idx]
-                    if max_logit <= (g_threshold + 0.30):
+                    if is_uncertain:
                         accordion_updates.append(gr.update(open=True))
                     else:
                         accordion_updates.append(gr.update(open=False))

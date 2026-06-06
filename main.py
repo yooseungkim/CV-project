@@ -13,7 +13,6 @@ from src.data.derm7pt import Derm7PtDataset
 from src.data.cub import CUB2011Dataset
 from src.data.chexpert import CheXpertDataset
 from src.models.cbm_factory import UniversalFlexibleCBM
-from src.utils.metrics import calculate_accuracy, calculate_concept_accuracy, calculate_concept_metrics, find_optimal_concept_thresholds
 from src.utils.visualization import generate_concept_heatmaps
 
 # Modularized utility, loss, and training loop imports
@@ -110,7 +109,6 @@ def parse_args():
     if "phase1_epochs" in tr_cfg: flat_defaults["phase1_epochs"] = tr_cfg["phase1_epochs"]
     if "phase2_epochs" in tr_cfg: flat_defaults["phase2_epochs"] = tr_cfg["phase2_epochs"]
     if "phase2_dropout" in tr_cfg: flat_defaults["phase2_dropout"] = tr_cfg["phase2_dropout"]
-    if "use_dynamic_threshold" in tr_cfg: flat_defaults["use_dynamic_threshold"] = tr_cfg["use_dynamic_threshold"]
     if "phase2_scheduled_sampling" in tr_cfg: flat_defaults["phase2_scheduled_sampling"] = tr_cfg["phase2_scheduled_sampling"]
     if "scheduled_sampling_prob" in tr_cfg: flat_defaults["scheduled_sampling_prob"] = tr_cfg["scheduled_sampling_prob"]
     if "scheduled_sampling_epsilon" in tr_cfg: flat_defaults["scheduled_sampling_epsilon"] = tr_cfg["scheduled_sampling_epsilon"]
@@ -231,7 +229,6 @@ def parse_args():
     parser.add_argument('--use_cosine_attention', type=str2bool, default=flat_defaults.get('use_cosine_attention', False), help="Use L2-normalized Cosine Attention instead of standard MultiheadAttention (suppresses DINOv2 border-patch outliers)")
     parser.add_argument('--use_group_broadcasting', type=str2bool, default=flat_defaults.get('use_group_broadcasting', False), help="Use GroupToConceptAttention: group queries → independent BCE classifiers based on concept_config (fixes TPR/TNR collapse from Group Softmax)")
     # (use_dino_mask and dino_mask_threshold parser arguments removed)
-    parser.add_argument('--use_dynamic_threshold', type=str2bool, default=flat_defaults.get('use_dynamic_threshold', True), help="Optimize validation concept decision thresholds via Youden's J statistic")
     parser.add_argument('--use_wandb', type=str2bool, default=flat_defaults.get('use_wandb', True))
     parser.add_argument('--save_dir', type=str, default=flat_defaults.get('save_dir', 'checkpoints'))
     parser.add_argument('--cache_in_memory', type=str2bool, default=flat_defaults.get('cache_in_memory', False))

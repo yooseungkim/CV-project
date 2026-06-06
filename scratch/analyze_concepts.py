@@ -145,8 +145,7 @@ def main():
     concept_metrics = calculate_concept_metrics(
         all_val_logits,
         all_val_targets,
-        concept_groups_info=concept_groups_info if not use_group_broadcasting else None,
-        threshold=model.concept_thresholds.cpu()
+        concept_groups_info=concept_groups_info if not use_group_broadcasting else None
     )
 
     concepts_list = val_dataset.config.get("concepts_flat", val_dataset.config.get("concepts", []))
@@ -158,16 +157,8 @@ def main():
         gt_positives = (all_val_targets[:, c] > 0.5).sum().item()
         frequency = gt_positives / num_samples
         bal_acc = concept_metrics["individual_balanced_acc"][c].item()
-        
-        preds_bin = (all_val_logits[:, c] > model.concept_thresholds[c].cpu()).float()
-        targets_bin = (all_val_targets[:, c] > 0.5).float()
-        tp = (preds_bin * targets_bin).sum().item()
-        tn = ((1 - preds_bin) * (1 - targets_bin)).sum().item()
-        fp = (preds_bin * (1 - targets_bin)).sum().item()
-        fn = ((1 - preds_bin) * targets_bin).sum().item()
-        
-        tpr = tp / (tp + fn + 1e-8) if (tp + fn) > 0 else 1.0
-        tnr = tn / (tn + fp + 1e-8) if (tn + fp) > 0 else 1.0
+        tpr = concept_metrics["individual_tpr"][c].item()
+        tnr = concept_metrics["individual_tnr"][c].item()
 
         data.append({
             "index": c,

@@ -133,16 +133,6 @@ def _score_target_bias(model, concept_logits, targets, bias, device, metric_name
     return _target_macro_fbeta_from_logits(class_logits, targets, beta=beta)
 
 
-def _align_thresholds_with_bias_objective_(model, groups):
-    if not hasattr(model, "concept_thresholds"):
-        return
-    thresholds = torch.zeros_like(model.concept_thresholds)
-    for start, size in groups:
-        if size > 1:
-            thresholds[start : start + size] = -1e9
-    model.concept_thresholds.copy_(thresholds.to(device=model.concept_thresholds.device))
-
-
 @torch.no_grad()
 def collect_calibration_outputs(model, dataloader, num_concepts_supervised, device):
     model.eval()
@@ -225,7 +215,6 @@ def learn_concept_bias(model, calibration_loader, concept_groups_info, device, c
 
     with torch.no_grad():
         model.concept_bias.copy_(bias.to(device=model.concept_bias.device, dtype=model.concept_bias.dtype))
-        _align_thresholds_with_bias_objective_(model, groups)
 
     baseline = score_fn(torch.zeros_like(bias))
     return {

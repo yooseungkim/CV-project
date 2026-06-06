@@ -842,13 +842,13 @@ class UniversalFlexibleCBM(nn.Module):
         else:
             self.classifier_head = nn.Linear(self.num_concepts, num_classes)
         
-        # Register a buffer to store dynamically-found optimal validation logit thresholds
+        # Legacy compatibility buffer. Main concept metrics no longer use thresholds.
         self.register_buffer('concept_thresholds', torch.zeros(self.num_supervised_concepts))
         # Post-hoc supervised concept calibration bias learned on a held-out calibration split.
         self.register_buffer('concept_bias', torch.zeros(self.num_supervised_concepts))
 
     def load_state_dict(self, state_dict, strict=True):
-        # If 'concept_thresholds' is not in the loaded state_dict, inject it to prevent strict loading errors
+        # Inject legacy buffers when absent to prevent strict loading errors.
         if 'concept_thresholds' not in state_dict:
             state_dict['concept_thresholds'] = torch.zeros(self.num_supervised_concepts)
         if 'concept_bias' not in state_dict:

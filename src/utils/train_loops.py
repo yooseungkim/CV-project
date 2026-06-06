@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 
-from src.utils.metrics import calculate_accuracy, calculate_concept_metrics, find_optimal_concept_thresholds
+from src.utils.metrics import calculate_accuracy, calculate_concept_metrics
 from src.utils.visualization import generate_concept_heatmaps
 from src.utils.losses import calculate_orthogonality_loss
 from src.utils.helpers import EarlyStopping, unwrap_subset
@@ -468,7 +468,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         tqdm.write(f"  {BOLD}{YELLOW}[Restore]{RESET} Phase 1 completed. Restoring best Phase 1 weights.")
         model.load_state_dict(es_handler.best_weights)
 
-    # ── Final Validation Optimal Threshold Search ─────────────────────────
+    # ── Final Validation Concept Metric Summary ──────────────────────────
     model.eval()
     all_val_logits = []
     all_val_targets = []
@@ -486,7 +486,7 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
     all_val_logits = torch.cat(all_val_logits, dim=0)
     all_val_targets = torch.cat(all_val_targets, dim=0)
     
-    # 1. Compute legacy/default metrics (threshold = 0.0)
+    # Compute final main concept metrics without multi-class group thresholding.
     if concept_groups_info is None and not getattr(args, "use_group_broadcasting", False):
         concept_config_path = getattr(args, "concept_config_path", None) or (resolved_config.get("concept_config_path") if isinstance(resolved_config, dict) else None)
         if concept_config_path and os.path.exists(concept_config_path):
@@ -515,39 +515,14 @@ def train_phase1(model, train_loader, val_loader, concept_criterion, device, arg
         all_val_targets,
         concept_groups_info=concept_groups_info
     )
-    
-    # 2. Run F2-Optimal search
-    use_dynamic = getattr(args, "use_dynamic_threshold", True)
-    if use_dynamic:
-        tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Finding optimal per-concept validation thresholds using F2-Optimal Thresholding...")
-        optimal_thresholds = find_optimal_concept_thresholds(
-            all_val_logits,
-            all_val_targets,
-            concept_groups_info=concept_groups_info
-        )
-        
-        # Register optimal thresholds in model's buffer
-        model.concept_thresholds.copy_(optimal_thresholds)
-        
-        # 3. Compute optimal metrics
-        opt_metrics = calculate_concept_metrics(
-            all_val_logits,
-            all_val_targets,
-            concept_groups_info=concept_groups_info,
-            threshold=optimal_thresholds
-        )
-        
-        tqdm.write(f"\n{BOLD}{CYAN}[Comparison]{RESET} Phase 1 Validation side-by-side comparison:")
-        tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}% --> {opt_metrics['mean_balanced_acc']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}% --> {opt_metrics['tpr']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}% --> {opt_metrics['tnr']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   ├─ Concept Mean F1-Score          : {std_metrics['mean_f1']*100:.2f}% --> {opt_metrics['mean_f1']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"   └─ Concept Mean F2-Score          : {std_metrics['mean_f_beta']*100:.2f}% --> {opt_metrics['mean_f_beta']*100:.2f}% (F2-Optimal)")
-        tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}\n")
-    else:
-        tqdm.write(f"\n{BOLD}{BLUE}[Threshold Search]{RESET} Dynamic threshold optimization is disabled. Keeping default threshold of 0.0.")
-        model.concept_thresholds.zero_()
-        tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}\n")
+
+    tqdm.write(f"\n{BOLD}{CYAN}[Concept Metrics]{RESET} Phase 1 final validation metrics use argmax for multi-class groups:")
+    tqdm.write(f"   ├─ Concept Mean Balanced Accuracy : {std_metrics['mean_balanced_acc']*100:.2f}%")
+    tqdm.write(f"   ├─ Concept Mean True Positive Rate: {std_metrics['tpr']*100:.2f}%")
+    tqdm.write(f"   ├─ Concept Mean True Negative Rate: {std_metrics['tnr']*100:.2f}%")
+    tqdm.write(f"   ├─ Concept Mean F1-Score          : {std_metrics['mean_f1']*100:.2f}%")
+    tqdm.write(f"   └─ Concept Mean F2-Score          : {std_metrics['mean_f_beta']*100:.2f}%")
+    tqdm.write(f"{BOLD}{CYAN}============================================================{RESET}\n")
 
 def train_phase2(model, train_loader, val_loader, target_criterion, device, args, config_data, run_name, num_concepts_supervised, resolved_config, num_classes):
     tqdm.write(f"\n{BOLD}{MAGENTA}{'-'*60}{RESET}")

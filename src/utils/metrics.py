@@ -37,50 +37,36 @@ def calculate_concept_accuracy(concept_probs: torch.Tensor, concept_targets: tor
         return 0.0
     return (correct / total).item()
 
-def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: torch.Tensor, concept_groups_info = None, threshold = 0.0, beta = 2.0) -> dict:
-    """Calculates Balanced Accuracy, True Positive Rate (TPR), and True Negative Rate (TNR)
-    across all concepts to robustly evaluate models, dynamically adapting to mutually exclusive groups.
-    
-    Args:
-        concept_logits: Raw prediction logits from the concept predictor (pre-activation).
-        concept_targets: Ground truth concept targets.
-        concept_groups_info: Optional list of (start_idx, num_feats) representing attribute groups.
-        threshold: The decision threshold for Sigmoid/Softmax logits. Can be a single float or a tensor of shape [num_concepts].
+
+def predict_concepts_from_logits(concept_logits: torch.Tensor, concept_groups_info = None) -> torch.Tensor:
+    """Convert concept logits to binary concept predictions for the main concept metrics.
+
+    Multi-class groups are evaluated as mutually exclusive argmax one-hot predictions.
+    Single binary/numerical concepts use the standard logit > 0 rule.
     """
     preds_bin = torch.zeros_like(concept_logits)
     num_concepts = concept_logits.shape[-1]
-    
-    # Resolve threshold to a tensor of shape [num_concepts] on the correct device
-    if isinstance(threshold, (int, float)):
-        thresh_tensor = torch.full((num_concepts,), float(threshold), device=concept_logits.device)
-    elif isinstance(threshold, torch.Tensor):
-        thresh_tensor = threshold.to(concept_logits.device)
-    else:
-        thresh_tensor = torch.tensor(threshold, dtype=torch.float32, device=concept_logits.device)
-        
+
     if concept_groups_info is not None:
         for start_idx, num_feats in concept_groups_info:
+            if start_idx >= num_concepts or num_feats <= 0:
+                continue
+            num_feats = min(num_feats, num_concepts - start_idx)
             group_logits = concept_logits[:, start_idx : start_idx + num_feats]
             if num_feats > 1:
-                # Group Softmax prediction: the argmax along the group dimension is active
                 group_preds = torch.zeros_like(group_logits)
-                max_logits, argmax_idx = torch.max(group_logits, dim=-1)
-                
-                # Confidence Masking: Only predict the argmax if the model is confident (max logit > threshold)
-                g_threshold = thresh_tensor[start_idx : start_idx + num_feats].mean()
-                valid_mask = max_logits > g_threshold
+                argmax_idx = torch.argmax(group_logits, dim=-1)
                 group_preds.scatter_(1, argmax_idx.unsqueeze(-1), 1.0)
-                group_preds = group_preds * valid_mask.unsqueeze(-1).float()
-                
                 preds_bin[:, start_idx : start_idx + num_feats] = group_preds
             else:
-                # Sigmoid / 1D binary fallback: threshold at logit > threshold
-                g_threshold = thresh_tensor[start_idx]
-                preds_bin[:, start_idx : start_idx + num_feats] = (group_logits > g_threshold).float()
+                preds_bin[:, start_idx] = (group_logits[:, 0] > 0.0).float()
     else:
-        # Global Sigmoid fallback: threshold all at logit > threshold
-        preds_bin = (concept_logits > thresh_tensor.unsqueeze(0)).float()
-        
+        preds_bin = (concept_logits > 0.0).float()
+
+    return preds_bin
+
+
+def _calculate_concept_metric_values(preds_bin: torch.Tensor, concept_targets: torch.Tensor, beta: float = 2.0) -> dict:
     targets_bin = (concept_targets > 0.5).float()
 
     tp = (preds_bin * targets_bin).sum(dim=0)
@@ -135,85 +121,17 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
     return metrics
 
 
-def find_optimal_concept_thresholds(
+def calculate_concept_metrics(
     concept_logits: torch.Tensor,
     concept_targets: torch.Tensor,
     concept_groups_info = None,
-    candidate_thresholds = None
-) -> torch.Tensor:
+    beta = 2.0
+) -> dict:
+    """Calculate main concept metrics.
+
+    The main metric intentionally does not apply confidence thresholds to
+    multi-class groups. Categorical concept groups use argmax one-hot
+    predictions, while binary/numerical concepts use logit > 0.
     """
-    Finds the optimal threshold for each concept using Youden's J statistic 
-    (maximizing Balanced Accuracy) on the validation set.
-    
-    Args:
-        concept_logits: Validation concept prediction logits.
-        concept_targets: Validation concept ground truth.
-        concept_groups_info: Optional list of (start_idx, num_feats) representing attribute groups.
-        candidate_thresholds: List of logit thresholds to search over. 
-                             Defaults to 41 points between -4.0 and 4.0.
-    
-    Returns:
-        optimal_thresholds: Tensor of shape [num_concepts] containing the optimal logit threshold for each concept.
-    """
-    if candidate_thresholds is None:
-        # Search in logit space: -4.0 (prob=0.018) to 4.0 (prob=0.982)
-        candidate_thresholds = torch.linspace(-4.0, 4.0, 41, device=concept_logits.device)
-        
-    num_concepts = concept_logits.shape[1]
-    optimal_thresholds = torch.zeros(num_concepts, device=concept_logits.device)
-    
-    # We do the search per concept/group
-    if concept_groups_info is not None:
-        for start_idx, num_feats in concept_groups_info:
-            best_j = -1.0
-            best_thresh = 0.0
-            
-            # For each group, we search for a shared threshold that maximizes the average group F2-score (beta=2.0)
-            for thresh in candidate_thresholds:
-                # Calculate metrics for this specific group under candidate threshold
-                # We can construct a temp threshold tensor
-                temp_thresh = torch.tensor([thresh] * num_concepts, device=concept_logits.device)
-                metrics = calculate_concept_metrics(concept_logits, concept_targets, concept_groups_info, temp_thresh, beta=2.0)
-                
-                # Get the group average F2-score
-                group_f2 = metrics["individual_f_beta"][start_idx : start_idx + num_feats].mean().item()
-                
-                if group_f2 > best_j:
-                    best_j = group_f2
-                    best_thresh = thresh.item()
-                    
-            for idx in range(start_idx, start_idx + num_feats):
-                optimal_thresholds[idx] = best_thresh
-    else:
-        # Binary fallback: independent F2-score optimization per concept (beta=2.0)
-        for c in range(num_concepts):
-            best_j = -1.0
-            best_thresh = 0.0
-            
-            c_logits = concept_logits[:, c]
-            c_targets = (concept_targets[:, c] > 0.5).float()
-            
-            # If target has no positive or no negative instances in validation set, default to 0.0 logit
-            if c_targets.sum() == 0 or (1 - c_targets).sum() == 0:
-                optimal_thresholds[c] = 0.0
-                continue
-                
-            for thresh in candidate_thresholds:
-                preds = (c_logits > thresh).float()
-                
-                tp = (preds * c_targets).sum()
-                tn = ((1 - preds) * (1 - c_targets)).sum()
-                fp = (preds * (1 - c_targets)).sum()
-                fn = ((1 - preds) * c_targets).sum()
-                
-                # F2-score: beta^2 = 4.0 -> F2 = (5 * TP) / (5 * TP + 4 * FN + FP)
-                f2_score = (5.0 * tp) / (5.0 * tp + 4.0 * fn + fp + 1e-8)
-                f2_val = f2_score.item()
-                
-                if f2_val > best_j:
-                    best_j = f2_val
-                    best_thresh = thresh.item()
-                    
-            optimal_thresholds[c] = best_thresh
-            
-    return optimal_thresholds
+    preds_bin = predict_concepts_from_logits(concept_logits, concept_groups_info)
+    return _calculate_concept_metric_values(preds_bin, concept_targets, beta=beta)

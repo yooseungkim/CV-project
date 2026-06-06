@@ -214,12 +214,11 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
     classification_logits = model.classifier_head(gt_classifier_inputs).cpu()
     classification_metrics = calculate_target_metrics(classification_logits, all_gt_targets)
     
-    # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
+    # Compute main concept metrics without confidence thresholding.
     concept_metrics = calculate_concept_metrics(
         biased_concept_logits[:, :model.num_supervised_concepts],
         all_gt_concepts, 
-        concept_groups_info=concept_groups_info,
-        threshold=model.concept_thresholds.cpu()
+        concept_groups_info=concept_groups_info
     )
     
     # Return raw concept logits to keep logit-space interventions well defined.

@@ -77,7 +77,6 @@ training:
   target_pos_weight: 1.0       # BCEWithLogitsLoss pos_weight for binary target (when num_classes == 1)
   latent_concepts: 20          # Number of unsupervised latent concepts to append to the bottleneck
   num_classes: 200             # Number of target classification classes
-  use_dynamic_threshold: true  # Optimize validation concept decision thresholds via Youden's J statistic
   save_dir: "checkpoints"      # Directory to save trained model weights
   resume_checkpoint: null      # Path to pre-trained weights .pth to resume from
   use_wandb: true              # Log runs and visualize metrics to Weights & Biases
