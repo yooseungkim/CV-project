@@ -20,6 +20,12 @@ CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
+TTI_K_VALUES = (1, 2, 3, 5, 10)
+TTI_METRICS = (
+    ("acc", "Accuracy"),
+    ("macro_f1", "Macro-F1"),
+    ("macro_f2", "Macro-F2"),
+)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Concept Bottleneck Model Evaluation & Test-Time Intervention (TTI) Benchmark")
@@ -27,6 +33,8 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=64, help="Batch size for testing")
     parser.add_argument('--device', type=str, default='cuda', choices=['cuda', 'cpu'], help="Computation device")
     parser.add_argument('--num_workers', type=int, default=8, help="Number of workers for data loader")
+    parser.add_argument('--without-tti', action='store_true', help="Skip the TTI benchmark and run only standard CBM evaluation")
+    parser.add_argument('--ignore-bias', action='store_true', help="Ignore saved concept_bias by zeroing it before evaluation")
     return parser.parse_args()
 
 
@@ -62,12 +70,12 @@ def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
         correct = (preds == targets).float().sum().item()
         return {1: correct / targets.numel()}
         
-    maxk = min(outputs.shape[-1], max(topk))
     batch_size = targets.size(0)
-    if outputs.shape[-1] <= 1:
+    if outputs.dim() == 1 or outputs.shape[-1] <= 1:
         preds = (outputs > 0.0).float()
         correct = (preds == targets.view_as(preds)).float().sum().item()
         return {1: correct / batch_size}
+    maxk = min(outputs.shape[-1], max(topk))
     _, pred = outputs.topk(maxk, 1, True, True)
     pred = pred.t()
     targets_flat = targets.view(1, -1).expand_as(pred)
@@ -80,19 +88,20 @@ def calculate_topk_accuracy(outputs, targets, topk=(1, 3, 5, 10)):
     return res
 
 
-def calculate_target_macro_f1(outputs, targets):
-    """Calculate macro-F1 for target predictions."""
+def calculate_target_macro_fbeta(outputs, targets, beta=1.0):
+    """Calculate macro F-beta for target predictions."""
     if outputs.dim() > 1 and targets.dim() > 1 and outputs.shape[-1] == targets.shape[-1]:
         preds = (outputs > 0.0).float()
         targets = (targets > 0.5).float()
         tp = (preds * targets).sum(dim=0)
         fp = (preds * (1.0 - targets)).sum(dim=0)
         fn = ((1.0 - preds) * targets).sum(dim=0)
-        denom = (2.0 * tp) + fp + fn
-        scores = torch.where(denom > 0, (2.0 * tp) / (denom + 1e-8), torch.zeros_like(tp))
+        beta_sq = beta ** 2
+        denom = (1.0 + beta_sq) * tp + beta_sq * fn + fp
+        scores = torch.where(denom > 0, ((1.0 + beta_sq) * tp) / (denom + 1e-8), torch.zeros_like(tp))
         return scores.mean().item()
 
-    if outputs.shape[-1] <= 1:
+    if outputs.dim() == 1 or outputs.shape[-1] <= 1:
         preds = (outputs.view(-1) > 0.0).long()
         targets_flat = targets.view(-1).long()
         num_classes = 2
@@ -107,23 +116,55 @@ def calculate_target_macro_f1(outputs, targets):
         return 0.0
 
     scores = []
+    beta_sq = beta ** 2
     for label in labels:
         pred_pos = preds == label
         target_pos = targets_flat == label
         tp = (pred_pos & target_pos).sum().float()
         fp = (pred_pos & ~target_pos).sum().float()
         fn = (~pred_pos & target_pos).sum().float()
-        denom = (2.0 * tp) + fp + fn
-        scores.append(torch.where(denom > 0, (2.0 * tp) / (denom + 1e-8), torch.zeros_like(tp)))
+        denom = (1.0 + beta_sq) * tp + beta_sq * fn + fp
+        scores.append(torch.where(denom > 0, ((1.0 + beta_sq) * tp) / (denom + 1e-8), torch.zeros_like(tp)))
     return torch.stack(scores).mean().item()
+
+
+def calculate_target_metrics(outputs, targets):
+    """Calculate Top-1 target accuracy plus macro F1/F2."""
+    top1_acc = calculate_topk_accuracy(outputs, targets, topk=(1,)).get(1, 0.0)
+    return {
+        "acc": top1_acc,
+        "macro_f1": calculate_target_macro_fbeta(outputs, targets, beta=1.0),
+        "macro_f2": calculate_target_macro_fbeta(outputs, targets, beta=2.0),
+    }
+
+
+@torch.no_grad()
+def calculate_classifier_metrics(model, concept_logits, targets, device):
+    class_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device))).cpu()
+    return calculate_target_metrics(class_logits, targets)
+
+
+def make_tti_budgets(max_k, requested_k_values=TTI_K_VALUES):
+    """Return baseline plus requested TTI budgets, clipped to the available intervention count."""
+    if max_k <= 0:
+        return [0]
+
+    budgets = [0]
+    for k in requested_k_values:
+        clipped_k = min(int(k), max_k)
+        if clipped_k > 0 and clipped_k not in budgets:
+            budgets.append(clipped_k)
+    if max_k not in budgets:
+        budgets.append(max_k)
+    return budgets
 
 
 
 @torch.no_grad()
-def run_evaluation(model, dataloader, concept_groups_info, device):
+def run_evaluation(model, dataloader, concept_groups_info, concept_groups, device):
     """Runs a standard evaluation pass over the dataloader."""
     model.eval()
-    
+
     all_class_logits = []
     all_concept_logits = []
     all_gt_concepts = []
@@ -150,9 +191,28 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     all_gt_targets = torch.cat(all_gt_targets, dim=0)
     
     biased_concept_logits = model.apply_concept_bias(all_concept_logits.to(device)).cpu()
-    # Compute Target Classification Accuracy
-    topk_accs = calculate_topk_accuracy(all_class_logits, all_gt_targets)
-    target_macro_f1 = calculate_target_macro_f1(all_class_logits, all_gt_targets)
+    target_metrics = calculate_target_metrics(all_class_logits, all_gt_targets)
+
+    # Compute classification metrics from GT concepts: GT concepts -> label.
+    # The classifier head is trained in concept-logit space, matching the TTI intervention path.
+    gt_concept_logits = translate_gt_to_logits(
+        all_gt_concepts,
+        concept_groups,
+        getattr(model, "use_probabilistic_cbm", False)
+    )
+    if model.num_latent_concepts > 0:
+        latent_zeros = torch.zeros(
+            gt_concept_logits.size(0),
+            model.num_latent_concepts,
+            dtype=gt_concept_logits.dtype
+        )
+        gt_classifier_inputs = torch.cat([gt_concept_logits, latent_zeros], dim=1)
+    else:
+        gt_classifier_inputs = gt_concept_logits
+
+    gt_classifier_inputs = model.apply_concept_bias(gt_classifier_inputs.to(device))
+    classification_logits = model.classifier_head(gt_classifier_inputs).cpu()
+    classification_metrics = calculate_target_metrics(classification_logits, all_gt_targets)
     
     # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
@@ -163,7 +223,16 @@ def run_evaluation(model, dataloader, concept_groups_info, device):
     )
     
     # Return raw concept logits to keep logit-space interventions well defined.
-    return topk_accs, target_macro_f1, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
+    standard_metrics = {
+        "concept": {
+            "acc": concept_metrics.get("mean_acc", 0.0),
+            "macro_f1": concept_metrics.get("mean_f1", 0.0),
+            "macro_f2": concept_metrics.get("mean_f_beta", 0.0),
+        },
+        "classification": classification_metrics,
+        "target": target_metrics,
+    }
+    return standard_metrics, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
 
 
 def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
@@ -212,19 +281,11 @@ def translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic):
     return gt_logits
 
 
-def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
     num_samples = concept_logits.shape[0]
-    num_groups = len(concept_groups)
-    
-    # Pre-allocate array to store accuracy at each step
-    group_tti_accuracies = []
-    
-    # Calculate initial predictions (K=0 interventions) using predicted logits directly
-    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
-    init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
-    group_tti_accuracies.append((0, init_topk))
+    group_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
     
     # Compute concept probs for sorting erroneous groups
     concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
@@ -250,37 +311,31 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     # Create a copy of the predicted concept logits that we will mutate
     logits_mutated = concept_logits.clone()
     
-    pbar = tqdm(range(1, num_groups + 1), desc="Simulating Group TTI")
+    last_k = 0
+    pbar = tqdm(budgets[1:], desc="Simulating Group TTI")
     for K in pbar:
         # Correct the top K most erroneous groups for each sample in logit space
         for i in range(num_samples):
-            g_to_correct = sample_group_errors[i][K - 1]
-            indices = concept_groups[g_to_correct]["flat_indices"]
-            # Overwrite with translated GT logits
-            logits_mutated[i, indices] = gt_logits[i, indices]
+            for correction_rank in range(last_k, K):
+                g_to_correct = sample_group_errors[i][correction_rank]
+                indices = concept_groups[g_to_correct]["flat_indices"]
+                logits_mutated[i, indices] = gt_logits[i, indices]
             
         # Predict class targets using the updated concept logits
-        with torch.no_grad():
-            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
-            updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
+        updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
             
-        group_tti_accuracies.append((K, updated_topk))
-        pbar.set_postfix(acc=f"{updated_topk.get(1, 0.0) * 100:.2f}%")
+        group_tti_metrics.append((K, updated_metrics))
+        pbar.set_postfix(acc=f"{updated_metrics['acc'] * 100:.2f}%")
+        last_k = K
         
-    return group_tti_accuracies
+    return group_tti_metrics
 
 
-def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
     num_samples, num_supervised = gt_concepts.shape
-    
-    concept_tti_accuracies = []
-    
-    # Init (K=0)
-    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
-    init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
-    concept_tti_accuracies.append((0, init_topk))
+    concept_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
     
     # Compute concept probs for sorting erroneous concepts
     concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
@@ -295,48 +350,40 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
     
-    # Evaluate at specific intervention percentages (0%, 10%, 20%, ..., 100% of concepts)
-    percentages = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     logits_mutated = concept_logits.clone()
     
     last_k = 0
-    for pct in percentages:
-        target_k = int((pct / 100.0) * num_supervised)
-        
+    pbar = tqdm(budgets[1:], desc="Simulating Concept TTI")
+    for K in pbar:
         # Intervene on the next slice of top erroneous concepts in logit space
         for i in range(num_samples):
-            indices_to_correct = sample_concept_errors[i][last_k:target_k]
+            indices_to_correct = sample_concept_errors[i][last_k:K]
             logits_mutated[i, indices_to_correct] = gt_logits[i, indices_to_correct]
             
-        with torch.no_grad():
-            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
-            updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
+        updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
             
-        concept_tti_accuracies.append((pct, updated_topk))
-        last_k = target_k
+        concept_tti_metrics.append((K, updated_metrics))
+        pbar.set_postfix(acc=f"{updated_metrics['acc'] * 100:.2f}%")
+        last_k = K
         
-    return concept_tti_accuracies
+    return concept_tti_metrics
 
 
-def run_tti_uncertainty_topk(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+def run_tti_uncertainty_topk(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Corrects top-K most uncertain groups, where uncertainty = 1 - max(p_group)."""
     model.eval()
     num_samples = concept_logits.shape[0]
-    num_groups = len(concept_groups)
 
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
 
-    uncertainty_tti_accuracies = []
-    init_logits = model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
-    init_topk = calculate_topk_accuracy(init_logits.cpu(), gt_targets)
-    uncertainty_tti_accuracies.append((0, init_topk))
+    uncertainty_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
 
     concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
     sample_group_order = []
     for i in range(num_samples):
         group_scores = []
-        for group in concept_groups:
+        for g_idx, group in enumerate(concept_groups):
             indices = group["flat_indices"]
             group_probs = concept_probs[i, indices]
             if len(indices) > 1:
@@ -345,25 +392,139 @@ def run_tti_uncertainty_topk(model, concept_logits, gt_concepts, gt_targets, con
                 p = group_probs[0].item()
                 confidence = max(p, 1.0 - p)
             uncertainty = 1.0 - confidence
-            group_scores.append((group["name"], uncertainty))
+            group_scores.append((g_idx, uncertainty))
         sample_group_order.append([
-            name for name, _ in sorted(group_scores, key=lambda item: item[1], reverse=True)
+            g_idx for g_idx, _ in sorted(group_scores, key=lambda item: item[1], reverse=True)
         ])
 
-    group_lookup = {group["name"]: group["flat_indices"] for group in concept_groups}
     logits_mutated = concept_logits.clone()
-    for K in range(1, num_groups + 1):
+    last_k = 0
+    pbar = tqdm(budgets[1:], desc="Simulating Uncertainty TTI")
+    for K in pbar:
         for i in range(num_samples):
-            group_name = sample_group_order[i][K - 1]
-            indices = group_lookup[group_name]
-            logits_mutated[i, indices] = gt_logits[i, indices]
+            for correction_rank in range(last_k, K):
+                g_idx = sample_group_order[i][correction_rank]
+                indices = concept_groups[g_idx]["flat_indices"]
+                logits_mutated[i, indices] = gt_logits[i, indices]
 
-        with torch.no_grad():
-            updated_logits = model.classifier_head(model.apply_concept_bias(logits_mutated.to(device)))
-            updated_topk = calculate_topk_accuracy(updated_logits.cpu(), gt_targets)
-        uncertainty_tti_accuracies.append((K, updated_topk))
+        updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
+        uncertainty_tti_metrics.append((K, updated_metrics))
+        pbar.set_postfix(acc=f"{updated_metrics['acc'] * 100:.2f}%")
+        last_k = K
 
-    return uncertainty_tti_accuracies
+    return uncertainty_tti_metrics
+
+
+def print_tti_metric_table(title, results):
+    """Print a TTI result table with Top-1 target metrics."""
+    border = "+------+-----------+-----------+-----------+"
+    print(f"\n{title}")
+    print(border)
+    print("| K    | Accuracy  | Macro-F1  | Macro-F2  |")
+    print(border)
+    for K, metrics in results:
+        print(
+            f"| {K:<4} | "
+            f"{metrics['acc']*100:>8.2f}% | "
+            f"{metrics['macro_f1']*100:>8.2f}% | "
+            f"{metrics['macro_f2']*100:>8.2f}% |"
+        )
+    print(border)
+
+
+def get_tti_metrics_at_k(results, target_k=1):
+    result_by_k = dict(results)
+    if target_k in result_by_k:
+        return target_k, result_by_k[target_k]
+    return results[-1]
+
+
+def print_tti_metric_summary(group_results, concept_results, uncertainty_results):
+    baseline = group_results[0][1]
+    group_k, group_summary = get_tti_metrics_at_k(group_results, target_k=1)
+    concept_k, concept_summary = get_tti_metrics_at_k(concept_results, target_k=1)
+    uncertainty_k, uncertainty_summary = get_tti_metrics_at_k(uncertainty_results, target_k=1)
+
+    border = "+----------+--------------+--------------+--------------+----------------+--------------+--------------+--------------+"
+    print(f"\n{BOLD}{GREEN}============================================================{RESET}")
+    print(f"  {BOLD}{GREEN}[Success] TTI Benchmark Evaluation Complete!{RESET}")
+    print(f"{BOLD}{GREEN}============================================================{RESET}")
+    print(border)
+    print(
+        f"| Metric   | Standard K=0 | Group K={group_k:<4} | "
+        f"Concept K={concept_k:<2} | Uncertainty K={uncertainty_k:<2} | "
+        "| Group Delta | Concept Delta | Uncert Delta |"
+    )
+    print(border)
+    for key, label in TTI_METRICS:
+        standard = baseline[key] * 100
+        group_value = group_summary[key] * 100
+        concept_value = concept_summary[key] * 100
+        uncertainty_value = uncertainty_summary[key] * 100
+        print(
+            f"| {label:<8} | "
+            f"{standard:>11.2f}% | "
+            f"{group_value:>11.2f}% | "
+            f"{concept_value:>11.2f}% | "
+            f"{uncertainty_value:>13.2f}% | "
+            f"{group_value - standard:>11.2f}% | "
+            f"{concept_value - standard:>12.2f}% | "
+            f"{uncertainty_value - standard:>11.2f}% |"
+        )
+    print(border)
+
+
+def run_tti_benchmark(model, concept_logits, gt_concepts, gt_targets, concept_groups, device):
+    """Run all TTI variants and print Top-1 target metric tables."""
+    group_budgets = make_tti_budgets(len(concept_groups))
+    concept_budgets = group_budgets
+
+    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{BLUE}[TTI - Group Level]{RESET} Top-1 target metrics")
+    tqdm.write(f"  Correcting groups by concept prediction error; K={group_budgets[1:]}")
+    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
+    group_tti_results = run_tti_group_level(
+        model,
+        concept_logits,
+        gt_concepts,
+        gt_targets,
+        concept_groups,
+        device,
+        group_budgets
+    )
+    print_tti_metric_table("[TTI - Group Level]", group_tti_results)
+
+    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
+    tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Top-1 target metrics")
+    tqdm.write(f"  Correcting individual concepts by prediction error; K={concept_budgets[1:]}")
+    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
+    concept_tti_results = run_tti_concept_level(
+        model,
+        concept_logits,
+        gt_concepts,
+        gt_targets,
+        concept_groups,
+        device,
+        concept_budgets
+    )
+    print_tti_metric_table("[TTI - Concept Level]", concept_tti_results)
+
+    print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
+    print(f"  {BOLD}{YELLOW}[Uncertainty Top-K TTI]{RESET} Top-1 target metrics")
+    print(f"  Correcting groups by uncertainty = 1 - max(p_group); K={group_budgets[1:]}")
+    print(f"{BOLD}{YELLOW}============================================================{RESET}")
+    uncertainty_tti_results = run_tti_uncertainty_topk(
+        model,
+        concept_logits,
+        gt_concepts,
+        gt_targets,
+        concept_groups,
+        device,
+        group_budgets
+    )
+    print_tti_metric_table("[TTI - Uncertainty Group Level]", uncertainty_tti_results)
+
+    print_tti_metric_summary(group_tti_results, concept_tti_results, uncertainty_tti_results)
 
 
 def main():
@@ -596,164 +757,64 @@ def main():
     # Load state dict
     model.load_state_dict(state_dict, strict=True)
     model = model.to(device)
+    if args.ignore_bias and hasattr(model, "concept_bias"):
+        nonzero_bias = int((model.concept_bias.detach().abs() > 0).sum().item())
+        model.concept_bias.zero_()
+        tqdm.write(
+            f"  {BOLD}{YELLOW}[Concept Bias]{RESET} "
+            f"Ignoring checkpoint concept_bias for evaluation (zeroed {nonzero_bias} non-zero entries)."
+        )
     
     tqdm.write(f"\n{BOLD}{MAGENTA}============================================================{RESET}")
     tqdm.write(f"  {BOLD}{MAGENTA}[Evaluation]{RESET} Running Test Set Evaluation...")
     tqdm.write(f"{BOLD}{MAGENTA}============================================================{RESET}")
     
     # 5. Run standard evaluation
-    topk_accs, target_macro_f1, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
+    standard_metrics, concept_metrics, concept_logits, gt_concepts, gt_targets = run_evaluation(
         model, 
         test_loader, 
         concept_groups_info if not use_group_broadcasting else None, 
+        concept_groups,
         device
     )
     
     tqdm.write(f"\n{BOLD}{GREEN}[Performance] Standard CBM Test Performance:{RESET}")
-    tqdm.write(f"   Target Accuracy (Top-1)  : {BOLD}{GREEN}{topk_accs.get(1, 0.0)*100:.2f}%{RESET}")
-    if 3 in topk_accs: tqdm.write(f"   Target Accuracy (Top-3)  : {topk_accs[3]*100:.2f}%")
-    if 5 in topk_accs: tqdm.write(f"   Target Accuracy (Top-5)  : {topk_accs[5]*100:.2f}%")
-    if 10 in topk_accs: tqdm.write(f"   Target Accuracy (Top-10) : {topk_accs[10]*100:.2f}%")
-    tqdm.write(f"   Target Macro F1-Score    : {target_macro_f1*100:.2f}%")
-    tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
+    perf_header = "   | Task                         | Acc       | Macro-F1  | Macro-F2  |"
+    perf_border = "   +------------------------------+-----------+-----------+-----------+"
+    tqdm.write(perf_border)
+    tqdm.write(perf_header)
+    tqdm.write(perf_border)
+    for task_key, task_name in (
+        ("concept", "Concept"),
+        ("classification", "Classification (GT Concept)"),
+        ("target", "Target"),
+    ):
+        metrics = standard_metrics[task_key]
+        tqdm.write(
+            f"   | {task_name:<28} | "
+            f"{metrics['acc']*100:>8.2f}% | "
+            f"{metrics['macro_f1']*100:>8.2f}% | "
+            f"{metrics['macro_f2']*100:>8.2f}% |"
+        )
+    tqdm.write(perf_border)
+    tqdm.write(f"\n{BOLD}{GREEN}[Concept Diagnostics]{RESET}")
     tqdm.write(f"   Concept Mean True Positive Rate: {concept_metrics['tpr']*100:.2f}%")
     tqdm.write(f"   Concept Mean True Negative Rate: {concept_metrics['tnr']*100:.2f}%")
-    tqdm.write(f"   Concept Mean F1-Score          : {concept_metrics.get('mean_f1', 0.0)*100:.2f}%")
-    tqdm.write(f"   Concept Mean F2-Score          : {concept_metrics.get('mean_f_beta', 0.0)*100:.2f}%")
+    tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     
-    # 6. Run Group-level Test-Time Intervention (TTI)
-    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
-    tqdm.write(f"  {BOLD}{BLUE}[TTI - Group Level]{RESET} Running Group-level Test-Time Intervention (TTI)...")
-    tqdm.write(f"  (Correcting anatomical attribute groups in order of prediction error)")
-    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
-    
-    group_tti_results = run_tti_group_level(
-        model, 
-        concept_logits, 
-        gt_concepts, 
-        gt_targets, 
-        concept_groups,
-        device
-    )
-    
-    # Print beautiful ASCII table for group-level TTI with Top-K metrics
-    available_ks = sorted(list(group_tti_results[0][1].keys()))
-    header = "| Number of Groups Corrected (TTI)   "
-    for k in available_ks:
-        header += f"| Top-{k:<4} "
-    header += "|"
-    border = "+" + "-"*36
-    for k in available_ks:
-        border += "+" + "-"*10
-    border += "+"
-    
-    print("\n" + border)
-    print(header)
-    print(border)
-    for K, accs_dict in group_tti_results:
-        row = f"| {K:<34} "
-        for k in available_ks:
-            val = accs_dict.get(k, 0.0) * 100
-            row += f"| {val:>8.2f}% "
-        row += "|"
-        print(row)
-    print(border)
-    
-    # 7. Run Individual Concept-level Test-Time Intervention (TTI)
-    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
-    tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Running Individual Concept-level TTI...")
-    tqdm.write(f"  (Correcting individual concepts by percentage)")
-    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
-    
-    concept_tti_results = run_tti_concept_level(
-        model, 
-        concept_logits, 
-        gt_concepts, 
-        gt_targets, 
-        concept_groups,
-        device
-    )
-    
-    # Print beautiful ASCII table for concept-level TTI with Top-K metrics
-    available_ks_concept = sorted(list(concept_tti_results[0][1].keys()))
-    header_concept = "| Percentage of Concepts Corrected   "
-    for k in available_ks_concept:
-        header_concept += f"| Top-{k:<4} "
-    header_concept += "|"
-    border_concept = "+" + "-"*36
-    for k in available_ks_concept:
-        border_concept += "+" + "-"*10
-    border_concept += "+"
-    
-    print("\n" + border_concept)
-    print(header_concept)
-    print(border_concept)
-    for pct, accs_dict in concept_tti_results:
-        row = f"| {f'{pct}%':<34} "
-        for k in available_ks_concept:
-            val = accs_dict.get(k, 0.0) * 100
-            row += f"| {val:>8.2f}% "
-        row += "|"
-        print(row)
-    print(border_concept)
-    
-    # 8. Run uncertainty-ranked feasible TTI by fixed group budget
-    print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
-    print(f"  {BOLD}{YELLOW}[Uncertainty Top-K TTI]{RESET} Correcting top-K groups by uncertainty = 1 - max(p_group)...")
-    print(f"{BOLD}{YELLOW}============================================================{RESET}")
+    if args.without_tti:
+        tqdm.write(f"\n{BOLD}{YELLOW}[TTI]{RESET} Skipped because --without-tti was set.")
+    else:
+        run_tti_benchmark(
+            model,
+            concept_logits,
+            gt_concepts,
+            gt_targets,
+            concept_groups,
+            device
+        )
 
-    uncertainty_tti_results = run_tti_uncertainty_topk(
-        model, 
-        concept_logits, 
-        gt_concepts, 
-        gt_targets, 
-        concept_groups,
-        device
-    )
-
-    available_ks_uncertainty = sorted(list(uncertainty_tti_results[0][1].keys()))
-    header_uncertainty = "| Number of Uncertain Groups Corrected "
-    for k in available_ks_uncertainty:
-        header_uncertainty += f"| Top-{k:<4} "
-    header_uncertainty += "|"
-    border_uncertainty = "+" + "-"*38
-    for k in available_ks_uncertainty:
-        border_uncertainty += "+" + "-"*10
-    border_uncertainty += "+"
-
-    print("\n" + border_uncertainty)
-    print(header_uncertainty)
-    print(border_uncertainty)
-    for K, accs_dict in uncertainty_tti_results:
-        row = f"| {K:<36} "
-        for k in available_ks_uncertainty:
-            val = accs_dict.get(k, 0.0) * 100
-            row += f"| {val:>8.2f}% "
-        row += "|"
-        print(row)
-    print(border_uncertainty)
-
-    summary_uncertainty_k = min(3, num_groups)
-    uncertainty_summary = dict(uncertainty_tti_results)[summary_uncertainty_k]
-    
-    # Summary of accomplishments with Top-K metrics
-    print(f"\n{BOLD}{GREEN}============================================================{RESET}")
-    print(f"  {BOLD}{GREEN}[Success] TTI Benchmark Evaluation Complete!{RESET}")
-    for k in available_ks:
-        val_0 = group_tti_results[0][1][k] * 100
-        val_all = group_tti_results[-1][1][k] * 100
-        val_unconf = uncertainty_summary.get(k, 0.0) * 100
-        delta = val_all - val_0
-        delta_unconf = val_unconf - val_0
-        print(f"  [TTI] Standard (K=0) Target Top-{k} Accuracy: {val_0:.2f}%")
-        print(f"  [TTI] Uncertainty Top-{summary_uncertainty_k} Groups Top-{k} Accuracy: {val_unconf:.2f}% ({BOLD}{YELLOW}{delta_unconf:+.2f}%{RESET})")
-        print(f"  [TTI] Perfect Concept (K=All) Target Top-{k} Accuracy: {val_all:.2f}%")
-        print(f"  [TTI] Top-{k} Intervention headroom (TTI Delta): {BOLD}{GREEN}{delta:+.2f}%{RESET}")
-        print(f"  ----------------------------------------------------------")
-    print(f"  [TTI] Uncertainty Groups Corrected in Summary: {summary_uncertainty_k} / {num_groups}")
-    print(f"{BOLD}{GREEN}============================================================{RESET}\n")
-    
-    # 10. Export Active Pairwise NAM Interactions
+    # 6. Export Active Pairwise NAM Interactions
     if getattr(model, "use_pairwise_nam", False):
         tqdm.write(f"\n{BOLD}{CYAN}[Interaction Logging]{RESET} Analyzing pairwise concept interactions...")
         gates = model.classifier_head.pairwise_gates.detach().cpu().numpy()

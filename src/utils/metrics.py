@@ -94,6 +94,8 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
 
     tpr = torch.where(has_pos, tp / (tp + fn + 1e-8), torch.ones_like(tp))
     tnr = torch.where(has_neg, tn / (tn + fp + 1e-8), torch.ones_like(tn))
+    totals = tp + tn + fp + fn
+    accs = torch.where(totals > 0, (tp + tn) / (totals + 1e-8), torch.zeros_like(tp))
 
     balanced_accs = torch.where(
         has_pos & has_neg,
@@ -117,6 +119,8 @@ def calculate_concept_metrics(concept_logits: torch.Tensor, concept_targets: tor
     )
     
     metrics = {
+        "mean_acc": accs.mean().item(),
+        "individual_acc": accs,
         "mean_balanced_acc": balanced_accs.mean().item(),
         "individual_balanced_acc": balanced_accs,
         "tpr": tpr.mean().item(),

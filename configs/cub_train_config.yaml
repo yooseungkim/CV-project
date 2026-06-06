@@ -40,7 +40,7 @@ calibration:
 learn_concept_bias:
   scope: supervised_concepts
   objective:
-    metric: target_macro_f1    # Choices: ["concept_macro_f1", "concept_macro_f2", "target_macro_f1"]
+    metric: target_macro_f1    # Choices: ["concept_macro_f1", "concept_macro_f2", "target_macro_f1", "target_macro_f2"]
   search_method: coordinate_grid # Choices: ["coordinate_grid"]
   max_abs_bias: 4.0            # Absolute logit-bias bound
 

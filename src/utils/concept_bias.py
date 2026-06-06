@@ -84,11 +84,11 @@ def _macro_fbeta(preds: torch.Tensor, targets: torch.Tensor, beta: float):
     return scores.mean().item()
 
 
-def _target_macro_f1_from_logits(class_logits: torch.Tensor, targets: torch.Tensor):
+def _target_macro_fbeta_from_logits(class_logits: torch.Tensor, targets: torch.Tensor, beta: float):
     if class_logits.dim() > 1 and targets.dim() > 1 and class_logits.shape[-1] == targets.shape[-1]:
         preds = (class_logits > 0.0).float()
         targets = (targets > 0.5).float()
-        return _macro_fbeta(preds, targets, beta=1.0)
+        return _macro_fbeta(preds, targets, beta=beta)
 
     if class_logits.shape[-1] <= 1:
         preds = (class_logits.view(-1) > 0.0).long()
@@ -105,14 +105,15 @@ def _target_macro_f1_from_logits(class_logits: torch.Tensor, targets: torch.Tens
         return 0.0
 
     scores = []
+    beta_sq = beta ** 2
     for label in labels:
         pred_pos = preds == label
         target_pos = targets_flat == label
         tp = (pred_pos & target_pos).sum().float()
         fp = (pred_pos & ~target_pos).sum().float()
         fn = (~pred_pos & target_pos).sum().float()
-        denom = (2.0 * tp) + fp + fn
-        scores.append(torch.where(denom > 0, (2.0 * tp) / (denom + 1e-8), torch.zeros_like(tp)))
+        denom = (1.0 + beta_sq) * tp + beta_sq * fn + fp
+        scores.append(torch.where(denom > 0, ((1.0 + beta_sq) * tp) / (denom + 1e-8), torch.zeros_like(tp)))
     return torch.stack(scores).mean().item()
 
 
@@ -124,11 +125,12 @@ def _score_concept_bias(logits, targets, bias, groups, metric_name):
 
 
 @torch.no_grad()
-def _score_target_bias(model, concept_logits, targets, bias, device):
+def _score_target_bias(model, concept_logits, targets, bias, device, metric_name):
     adjusted_logits = concept_logits.clone()
     adjusted_logits[:, :bias.numel()] = adjusted_logits[:, :bias.numel()] + bias.unsqueeze(0)
     class_logits = model.classifier_head(adjusted_logits.to(device)).cpu()
-    return _target_macro_f1_from_logits(class_logits, targets)
+    beta = 2.0 if metric_name == "target_macro_f2" else 1.0
+    return _target_macro_fbeta_from_logits(class_logits, targets, beta=beta)
 
 
 def _align_thresholds_with_bias_objective_(model, groups):
@@ -166,10 +168,10 @@ def collect_calibration_outputs(model, dataloader, num_concepts_supervised, devi
 def learn_concept_bias(model, calibration_loader, concept_groups_info, device, config):
     objective = config.get("objective", {})
     metric_name = objective.get("metric", "concept_macro_f1")
-    if metric_name not in {"concept_macro_f1", "concept_macro_f2", "target_macro_f1"}:
+    if metric_name not in {"concept_macro_f1", "concept_macro_f2", "target_macro_f1", "target_macro_f2"}:
         raise ValueError(
             "learn_concept_bias.objective.metric must be one of: "
-            "concept_macro_f1, concept_macro_f2, target_macro_f1"
+            "concept_macro_f1, concept_macro_f2, target_macro_f1, target_macro_f2"
         )
 
     search_method = config.get("search_method", "coordinate_grid")
@@ -188,8 +190,8 @@ def learn_concept_bias(model, calibration_loader, concept_groups_info, device, c
     supervised_logits = logits[:, :num_concepts]
     bias = torch.zeros(num_concepts)
     candidate_values = torch.linspace(-max_abs_bias, max_abs_bias, steps=17)
-    if metric_name == "target_macro_f1":
-        score_fn = lambda candidate: _score_target_bias(model, logits, target_labels, candidate, device)
+    if metric_name in {"target_macro_f1", "target_macro_f2"}:
+        score_fn = lambda candidate: _score_target_bias(model, logits, target_labels, candidate, device, metric_name)
     else:
         score_fn = lambda candidate: _score_concept_bias(supervised_logits, concept_targets, candidate, groups, metric_name)
     best_score = score_fn(bias)
