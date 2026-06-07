@@ -252,7 +252,7 @@ def make_tti_budgets(max_k, requested_k_values=TTI_K_VALUES):
 
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def run_evaluation(model, dataloader, concept_groups_info, concept_groups, device, desc="Evaluating CBM"):
     """Runs a standard evaluation pass over the dataloader."""
     model.eval()
@@ -264,9 +264,7 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
     
     pbar = tqdm(dataloader, desc=desc)
     for images, concepts, targets in pbar:
-        images = images.to(device)
-        concepts = concepts.to(device)
-        targets = targets.to(device)
+        images = images.to(device, non_blocking=True)
         
         # Forward pass
         class_logits, concept_logits, _ = model(images)
@@ -326,29 +324,32 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
     return standard_metrics, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets
 
 
+@torch.inference_mode()
 def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
     model.eval()
+    concept_logits = concept_logits.to(device, non_blocking=True)
+    gt_concepts = gt_concepts.to(device, non_blocking=True)
+    gt_targets = gt_targets.to(device, non_blocking=True)
     num_samples = concept_logits.shape[0]
     group_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
+    group_index_tensors = [
+        torch.tensor(group["flat_indices"], dtype=torch.long, device=device)
+        for group in concept_groups
+    ]
     
     # Compute concept probs for sorting erroneous groups
-    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
     
     # 1. Compute per-sample prediction error for each group
-    sample_group_errors = []
-    for i in range(num_samples):
-        group_errors = []
-        for g_idx, group in enumerate(concept_groups):
-            indices = group["flat_indices"]
-            pred_slice = concept_probs[i, indices]
-            gt_slice = gt_concepts[i, indices]
-            mae = torch.mean(torch.abs(pred_slice - gt_slice)).item()
-            group_errors.append((g_idx, mae))
-        
-        # Sort groups for this specific sample in descending order of MAE error
-        sorted_groups = [g_idx for g_idx, _ in sorted(group_errors, key=lambda x: x[1], reverse=True)]
-        sample_group_errors.append(sorted_groups)
+    group_error_scores = torch.empty(num_samples, len(concept_groups), dtype=concept_probs.dtype, device=device)
+    for g_idx, indices in enumerate(group_index_tensors):
+        pred_slice = concept_probs.index_select(1, indices)
+        gt_slice = gt_concepts.index_select(1, indices)
+        group_error_scores[:, g_idx] = torch.mean(torch.abs(pred_slice - gt_slice), dim=1)
+
+    # Sort groups for each sample in descending MAE error.
+    sample_group_order = torch.argsort(group_error_scores, dim=1, descending=True)
         
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
@@ -360,11 +361,15 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     pbar = tqdm(budgets[1:], desc="Simulating Group TTI")
     for K in pbar:
         # Correct the top K most erroneous groups for each sample in logit space
-        for i in range(num_samples):
-            for correction_rank in range(last_k, K):
-                g_to_correct = sample_group_errors[i][correction_rank]
-                indices = concept_groups[g_to_correct]["flat_indices"]
-                logits_mutated[i, indices] = gt_logits[i, indices]
+        groups_to_correct = sample_group_order[:, last_k:K]
+        for g_idx, indices in enumerate(group_index_tensors):
+            rows = (groups_to_correct == g_idx).any(dim=1).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                continue
+            logits_mutated[rows.unsqueeze(1), indices.unsqueeze(0)] = gt_logits[
+                rows.unsqueeze(1),
+                indices.unsqueeze(0),
+            ]
             
         # Predict class targets using the updated concept logits
         updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
@@ -376,21 +381,22 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     return group_tti_metrics
 
 
+@torch.inference_mode()
 def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
     model.eval()
+    concept_logits = concept_logits.to(device, non_blocking=True)
+    gt_concepts = gt_concepts.to(device, non_blocking=True)
+    gt_targets = gt_targets.to(device, non_blocking=True)
     num_samples, num_supervised = gt_concepts.shape
     concept_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
     
     # Compute concept probs for sorting erroneous concepts
-    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
     
     # Calculate prediction error for each individual concept per sample
-    sample_concept_errors = []
-    for i in range(num_samples):
-        errors = torch.abs(concept_probs[i, :num_supervised] - gt_concepts[i])
-        sorted_indices = torch.argsort(errors, descending=True).tolist()
-        sample_concept_errors.append(sorted_indices)
+    concept_errors = torch.abs(concept_probs[:, :num_supervised] - gt_concepts)
+    sample_concept_order = torch.argsort(concept_errors, dim=1, descending=True)
         
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
@@ -401,9 +407,10 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     pbar = tqdm(budgets[1:], desc="Simulating Concept TTI")
     for K in pbar:
         # Intervene on the next slice of top erroneous concepts in logit space
-        for i in range(num_samples):
-            indices_to_correct = sample_concept_errors[i][last_k:K]
-            logits_mutated[i, indices_to_correct] = gt_logits[i, indices_to_correct]
+        indices_to_correct = sample_concept_order[:, last_k:K]
+        if indices_to_correct.numel() > 0:
+            rows = torch.arange(num_samples, device=device).unsqueeze(1).expand_as(indices_to_correct)
+            logits_mutated[rows, indices_to_correct] = gt_logits[rows, indices_to_correct]
             
         updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
             
@@ -414,43 +421,49 @@ def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concep
     return concept_tti_metrics
 
 
+@torch.inference_mode()
 def run_tti_uncertainty_topk(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
     """Corrects top-K most uncertain groups, where uncertainty = 1 - max(p_group)."""
     model.eval()
+    concept_logits = concept_logits.to(device, non_blocking=True)
+    gt_concepts = gt_concepts.to(device, non_blocking=True)
+    gt_targets = gt_targets.to(device, non_blocking=True)
     num_samples = concept_logits.shape[0]
+    group_index_tensors = [
+        torch.tensor(group["flat_indices"], dtype=torch.long, device=device)
+        for group in concept_groups
+    ]
 
     # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
 
     uncertainty_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
 
-    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
-    sample_group_order = []
-    for i in range(num_samples):
-        group_scores = []
-        for g_idx, group in enumerate(concept_groups):
-            indices = group["flat_indices"]
-            group_probs = concept_probs[i, indices]
-            if len(indices) > 1:
-                confidence = torch.max(group_probs).item()
-            else:
-                p = group_probs[0].item()
-                confidence = max(p, 1.0 - p)
-            uncertainty = 1.0 - confidence
-            group_scores.append((g_idx, uncertainty))
-        sample_group_order.append([
-            g_idx for g_idx, _ in sorted(group_scores, key=lambda item: item[1], reverse=True)
-        ])
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
+    uncertainty_scores = torch.empty(num_samples, len(concept_groups), dtype=concept_probs.dtype, device=device)
+    for g_idx, indices in enumerate(group_index_tensors):
+        group_probs = concept_probs.index_select(1, indices)
+        if indices.numel() > 1:
+            confidence = torch.max(group_probs, dim=1).values
+        else:
+            p = group_probs[:, 0]
+            confidence = torch.maximum(p, 1.0 - p)
+        uncertainty_scores[:, g_idx] = 1.0 - confidence
+    sample_group_order = torch.argsort(uncertainty_scores, dim=1, descending=True)
 
     logits_mutated = concept_logits.clone()
     last_k = 0
     pbar = tqdm(budgets[1:], desc="Simulating Uncertainty TTI")
     for K in pbar:
-        for i in range(num_samples):
-            for correction_rank in range(last_k, K):
-                g_idx = sample_group_order[i][correction_rank]
-                indices = concept_groups[g_idx]["flat_indices"]
-                logits_mutated[i, indices] = gt_logits[i, indices]
+        groups_to_correct = sample_group_order[:, last_k:K]
+        for g_idx, indices in enumerate(group_index_tensors):
+            rows = (groups_to_correct == g_idx).any(dim=1).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                continue
+            logits_mutated[rows.unsqueeze(1), indices.unsqueeze(0)] = gt_logits[
+                rows.unsqueeze(1),
+                indices.unsqueeze(0),
+            ]
 
         updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
         uncertainty_tti_metrics.append((K, updated_metrics))
@@ -581,6 +594,9 @@ def run_tti_benchmark(
     coop_requested_k_values = tuple(sorted({*TTI_K_VALUES, coop_summary_k}))
     coop_budgets = make_tti_budgets(len(concept_groups), coop_requested_k_values)
     concept_budgets = group_budgets
+    concept_logits_tti = concept_logits.to(device, non_blocking=True)
+    gt_concepts_tti = gt_concepts.to(device, non_blocking=True)
+    gt_targets_tti = gt_targets.to(device, non_blocking=True)
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
     tqdm.write(f"  {BOLD}{BLUE}[TTI - Group Level]{RESET} Top-1 target metrics")
@@ -588,9 +604,9 @@ def run_tti_benchmark(
     tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
     group_tti_results = run_tti_group_level(
         model,
-        concept_logits,
-        gt_concepts,
-        gt_targets,
+        concept_logits_tti,
+        gt_concepts_tti,
+        gt_targets_tti,
         concept_groups,
         device,
         group_budgets
@@ -640,9 +656,9 @@ def run_tti_benchmark(
             tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
             variant_results, coop_query_stats = run_tti_coop_group_level(
                 model,
-                concept_logits,
-                gt_concepts,
-                gt_targets,
+                concept_logits_tti,
+                gt_concepts_tti,
+                gt_targets_tti,
                 concept_groups,
                 device,
                 coop_budgets,
@@ -662,7 +678,7 @@ def run_tti_benchmark(
             top_first = torch.topk(first_counts, k=min(5, len(concept_groups)))
             print(f"\n  [{variant_label}] Most frequently selected first-query groups:")
             for count, group_idx in zip(top_first.values.tolist(), top_first.indices.tolist()):
-                print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets)} samples")
+                print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets_tti)} samples")
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
     tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Top-1 target metrics")
@@ -670,9 +686,9 @@ def run_tti_benchmark(
     tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
     concept_tti_results = run_tti_concept_level(
         model,
-        concept_logits,
-        gt_concepts,
-        gt_targets,
+        concept_logits_tti,
+        gt_concepts_tti,
+        gt_targets_tti,
         concept_groups,
         device,
         concept_budgets
@@ -685,9 +701,9 @@ def run_tti_benchmark(
     print(f"{BOLD}{YELLOW}============================================================{RESET}")
     uncertainty_tti_results = run_tti_uncertainty_topk(
         model,
-        concept_logits,
-        gt_concepts,
-        gt_targets,
+        concept_logits_tti,
+        gt_concepts_tti,
+        gt_targets_tti,
         concept_groups,
         device,
         group_budgets

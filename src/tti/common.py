@@ -48,7 +48,9 @@ def classifier_logits_from_concepts(
     device: torch.device,
 ) -> torch.Tensor:
     """Runs the C -> Y head with the calibrated concept logits used by model.forward."""
-    return model.classifier_head(model.apply_concept_bias(concept_logits.to(device)))
+    if concept_logits.device != device:
+        concept_logits = concept_logits.to(device, non_blocking=True)
+    return model.classifier_head(model.apply_concept_bias(concept_logits))
 
 
 def calculate_target_macro_fbeta(outputs: torch.Tensor, targets: torch.Tensor, beta: float = 1.0) -> float:
@@ -108,7 +110,9 @@ def calculate_classifier_metrics(
     targets: torch.Tensor,
     device: torch.device,
 ) -> MetricDict:
-    class_logits = classifier_logits_from_concepts(model, concept_logits, device).cpu()
+    class_logits = classifier_logits_from_concepts(model, concept_logits, device)
+    if targets.device != class_logits.device:
+        targets = targets.to(class_logits.device, non_blocking=True)
     return calculate_target_metrics(class_logits, targets)
 
 

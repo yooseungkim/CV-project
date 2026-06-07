@@ -142,7 +142,7 @@ def _compute_coop_scores(
     return scores.masked_fill(~valid_mask, float("-inf"))
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def run_tti_coop_group_level(
     model: torch.nn.Module,
     concept_logits: torch.Tensor,
@@ -164,6 +164,9 @@ def run_tti_coop_group_level(
     """Runs CooP group-level TTI and returns metrics at the requested budgets."""
     model.eval()
     score_mode = _validate_score_mode(score_mode)
+    concept_logits = concept_logits.to(device, non_blocking=True)
+    gt_concepts = gt_concepts.to(device, non_blocking=True)
+    gt_targets = gt_targets.to(device, non_blocking=True)
     num_samples = concept_logits.shape[0]
     num_groups = len(concept_groups)
     max_budget = max(budgets)
@@ -171,8 +174,9 @@ def run_tti_coop_group_level(
     use_probabilistic = getattr(model, "use_probabilistic_cbm", False)
 
     if costs is None:
-        costs = torch.ones(num_groups, dtype=torch.float32)
-    costs = costs.float().cpu()
+        costs = torch.ones(num_groups, dtype=torch.float32, device=device)
+    else:
+        costs = costs.to(device=device, dtype=torch.float32, non_blocking=True)
     if costs.numel() != num_groups:
         raise ValueError(f"Expected {num_groups} CooP costs, got {costs.numel()}.")
 
@@ -180,15 +184,35 @@ def run_tti_coop_group_level(
     normalized_costs = (costs - costs.min()) / cost_range if cost_range > 1e-8 else torch.zeros_like(costs)
 
     coop_tti_metrics = [(0, metric_fn(model, concept_logits, gt_targets, device))]
-    query_counts = torch.zeros(num_groups, dtype=torch.long)
-    first_query_counts = torch.zeros(num_groups, dtype=torch.long)
+    query_counts = torch.zeros(num_groups, dtype=torch.long, device=device)
+    first_query_counts = torch.zeros(num_groups, dtype=torch.long, device=device)
 
     logits_mutated = concept_logits.clone()
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, use_probabilistic)
-    original_concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits.to(device))).cpu()
+    original_concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
 
-    revealed_mask = torch.zeros(num_samples, num_groups, dtype=torch.bool)
-    sample_indices = torch.arange(num_samples)
+    revealed_mask = torch.zeros(num_samples, num_groups, dtype=torch.bool, device=device)
+    sample_indices = torch.arange(num_samples, device=device)
+    group_index_tensors = [
+        torch.tensor(group["flat_indices"], dtype=torch.long, device=device)
+        for group in concept_groups
+    ]
+    group_candidate_logits = []
+    group_candidate_weights = []
+    cpu_scores_base = torch.empty(num_samples, num_groups, dtype=original_concept_probs.dtype, device=device)
+
+    for group_idx, idx_tensor in enumerate(group_index_tensors):
+        group_probs = original_concept_probs.index_select(1, idx_tensor)
+        candidate_weights = _candidate_weights_from_probs(group_probs)
+        group_candidate_weights.append(candidate_weights)
+        cpu_scores_base[:, group_idx] = _normalized_entropy(candidate_weights)
+        group_candidate_logits.append(
+            _build_group_candidate_logits(
+                idx_tensor.numel(),
+                use_probabilistic=use_probabilistic,
+                device=device,
+            )
+        )
 
     step_iter = range(1, max_budget + 1)
     if show_progress:
@@ -196,31 +220,60 @@ def run_tti_coop_group_level(
 
     for step in step_iter:
         current_logits = classifier_logits_from_concepts(model, logits_mutated, device)
-        current_probs = target_probabilities_from_logits(current_logits).cpu()
+        current_probs = target_probabilities_from_logits(current_logits)
         current_classes = torch.argmax(current_probs, dim=1)
         base_scores = current_probs.gather(1, current_classes.unsqueeze(1)).squeeze(1)
 
         valid_mask = ~revealed_mask
-        cpu_scores = torch.zeros(num_samples, num_groups, dtype=torch.float32)
-        cis_scores = torch.zeros(num_samples, num_groups, dtype=torch.float32)
+        cis_scores = torch.zeros(num_samples, num_groups, dtype=torch.float32, device=device)
+        pending_inputs = []
+        pending_meta = []
+        pending_rows = 0
 
-        for group_idx, group in enumerate(concept_groups):
+        def flush_pending_candidates():
+            nonlocal pending_inputs, pending_meta, pending_rows
+            if not pending_inputs:
+                return
+
+            candidate_inputs_batch = torch.cat(pending_inputs, dim=0)
+            candidate_class_logits = classifier_logits_from_concepts(model, candidate_inputs_batch, device)
+            candidate_class_probs = target_probabilities_from_logits(candidate_class_logits)
+
+            offset = 0
+            for group_idx, chunk_indices, num_candidates in pending_meta:
+                num_chunk_rows = chunk_indices.numel()
+                num_candidate_rows = num_chunk_rows * num_candidates
+                candidate_probs = candidate_class_probs[offset : offset + num_candidate_rows]
+                offset += num_candidate_rows
+
+                repeated_current_classes = current_classes[chunk_indices].repeat_interleave(num_candidates)
+                candidate_scores = candidate_probs.gather(
+                    1,
+                    repeated_current_classes.unsqueeze(1),
+                ).view(num_chunk_rows, num_candidates)
+
+                base_scores_for_group = base_scores[chunk_indices].unsqueeze(1)
+                if influence_mode == "confidence_drop":
+                    influence = torch.clamp(base_scores_for_group - candidate_scores, min=0.0)
+                elif influence_mode == "paper_delta":
+                    influence = candidate_scores - base_scores_for_group
+                else:
+                    influence = torch.abs(candidate_scores - base_scores_for_group)
+
+                weights_for_group = group_candidate_weights[group_idx].index_select(0, chunk_indices)
+                cis_scores[chunk_indices, group_idx] = (weights_for_group * influence).sum(dim=1)
+
+            pending_inputs = []
+            pending_meta = []
+            pending_rows = 0
+
+        for group_idx, idx_tensor in enumerate(group_index_tensors):
             candidate_rows = valid_mask[:, group_idx]
             if not candidate_rows.any():
                 continue
 
-            indices = list(group["flat_indices"])
-            idx_tensor = torch.tensor(indices, dtype=torch.long)
-            group_probs = original_concept_probs[:, indices]
-            candidate_weights = _candidate_weights_from_probs(group_probs)
-            cpu_scores[:, group_idx] = _normalized_entropy(candidate_weights)
-
             valid_indices = candidate_rows.nonzero(as_tuple=True)[0]
-            candidate_logits = _build_group_candidate_logits(
-                len(indices),
-                use_probabilistic=use_probabilistic,
-                device=logits_mutated.device,
-            )
+            candidate_logits = group_candidate_logits[group_idx]
             num_candidates = candidate_logits.shape[0]
             max_rows = (
                 max(1, candidate_batch_size // num_candidates)
@@ -232,27 +285,27 @@ def run_tti_coop_group_level(
                 candidate_inputs = logits_mutated[chunk_indices].repeat_interleave(num_candidates, dim=0)
                 repeated_candidate_logits = candidate_logits.repeat(chunk_indices.numel(), 1)
                 candidate_inputs[:, idx_tensor] = repeated_candidate_logits
+                candidate_rows_count = candidate_inputs.size(0)
+                if (
+                    candidate_batch_size is not None
+                    and candidate_batch_size > 0
+                    and pending_rows > 0
+                    and pending_rows + candidate_rows_count > candidate_batch_size
+                ):
+                    flush_pending_candidates()
 
-                candidate_class_logits = classifier_logits_from_concepts(model, candidate_inputs, device)
-                candidate_class_probs = target_probabilities_from_logits(candidate_class_logits).cpu()
-                repeated_current_classes = current_classes[chunk_indices].repeat_interleave(num_candidates)
-                candidate_scores = candidate_class_probs.gather(
-                    1,
-                    repeated_current_classes.unsqueeze(1),
-                ).view(chunk_indices.numel(), num_candidates)
+                pending_inputs.append(candidate_inputs)
+                pending_meta.append((group_idx, chunk_indices, num_candidates))
+                pending_rows += candidate_rows_count
 
-                base_scores_for_group = base_scores[chunk_indices].unsqueeze(1)
-                if influence_mode == "confidence_drop":
-                    influence = torch.clamp(base_scores_for_group - candidate_scores, min=0.0)
-                elif influence_mode == "paper_delta":
-                    influence = candidate_scores - base_scores_for_group
-                else:
-                    influence = torch.abs(candidate_scores - base_scores_for_group)
+                if candidate_batch_size is None or candidate_batch_size <= 0:
+                    flush_pending_candidates()
+                elif pending_rows >= candidate_batch_size:
+                    flush_pending_candidates()
 
-                weights_for_group = candidate_weights[chunk_indices]
-                cis_scores[chunk_indices, group_idx] = (weights_for_group * influence).sum(dim=1)
+        flush_pending_candidates()
 
-        cpu_norm = _minmax_normalize_rows(cpu_scores, valid_mask)
+        cpu_norm = _minmax_normalize_rows(cpu_scores_base, valid_mask)
         cis_norm = _minmax_normalize_rows(cis_scores, valid_mask)
         scores = _compute_coop_scores(
             cpu_norm=cpu_norm,
@@ -270,12 +323,11 @@ def run_tti_coop_group_level(
             first_query_counts += torch.bincount(selected_groups, minlength=num_groups)
         query_counts += torch.bincount(selected_groups, minlength=num_groups)
 
-        for group_idx, group in enumerate(concept_groups):
+        for group_idx, indices in enumerate(group_index_tensors):
             rows = (selected_groups == group_idx).nonzero(as_tuple=True)[0]
             if rows.numel() == 0:
                 continue
 
-            indices = torch.tensor(list(group["flat_indices"]), dtype=torch.long)
             logits_mutated[rows.unsqueeze(1), indices.unsqueeze(0)] = gt_logits[
                 rows.unsqueeze(1),
                 indices.unsqueeze(0),
@@ -289,7 +341,7 @@ def run_tti_coop_group_level(
             if show_progress and hasattr(step_iter, "set_postfix"):
                 step_iter.set_postfix(acc=f"{updated_metrics.get('acc', 0.0) * 100:.2f}%")
 
-    query_stats = {"total": query_counts, "first": first_query_counts}
+    query_stats = {"total": query_counts.cpu(), "first": first_query_counts.cpu()}
     return coop_tti_metrics, query_stats
 
 
