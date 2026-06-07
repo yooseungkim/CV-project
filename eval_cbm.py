@@ -18,8 +18,10 @@ from src.tti.common import (
 )
 from src.tti.coop import (
     fit_coop_parameters,
+    normalize_coop_product_alpha,
     parse_coop_costs,
     parse_float_grid,
+    product_alpha_is_fixed,
     run_tti_coop_group_level,
 )
 from src.utils.metrics import calculate_concept_metrics
@@ -620,7 +622,7 @@ def run_tti_benchmark(
                 {
                     "label": get_coop_variant_label(score_mode),
                     "score_mode": score_mode,
-                    "alpha": coop_alpha,
+                    "alpha": normalize_coop_product_alpha(coop_alpha, coop_gamma, score_mode),
                     "beta": coop_beta,
                     "gamma": coop_gamma,
                     "fit_result": coop_fit_result,
@@ -1045,7 +1047,10 @@ def main():
     tqdm.write(f"   Concept Mean Balanced Accuracy : {concept_metrics['mean_balanced_acc']*100:.2f}%")
     
     coop_score_modes = get_coop_score_modes(args.coop_score_mode)
-    coop_alphas = {score_mode: args.coop_alpha for score_mode in coop_score_modes}
+    coop_alphas = {
+        score_mode: normalize_coop_product_alpha(args.coop_alpha, args.coop_gamma, score_mode)
+        for score_mode in coop_score_modes
+    }
     coop_betas = {score_mode: args.coop_beta for score_mode in coop_score_modes}
     coop_gammas = {score_mode: args.coop_gamma for score_mode in coop_score_modes}
     coop_cost_tensor = None
@@ -1072,10 +1077,15 @@ def main():
             gamma_grid = parse_float_grid(args.coop_gamma_grid)
             coop_fit_budget = min(max(1, args.coop_fit_k), len(concept_groups))
             for score_mode in coop_score_modes:
+                active_alpha_grid = (
+                    [1.0]
+                    if all(product_alpha_is_fixed(score_mode, gamma) for gamma in gamma_grid)
+                    else alpha_grid
+                )
                 active_beta_grid = beta_grid if score_mode == "power" else [args.coop_beta]
                 tqdm.write(
                     f"  {BOLD}{BLUE}[CooP Fit - {score_mode}]{RESET} Grid search "
-                    f"alpha={alpha_grid}, beta={active_beta_grid}, gamma={gamma_grid}, K={coop_fit_budget}, "
+                    f"alpha={active_alpha_grid}, beta={active_beta_grid}, gamma={gamma_grid}, K={coop_fit_budget}, "
                     f"metric={args.coop_fit_metric}"
                 )
                 coop_fit_result = fit_coop_parameters(
@@ -1085,7 +1095,7 @@ def main():
                     gt_targets=val_gt_targets,
                     concept_groups=concept_groups,
                     device=device,
-                    alpha_grid=alpha_grid,
+                    alpha_grid=active_alpha_grid,
                     gamma_grid=gamma_grid,
                     fit_budget=coop_fit_budget,
                     metric_fn=calculate_classifier_metrics,

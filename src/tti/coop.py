@@ -17,6 +17,8 @@ from src.tti.common import (
 
 MetricFn = Callable[[torch.nn.Module, torch.Tensor, torch.Tensor, torch.device], MetricDict]
 VALID_SCORE_MODES = {"additive", "product", "power"}
+PRODUCT_ZERO_GAMMA_ALPHA = 1.0
+ZERO_GAMMA_EPS = 1e-8
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,17 @@ def _validate_score_mode(score_mode: str) -> str:
     return score_mode
 
 
+def product_alpha_is_fixed(score_mode: str, gamma: float) -> bool:
+    score_mode = _validate_score_mode(score_mode)
+    return score_mode == "product" and abs(float(gamma)) <= ZERO_GAMMA_EPS
+
+
+def normalize_coop_product_alpha(alpha: float, gamma: float, score_mode: str) -> float:
+    if product_alpha_is_fixed(score_mode, gamma):
+        return PRODUCT_ZERO_GAMMA_ALPHA
+    return float(alpha)
+
+
 def _compute_coop_scores(
     cpu_norm: torch.Tensor,
     cis_norm: torch.Tensor,
@@ -129,6 +142,7 @@ def _compute_coop_scores(
     score_mode: str,
 ) -> torch.Tensor:
     score_mode = _validate_score_mode(score_mode)
+    alpha = normalize_coop_product_alpha(alpha, gamma, score_mode)
     if score_mode == "power":
         scores = (
             torch.pow(cpu_norm.clamp_min(1e-8), alpha)
@@ -369,11 +383,18 @@ def fit_coop_parameters(
     best: Optional[CoopFitResult] = None
     search_results: List[Dict[str, object]] = []
     budgets = [0, int(fit_budget)]
+    alpha_candidates = [float(value) for value in alpha_grid]
+    gamma_candidates = [float(value) for value in gamma_grid]
     beta_candidates = [float(value) for value in beta_grid] if beta_grid is not None else [float(beta)]
 
-    for alpha in alpha_grid:
-        for beta_candidate in beta_candidates:
-            for gamma in gamma_grid:
+    for gamma in gamma_candidates:
+        active_alpha_candidates = (
+            [PRODUCT_ZERO_GAMMA_ALPHA]
+            if product_alpha_is_fixed(score_mode, gamma)
+            else alpha_candidates
+        )
+        for alpha in active_alpha_candidates:
+            for beta_candidate in beta_candidates:
                 results, _ = run_tti_coop_group_level(
                     model=model,
                     concept_logits=concept_logits,
