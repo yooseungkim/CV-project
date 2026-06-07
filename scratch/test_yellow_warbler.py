@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import torch
 import numpy as np
 from PIL import Image
@@ -21,6 +20,7 @@ def test():
     ckpt = torch.load(checkpoint_path, map_location=device)
     state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
     ckpt_args = ckpt.get('args', {})
+    concept_metadata = ckpt.get('concept_metadata', {}) if isinstance(ckpt, dict) else {}
     
     # 2. Get CUB dataset & target classes
     classes_path = "data/CUB_200_2011/classes.txt"
@@ -39,21 +39,25 @@ def test():
                     
     # 3. Initialize dataset to get valid indices
     use_paper = ckpt_args.get("use_paper_preprocessing", True)
+    dataset_config = {
+        "num_concepts": 312,
+        "num_classes": 200,
+        "concepts": [],
+        "target_col": 'class_id',
+        "default_csv_path": 'data/CUB_200_2011/images.txt',
+        "default_image_dir": 'data/CUB_200_2011/images',
+        "filter_rare_concepts": False,
+        "use_paper_preprocessing": use_paper,
+        "concept_config_path": concept_config_path
+    }
+    if concept_metadata:
+        dataset_config["concept_metadata"] = concept_metadata
+
     dataset = CUB2011Dataset(
         csv_path='data/CUB_200_2011/images.txt',
         image_dir='data/CUB_200_2011/images',
         split='test',
-        config={
-            "num_concepts": 312,
-            "num_classes": 200,
-            "concepts": [],
-            "target_col": 'class_id',
-            "default_csv_path": 'data/CUB_200_2011/images.txt',
-            "default_image_dir": 'data/CUB_200_2011/images',
-            "filter_rare_concepts": False,
-            "use_paper_preprocessing": use_paper,
-            "concept_config_path": concept_config_path
-        }
+        config=dataset_config
     )
     
     # 4. Initialize model
@@ -70,33 +74,8 @@ def test():
     
     # Mutually exclusive concept groups
     concept_groups_info = []
-    total_dims = 0
-    with open('data/CUB_200_2011/concept_config_filtered.json', 'r') as f:
-        concept_config = json.load(f)
-    
-    for name, info in concept_config.items():
-        ctype = info.get("type", "numerical")
-        if ctype == "categorical":
-            classes = info.get("classes", [])
-            group = {
-                "name": name,
-                "type": "categorical",
-                "classes": [str(c) for c in classes],
-                "flat_indices": list(range(total_dims, total_dims + len(classes)))
-            }
-            total_dims += len(classes)
-        else:
-            group = {
-                "name": name,
-                "type": "numerical",
-                "min": float(info.get("min", 0.0)),
-                "max": float(info.get("max", 1.0)),
-                "flat_indices": [total_dims]
-            }
-            total_dims += 1
-        start = group["flat_indices"][0]
-        num = len(group["flat_indices"])
-        concept_groups_info.append((start, num))
+    for info in dataset.concept_features_info:
+        concept_groups_info.append((info["start_idx"], info["num_feats"]))
         
     model = UniversalFlexibleCBM(
         backbone_type=ckpt_args.get("backbone_type", "timm"),

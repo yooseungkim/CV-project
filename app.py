@@ -107,6 +107,38 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
+def count_concept_config_dims(config: dict) -> int:
+    dims = 0
+    for info in config.values():
+        if info.get("type") == "categorical":
+            dims += len(info.get("classes", []))
+        else:
+            dims += 1
+    return dims
+
+
+def infer_checkpoint_supervised_concept_dims(
+    state_dict: dict,
+    latent_concepts: int = 0
+) -> Optional[int]:
+    if "classifier_head.concept_gates" in state_dict:
+        return state_dict["classifier_head.concept_gates"].numel()
+    if "supervised_attention.concept_queries" in state_dict:
+        return state_dict["supervised_attention.concept_queries"].shape[0]
+    if "supervised_attention.concept_proj" in state_dict:
+        return state_dict["supervised_attention.concept_proj"].shape[0]
+    if "classifier_head.weight" in state_dict:
+        return state_dict["classifier_head.weight"].shape[1] - int(latent_concepts or 0)
+    return None
+
+
+def is_filtered_concept_config_path(concept_config_path: Optional[str]) -> bool:
+    if not concept_config_path:
+        return False
+    root, _ = os.path.splitext(os.path.basename(concept_config_path))
+    return root.endswith(("_filtered", "_paper_filtered", "_rare_filtered"))
+
+
 # (generate_segmentation_overlay removed)
 
 
@@ -1018,6 +1050,8 @@ def main():
 
     # Load checkpoint first to inspect dimensions and metadata for dynamic concept filtering
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    checkpoint_concept_metadata = {}
+    concept_metadata_required_error = None
     if os.path.exists(args.checkpoint):
         try:
             loaded_checkpoint = torch.load(args.checkpoint, map_location=DEVICE)
@@ -1026,10 +1060,13 @@ def main():
             else:
                 state_dict = loaded_checkpoint
                 
-            use_filtered = False
+            checkpoint_filter_rare_concepts = False
+            checkpoint_use_paper_preprocessing = False
+            checkpoint_latent_concepts = 0
             if isinstance(loaded_checkpoint, dict):
                 ckpt_args = loaded_checkpoint.get("args", {})
                 ckpt_config = loaded_checkpoint.get("config", {})
+                checkpoint_concept_metadata = loaded_checkpoint.get("concept_metadata", {}) or {}
                 
                 # Check for config key structure
                 if ckpt_config and isinstance(ckpt_config, dict):
@@ -1064,6 +1101,8 @@ def main():
                 if "num_classes" in ckpt_args:
                     args.num_classes = ckpt_args["num_classes"]
                     print(f"[Config] Auto-detected num_classes from checkpoint: {args.num_classes}")
+
+                checkpoint_latent_concepts = ckpt_args.get("latent_concepts", 0) or 0
                     
                 # 2. Auto-detect concept_config_path
                 if "concept_config_path" in ckpt_args:
@@ -1071,62 +1110,65 @@ def main():
                     print(f"[Config] Auto-detected concept_config_path from checkpoint: {args.concept_config_path}")
                 
                 # 3. Auto-detect filtering settings
-                if ckpt_args.get("filter_rare_concepts", False) or ckpt_args.get("use_paper_preprocessing", False):
-                    use_filtered = True
+                checkpoint_filter_rare_concepts = ckpt_args.get("filter_rare_concepts", False)
+                checkpoint_use_paper_preprocessing = ckpt_args.get("use_paper_preprocessing", False)
+                if checkpoint_concept_metadata.get("dataset") == "cub":
+                    checkpoint_filter_rare_concepts = checkpoint_concept_metadata.get(
+                        "filter_rare_concepts",
+                        checkpoint_filter_rare_concepts
+                    )
+                    checkpoint_use_paper_preprocessing = checkpoint_concept_metadata.get(
+                        "use_paper_preprocessing",
+                        checkpoint_use_paper_preprocessing
+                    )
+                if checkpoint_filter_rare_concepts or checkpoint_use_paper_preprocessing:
+                    print("[Config] Checkpoint indicates filtered CUB concepts.")
                     
-            if not use_filtered and "classifier_head.weight" in state_dict:
-                checkpoint_dims = state_dict["classifier_head.weight"].shape[1]
+            checkpoint_supervised_dims = infer_checkpoint_supervised_concept_dims(
+                state_dict,
+                latent_concepts=checkpoint_latent_concepts
+            )
+            if checkpoint_supervised_dims is not None and not checkpoint_concept_metadata.get("concept_config"):
                 # Let's count how many concepts the original concept config has
                 if os.path.exists(args.concept_config_path):
                     with open(args.concept_config_path, 'r', encoding='utf-8') as f:
                         orig_cfg = json.load(f)
-                    orig_dims = 0
-                    for n, inf in orig_cfg.items():
-                        if inf.get("type") == "categorical":
-                            orig_dims += len(inf.get("classes", []))
-                        else:
-                            orig_dims += 1
-                    if checkpoint_dims < orig_dims:
-                        use_filtered = True
-                        print(f"[Config] Dimension mismatch detected: Checkpoint has {checkpoint_dims} dimensions, but original config has {orig_dims}. Attempting to use filtered config.")
-                        
-            if use_filtered:
-                filtered_path = args.concept_config_path.replace(".json", "_filtered.json")
-                if not os.path.exists(filtered_path):
-                    print(f"[Config] Filtered config not found at {filtered_path}. Generating it dynamically by instantiating dataset...")
-                    try:
-                        from src.data.cub import CUB2011Dataset
-                        _ = CUB2011Dataset(
-                            split='test',
-                            config={
-                                "num_concepts": 312,
-                                "num_classes": 200,
-                                "concepts": [],
-                                "target_col": 'class_id',
-                                "default_csv_path": 'data/CUB_200_2011/images.txt',
-                                "default_image_dir": 'data/CUB_200_2011/images',
-                                "filter_rare_concepts": False,
-                                "use_paper_preprocessing": True,
-                                "concept_config_path": args.concept_config_path
-                            }
+                    orig_dims = count_concept_config_dims(orig_cfg)
+                    if checkpoint_supervised_dims < orig_dims:
+                        concept_metadata_required_error = (
+                            "Checkpoint has fewer supervised concepts "
+                            f"({checkpoint_supervised_dims}) than the unfiltered concept config ({orig_dims}), "
+                            "but it does not embed concept_metadata.concept_config. "
+                            "Refusing to load concept_config_*filtered.json because those files can be stale "
+                            "or generated by a different preprocessing run. Re-save/retrain the checkpoint "
+                            "with concept_metadata, or pass an exact matching concept config explicitly only "
+                            "if you can verify it was used for that checkpoint."
                         )
-                    except Exception as ex:
-                        print(f"[Config] Failed to generate filtered concept configuration: {ex}")
-                
-                if os.path.exists(filtered_path):
-                    print(f"[Config] Automatically redirecting concept config to: {filtered_path}")
-                    args.concept_config_path = filtered_path
-                else:
-                    print(f"[Config] Warning: Checkpoint indicates rare concept filtering, but filtered config was not found at: {filtered_path}")
+
+            if checkpoint_concept_metadata.get("concept_config"):
+                print("[Config] Using concept configuration embedded in checkpoint metadata.")
         except Exception as e:
             print(f"[Config] Pre-loading checkpoint failed to auto-detect filtering settings: {e}")
 
     # 1. Load concept config
-    if not os.path.exists(args.concept_config_path):
-        raise FileNotFoundError(f"Concept config not found: {args.concept_config_path}")
+    if concept_metadata_required_error:
+        raise RuntimeError(concept_metadata_required_error)
 
-    with open(args.concept_config_path, 'r', encoding='utf-8') as f:
-        CONCEPT_CONFIG = json.load(f)
+    if checkpoint_concept_metadata.get("concept_config"):
+        CONCEPT_CONFIG = checkpoint_concept_metadata["concept_config"]
+        concept_config_source = "checkpoint metadata"
+    elif not os.path.exists(args.concept_config_path):
+        raise FileNotFoundError(f"Concept config not found: {args.concept_config_path}")
+    elif DATASET_NAME == "cub" and is_filtered_concept_config_path(args.concept_config_path):
+        raise RuntimeError(
+            f"Refusing to load filtered CUB concept config file: {args.concept_config_path}. "
+            "Filtered concept configs can be stale relative to a checkpoint. Use a checkpoint "
+            "that embeds concept_metadata, or use the unfiltered concept_config.json."
+        )
+    else:
+        with open(args.concept_config_path, 'r', encoding='utf-8') as f:
+            CONCEPT_CONFIG = json.load(f)
+        concept_config_source = args.concept_config_path
 
     # Build concepts_flat & CONCEPT_GROUPS (same logic as dataset classes)
     concepts_flat = []
@@ -1199,7 +1241,7 @@ def main():
     else:
         TARGET_CLASSES = []
 
-    print(f"Loaded {NUM_CONCEPTS} concepts from {args.concept_config_path}")
+    print(f"Loaded {NUM_CONCEPTS} concepts from {concept_config_source}")
     if TARGET_CLASSES:
         print(f"Target classes ({len(TARGET_CLASSES)}): {TARGET_CLASSES}")
 

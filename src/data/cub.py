@@ -17,8 +17,106 @@ class CUB2011Dataset(BaseDataset):
             "default_csv_path": 'data/CUB_200_2011/images.txt',
             "default_image_dir": 'data/CUB_200_2011/images',
             "filter_rare_concepts": False,
-            "use_paper_preprocessing": False
+            "use_paper_preprocessing": False,
+            "allow_legacy_filtered_concept_config": False
         }
+
+    @staticmethod
+    def is_filtered_concept_config_path(concept_config_path: Optional[str]) -> bool:
+        if not concept_config_path:
+            return False
+        root, _ = os.path.splitext(os.path.basename(concept_config_path))
+        return root.endswith(("_filtered", "_paper_filtered", "_rare_filtered"))
+
+    @staticmethod
+    def infer_unfiltered_concept_config_path(concept_config_path: Optional[str]) -> Optional[str]:
+        if not concept_config_path:
+            return None
+
+        dirname = os.path.dirname(concept_config_path)
+        root, ext = os.path.splitext(os.path.basename(concept_config_path))
+        for suffix in ("_paper_filtered", "_rare_filtered", "_filtered"):
+            if root.endswith(suffix):
+                return os.path.join(dirname, root[:-len(suffix)] + ext)
+        return None
+
+    @staticmethod
+    def flatten_concept_config_keys(concept_config: dict) -> List[str]:
+        flat_keys = []
+        for name, info in concept_config.items():
+            if info.get("type", "numerical") == "categorical":
+                flat_keys.extend(f"{name}::{class_name}" for class_name in info.get("classes", []))
+            else:
+                flat_keys.append(name)
+        return flat_keys
+
+    def _load_legacy_valid_indices_from_filtered_config(self, concept_config_path: str):
+        import json
+        import numpy as np
+
+        unfiltered_path = self.infer_unfiltered_concept_config_path(concept_config_path)
+        if not unfiltered_path or not os.path.exists(unfiltered_path):
+            raise FileNotFoundError(
+                "Legacy filtered CUB concept config requires the matching unfiltered "
+                f"concept_config.json, but it was not found for: {concept_config_path}"
+            )
+
+        with open(concept_config_path, "r", encoding="utf-8") as f:
+            filtered_config = json.load(f)
+        with open(unfiltered_path, "r", encoding="utf-8") as f:
+            unfiltered_config = json.load(f)
+
+        unfiltered_flat = self.flatten_concept_config_keys(unfiltered_config)
+        filtered_flat = self.flatten_concept_config_keys(filtered_config)
+        index_by_key = {}
+        for idx, key in enumerate(unfiltered_flat):
+            if key in index_by_key:
+                raise ValueError(f"Duplicate CUB concept key in unfiltered config: {key}")
+            index_by_key[key] = idx
+
+        missing = [key for key in filtered_flat if key not in index_by_key]
+        if missing:
+            preview = ", ".join(missing[:5])
+            raise ValueError(
+                f"Filtered CUB concept config {concept_config_path} contains concepts "
+                f"that are not present in {unfiltered_path}: {preview}"
+            )
+
+        self._legacy_filtered_concept_config = filtered_config
+        return np.asarray([index_by_key[key] for key in filtered_flat], dtype=int)
+
+    def _fit_class_level_concepts(self, concept_preprocessing_df, labels_df):
+        import numpy as np
+
+        train_image_indices = concept_preprocessing_df['image_id'].to_numpy(dtype=int) - 1
+        train_class_ids = concept_preprocessing_df['class_id'].to_numpy(dtype=int) - 1
+        all_class_ids = labels_df.sort_values('image_id')['class_id'].to_numpy(dtype=int) - 1
+        self.concept_preprocessing_train_image_ids = concept_preprocessing_df['image_id'].astype(int).tolist()
+
+        class_concepts = np.zeros((200, 312))
+        missing_train_classes = []
+        for class_id in range(200):
+            class_image_indices = train_image_indices[train_class_ids == class_id]
+            if class_image_indices.size > 0:
+                class_concepts[class_id] = (
+                    self.concept_matrix[class_image_indices].mean(axis=0) >= 0.5
+                ).astype(float)
+            else:
+                missing_train_classes.append(class_id + 1)
+
+        if missing_train_classes:
+            print(
+                "Warning: No training samples found for CUB classes "
+                f"{missing_train_classes}. Their class-level concepts remain all-zero."
+            )
+
+        for class_id in range(200):
+            class_mask = (all_class_ids == class_id)
+            if class_mask.sum() > 0:
+                self.concept_matrix[class_mask] = class_concepts[class_id]
+
+        self.class_concepts = class_concepts.copy()
+        return class_concepts
 
     def __init__(
         self,
@@ -47,6 +145,13 @@ class CUB2011Dataset(BaseDataset):
         self.config = config or self.get_default_config()
         self.filter_rare_concepts = self.config.get("filter_rare_concepts", False)
         self.use_paper_preprocessing = self.config.get("use_paper_preprocessing", False)
+        self.allow_legacy_filtered_concept_config = self.config.get("allow_legacy_filtered_concept_config", False)
+        self.concept_metadata = self.config.get("concept_metadata") or self.config.get("precomputed_concept_metadata") or {}
+        self.valid_indices = None
+        self.class_concepts = None
+        self.effective_concept_config = None
+        self.concept_preprocessing_train_image_ids = []
+        self._legacy_filtered_concept_config = None
         
         # Determine paths
         resolved_csv = csv_path or self.config.get("default_csv_path") or "data/CUB_200_2011/images.txt"
@@ -92,11 +197,13 @@ class CUB2011Dataset(BaseDataset):
                 shuffled_train = train_raw.sample(frac=1.0, random_state=42).reset_index(drop=True)
                 n_train = len(shuffled_train)
                 val_size = int(n_train * 0.2)
+                train_split_raw = shuffled_train.iloc[val_size:].reset_index(drop=True)
+                val_split_raw = shuffled_train.iloc[:val_size].reset_index(drop=True)
                 
                 if self.split == 'train':
-                    self.df = shuffled_train.iloc[val_size:].reset_index(drop=True)
+                    self.df = train_split_raw
                 elif self.split == 'val':
-                    self.df = shuffled_train.iloc[:val_size].reset_index(drop=True)
+                    self.df = val_split_raw
                 else:  # test
                     self.df = test_val_raw
             else:
@@ -112,6 +219,9 @@ class CUB2011Dataset(BaseDataset):
                 else:  # test
                     self.df = shuffled_test_val.iloc[val_end:].reset_index(drop=True)
                 
+                train_split_raw = train_raw
+
+            concept_preprocessing_df = train_split_raw.reset_index(drop=True)
             self.df['image_idx'] = self.df['image_id'] - 1
             print(f"Successfully loaded CUB split [{self.split}] (size: {len(self.df)})")
 
@@ -131,35 +241,81 @@ class CUB2011Dataset(BaseDataset):
                 self.concept_matrix = np.zeros((11788, 312))
 
             # Filter rare concepts (< 1% global frequency) or run CBM Paper Preprocessing
-            if self.use_paper_preprocessing:
+            precomputed_valid_indices = self.concept_metadata.get("valid_indices")
+            legacy_valid_indices = None
+            concept_config_path = self.config.get("concept_config_path")
+            if (
+                precomputed_valid_indices is None
+                and self.allow_legacy_filtered_concept_config
+                and concept_config_path
+                and self.is_filtered_concept_config_path(concept_config_path)
+            ):
+                legacy_valid_indices = self._load_legacy_valid_indices_from_filtered_config(concept_config_path)
+
+            if precomputed_valid_indices is not None or legacy_valid_indices is not None:
                 import numpy as np
-                # Class-level majority voting
-                # self.concept_matrix has shape [11788, 312]
-                class_ids = labels_df['class_id'].values - 1  # 0-indexed
-                
-                # Step 1: Compute class-level concepts (majority voting: mean >= 0.5)
-                class_concepts = np.zeros((200, 312))
-                for class_id in range(200):
-                    class_mask = (class_ids == class_id)
-                    if class_mask.sum() > 0:
-                        class_concepts[class_id] = (self.concept_matrix[class_mask].mean(axis=0) >= 0.5).astype(float)
-                
-                # Step 2: Overwrite instance-level concepts with majority-voted class-level concepts
-                for class_id in range(200):
-                    class_mask = (class_ids == class_id)
-                    if class_mask.sum() > 0:
-                        self.concept_matrix[class_mask] = class_concepts[class_id]
+                if precomputed_valid_indices is not None:
+                    self.valid_indices = np.asarray(precomputed_valid_indices, dtype=int)
+                else:
+                    self.valid_indices = np.asarray(legacy_valid_indices, dtype=int)
+                precomputed_class_concepts = self.concept_metadata.get("class_concepts")
+                if precomputed_class_concepts is not None:
+                    self.class_concepts = np.asarray(precomputed_class_concepts, dtype=float)
+                    if self.class_concepts.shape != (200, 312):
+                        raise ValueError(
+                            "CUB concept_metadata.class_concepts must have shape [200, 312], "
+                            f"got {self.class_concepts.shape}."
+                        )
+                    all_class_ids = labels_df.sort_values('image_id')['class_id'].to_numpy(dtype=int) - 1
+                    for class_id in range(200):
+                        class_mask = (all_class_ids == class_id)
+                        if class_mask.sum() > 0:
+                            self.concept_matrix[class_mask] = self.class_concepts[class_id]
+                elif self.use_paper_preprocessing:
+                    if legacy_valid_indices is None:
+                        raise ValueError(
+                            "CUB paper preprocessing metadata requires class_concepts to avoid "
+                            "recomputing class-level concepts during evaluation."
+                        )
+                    legacy_preprocessing_df = merged[['image_id', 'class_id']].reset_index(drop=True)
+                    self._fit_class_level_concepts(legacy_preprocessing_df, labels_df)
+
+                if legacy_valid_indices is not None:
+                    print(
+                        "Warning: Loading metadata-free legacy CUB concept mask from "
+                        f"{concept_config_path}; keeping {len(self.valid_indices)} concepts. "
+                        "Reproducing historical all-image class-level concepts for old "
+                        "checkpoint evaluation only."
+                    )
+                else:
+                    print(
+                        "CUB Concept Metadata: using checkpoint-selected "
+                        f"{len(self.valid_indices)} concepts; skipping concept filter recomputation."
+                    )
+                self.concept_matrix = self.concept_matrix[:, self.valid_indices]
+            elif self.use_paper_preprocessing:
+                import numpy as np
+                class_concepts = self._fit_class_level_concepts(concept_preprocessing_df, labels_df)
                 
                 # Step 3: Keep concepts present in at least 10 classes after majority voting
                 valid_concepts_mask = (class_concepts.sum(axis=0) >= 10)
                 self.valid_indices = np.where(valid_concepts_mask)[0]
-                print(f"CBM Paper Preprocessing: keeping {len(self.valid_indices)} out of 312 concepts (present in >= 10 classes after majority voting).")
+                print(
+                    "CBM Paper Preprocessing: fitted on "
+                    f"{len(concept_preprocessing_df)} train images; keeping {len(self.valid_indices)} "
+                    "out of 312 concepts (present in >= 10 training classes after majority voting)."
+                )
                 self.concept_matrix = self.concept_matrix[:, self.valid_indices]
             elif self.filter_rare_concepts:
                 import numpy as np
-                freqs = np.mean(self.concept_matrix, axis=0)
+                train_image_indices = concept_preprocessing_df['image_id'].to_numpy(dtype=int) - 1
+                self.concept_preprocessing_train_image_ids = concept_preprocessing_df['image_id'].astype(int).tolist()
+                freqs = np.mean(self.concept_matrix[train_image_indices], axis=0)
                 self.valid_indices = np.where(freqs >= 0.01)[0]
-                print(f"Filtering concepts with frequency < 1%: keeping {len(self.valid_indices)} out of 312 concepts.")
+                print(
+                    "Filtering concepts with frequency < 1% using "
+                    f"{len(concept_preprocessing_df)} train images: keeping {len(self.valid_indices)} out of 312 concepts."
+                )
                 self.concept_matrix = self.concept_matrix[:, self.valid_indices]
             else:
                 self.valid_indices = None
@@ -168,8 +324,28 @@ class CUB2011Dataset(BaseDataset):
         concept_config_path = self.config.get("concept_config_path")
         self.concept_config = None
         self.concept_features_info = None
+        precomputed_concept_config = self.concept_metadata.get("concept_config")
+        if (
+            concept_config_path
+            and self.is_filtered_concept_config_path(concept_config_path)
+            and not precomputed_concept_config
+            and not self.allow_legacy_filtered_concept_config
+        ):
+            raise ValueError(
+                f"Refusing to load filtered CUB concept config file: {concept_config_path}. "
+                "Filtered concept configs can be stale relative to a checkpoint. Use the "
+                "unfiltered concept_config.json plus checkpoint concept_metadata instead."
+            )
 
-        if concept_config_path and os.path.exists(concept_config_path):
+        if precomputed_concept_config:
+            self.concept_config = precomputed_concept_config
+            print("Loaded structured concept configuration from checkpoint metadata")
+            is_already_filtered = True
+        elif self._legacy_filtered_concept_config is not None:
+            self.concept_config = self._legacy_filtered_concept_config
+            print(f"Loaded legacy filtered concept configuration file from: {concept_config_path}")
+            is_already_filtered = True
+        elif concept_config_path and os.path.exists(concept_config_path):
             import json
             with open(concept_config_path, 'r', encoding='utf-8') as f:
                 self.concept_config = json.load(f)
@@ -178,6 +354,24 @@ class CUB2011Dataset(BaseDataset):
             # If the config file is already filtered, we bypass filtering on config loading
             # but we still keep self.concept_matrix sliced using self.valid_indices.
             is_already_filtered = "filtered" in os.path.basename(concept_config_path)
+        else:
+            is_already_filtered = False
+
+        if self.concept_config is not None:
+            if is_already_filtered and self.valid_indices is not None:
+                loaded_flat_dims = 0
+                for info in self.concept_config.values():
+                    if info.get("type", "numerical") == "categorical":
+                        loaded_flat_dims += len(info.get("classes", []))
+                    else:
+                        loaded_flat_dims += 1
+                if loaded_flat_dims != len(self.valid_indices):
+                    raise ValueError(
+                        f"Filtered CUB concept config at {concept_config_path} has "
+                        f"{loaded_flat_dims} flattened concepts, but preprocessing selected "
+                        f"{len(self.valid_indices)}. Pass the unfiltered concept_config.json or regenerate "
+                        "the filtered config with the current preprocessing code."
+                    )
             
             self.concept_features_info = []
             self.concepts_flat = []
@@ -238,16 +432,8 @@ class CUB2011Dataset(BaseDataset):
             self.config["num_concepts"] = new_total_dims
             self.config["concepts"] = self.concept_cols
             self.config["concepts_flat"] = self.concepts_flat
+            self.effective_concept_config = filtered_config
 
-            # Save the filtered concept config to disk for Gradio and eval compatibility
-            if (self.filter_rare_concepts or self.use_paper_preprocessing) and not self.dummy_mode and not is_already_filtered:
-                filtered_path = concept_config_path.replace(".json", "_filtered.json")
-                try:
-                    with open(filtered_path, 'w', encoding='utf-8') as f:
-                        json.dump(filtered_config, f, indent=2, ensure_ascii=False)
-                    print(f"[Config] Saved filtered concept configuration to: {filtered_path}")
-                except Exception as e:
-                    print(f"Warning: Failed to save filtered concept configuration to {filtered_path}: {e}")
         else:
             self.config["num_concepts"] = self.config.get("num_concepts", 312)
             self.concept_cols = [f"Attribute_{i}" for i in range(1, 313)]
@@ -285,6 +471,39 @@ class CUB2011Dataset(BaseDataset):
         self._cache = None
         self._cache_populated = False
         self._try_populate_cache(max_cache_size_gb=max_cache_size_gb)
+
+    def get_concept_metadata(self) -> dict:
+        valid_indices = None
+        if self.valid_indices is not None:
+            valid_indices = [int(idx) for idx in self.valid_indices.tolist()]
+
+        class_concepts = None
+        if self.class_concepts is not None:
+            class_concepts = self.class_concepts.astype(int).tolist()
+
+        if self.use_paper_preprocessing:
+            preprocessing_mode = "paper"
+        elif self.filter_rare_concepts:
+            preprocessing_mode = "rare"
+        else:
+            preprocessing_mode = "none"
+
+        return {
+            "version": 1,
+            "dataset": "cub",
+            "preprocessing_mode": preprocessing_mode,
+            "filter_rare_concepts": bool(self.filter_rare_concepts),
+            "use_paper_preprocessing": bool(self.use_paper_preprocessing),
+            "concept_config_path": self.config.get("concept_config_path"),
+            "num_concepts": int(self.config.get("num_concepts", 0)),
+            "valid_indices": valid_indices,
+            "class_concepts": class_concepts,
+            "concept_config": self.effective_concept_config,
+            "concepts": list(self.config.get("concepts", [])),
+            "concepts_flat": list(self.config.get("concepts_flat", [])),
+            "concept_features_info": self.concept_features_info,
+            "preprocessing_train_image_ids": list(self.concept_preprocessing_train_image_ids),
+        }
 
     def __len__(self) -> int:
         if self.dummy_mode:

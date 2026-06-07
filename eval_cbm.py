@@ -238,6 +238,32 @@ def resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict):
     return "full"
 
 
+def infer_supervised_concept_count_from_state_dict(state_dict, latent_concepts=0):
+    if "classifier_head.concept_gates" in state_dict:
+        return state_dict["classifier_head.concept_gates"].numel()
+    if "supervised_attention.concept_queries" in state_dict:
+        return state_dict["supervised_attention.concept_queries"].shape[0]
+    if "supervised_attention.concept_proj" in state_dict:
+        return state_dict["supervised_attention.concept_proj"].shape[0]
+    if "classifier_head.weight" in state_dict:
+        return state_dict["classifier_head.weight"].shape[1] - int(latent_concepts or 0)
+    return None
+
+
+def load_flattened_concept_count(concept_config_path):
+    if not concept_config_path or not os.path.exists(concept_config_path):
+        return None
+    with open(concept_config_path, "r", encoding="utf-8") as f:
+        concept_config = json.load(f)
+    total = 0
+    for info in concept_config.values():
+        if info.get("type", "numerical") == "categorical":
+            total += len(info.get("classes", []))
+        else:
+            total += 1
+    return total
+
+
 def make_tti_budgets(max_k, requested_k_values=TTI_K_VALUES):
     """Return baseline plus requested TTI budgets, clipped to the available intervention count."""
     if max_k <= 0:
@@ -735,6 +761,7 @@ def main():
     loaded = torch.load(args.checkpoint, map_location='cpu')
     checkpoint_args = loaded.get('args', {})
     checkpoint_config = loaded.get('config', {})
+    concept_metadata = loaded.get('concept_metadata', {}) if isinstance(loaded, dict) else {}
     state_dict = loaded.get('state_dict', loaded)
 
     if args.config_path is None:
@@ -748,6 +775,7 @@ def main():
     
     # Auto-detect configs with fallbacks to config dictionaries and state_dict keys
     dataset_name = checkpoint_args.get('dataset') or checkpoint_config.get('dataset', {}).get('name') or 'cub'
+    dataset_name_normalized = str(dataset_name).lower()
     backbone_type = checkpoint_args.get('backbone_type') or checkpoint_config.get('backbone', {}).get('backbone_type') or 'timm'
     backbone_name = checkpoint_args.get('backbone_name') or checkpoint_config.get('backbone', {}).get('backbone_name') or 'vit_base_patch14_dinov2'
     backbone_train_mode = resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict)
@@ -776,6 +804,9 @@ def main():
     use_paper_preprocessing = checkpoint_args.get('use_paper_preprocessing', False)
     if not use_paper_preprocessing:
         use_paper_preprocessing = checkpoint_config.get('dataset', {}).get('use_paper_preprocessing', False)
+    if concept_metadata.get("dataset") == "cub":
+        filter_rare_concepts = concept_metadata.get("filter_rare_concepts", filter_rare_concepts)
+        use_paper_preprocessing = concept_metadata.get("use_paper_preprocessing", use_paper_preprocessing)
         
     use_nam_head = False
     nam_hidden_dim = 64
@@ -829,6 +860,11 @@ def main():
     elif 'supervised_attention.concept_queries' in state_dict:
         use_concept_attention = True
 
+    checkpoint_supervised_concepts = infer_supervised_concept_count_from_state_dict(
+        state_dict,
+        latent_concepts=latent_concepts
+    )
+
     tqdm.write(f"  {BOLD}{BLUE}[Config]{RESET} Auto-detected config:")
     tqdm.write(f"     ├─ Dataset: {dataset_name.upper()}")
     tqdm.write(f"     ├─ Backbone: {backbone_name} ({backbone_type})")
@@ -869,17 +905,17 @@ def main():
     )
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
-    if dataset_name == 'derm7pt':
+    if dataset_name_normalized == 'derm7pt':
         dataset_class = Derm7PtDataset
         csv_path = checkpoint_args.get('csv_path', 'data/derm7pt/meta/meta.csv')
         image_dir = checkpoint_args.get('image_dir', 'data/derm7pt/images')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/derm7pt/concept_config.json')
-    elif dataset_name == 'milk10k':
+    elif dataset_name_normalized == 'milk10k':
         dataset_class = MILK10KDataset
         csv_path = checkpoint_args.get('csv_path', 'data/MILK10K/MILK10k_Training_Metadata.csv')
         image_dir = checkpoint_args.get('image_dir', 'data/MILK10K/MILK10k_Training_Input/MILK10k_Training_Input')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/MILK10K/concept_config.json')
-    elif dataset_name == 'chexpert':
+    elif dataset_name_normalized == 'chexpert':
         dataset_class = CheXpertDataset
         csv_path = checkpoint_args.get('csv_path', 'data/CheXpert/train.csv')
         image_dir = checkpoint_args.get('image_dir', 'data/CheXpert/')
@@ -889,16 +925,57 @@ def main():
         csv_path = checkpoint_args.get('csv_path', 'data/CUB_200_2011/images.txt')
         image_dir = checkpoint_args.get('image_dir', 'data/CUB_200_2011/images')
         concept_config_path = checkpoint_args.get('concept_config_path', 'data/CUB_200_2011/concept_config.json')
-        if filter_rare_concepts or use_paper_preprocessing:
-            filtered_path = concept_config_path.replace(".json", "_filtered.json")
-            if os.path.exists(filtered_path):
-                concept_config_path = filtered_path
-                tqdm.write(f"     [Config] Redirected concept_config to: {concept_config_path}")
+        allow_legacy_filtered_concept_config = False
+        if concept_metadata:
+            tqdm.write(
+                "     [Config] Using checkpoint concept metadata; "
+                "CUB2011Dataset will not recompute the filtered concept mask."
+            )
+        else:
+            unfiltered_config_path = concept_config_path
+            if CUB2011Dataset.is_filtered_concept_config_path(unfiltered_config_path):
+                inferred_path = CUB2011Dataset.infer_unfiltered_concept_config_path(unfiltered_config_path)
+                if inferred_path:
+                    unfiltered_config_path = inferred_path
+            unfiltered_concept_count = load_flattened_concept_count(unfiltered_config_path)
+            legacy_filtered_config_path = os.path.join(
+                os.path.dirname(unfiltered_config_path),
+                'concept_config_filtered.json'
+            )
+            legacy_filtered_concept_count = load_flattened_concept_count(legacy_filtered_config_path)
+            if (
+                checkpoint_supervised_concepts is not None
+                and unfiltered_concept_count is not None
+                and checkpoint_supervised_concepts != unfiltered_concept_count
+                and legacy_filtered_concept_count is not None
+                and checkpoint_supervised_concepts == legacy_filtered_concept_count
+            ):
+                concept_config_path = legacy_filtered_config_path
+                allow_legacy_filtered_concept_config = True
+                tqdm.write(
+                    f"     {YELLOW}[Warning]{RESET} Checkpoint has no CUB concept_metadata; "
+                    f"falling back to legacy {legacy_filtered_config_path} "
+                    f"({legacy_filtered_concept_count} concepts). New checkpoints store the "
+                    "exact concept mask in checkpoint metadata."
+                )
+
+            if not allow_legacy_filtered_concept_config and (filter_rare_concepts or use_paper_preprocessing):
+                tqdm.write(
+                    "     [Config] Using unfiltered concept_config; "
+                    "CUB2011Dataset will derive the train-only filtered mask."
+                )
+    is_cub_dataset = dataset_class is CUB2011Dataset
+    if not is_cub_dataset:
+        allow_legacy_filtered_concept_config = False
         
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
     dataset_config["filter_rare_concepts"] = filter_rare_concepts
     dataset_config["use_paper_preprocessing"] = use_paper_preprocessing
+    if is_cub_dataset:
+        dataset_config["allow_legacy_filtered_concept_config"] = allow_legacy_filtered_concept_config
+    if concept_metadata:
+        dataset_config["concept_metadata"] = concept_metadata
     should_fit_coop = not args.without_tti and not args.without_coop_tti and not args.without_coop_fit
     
     # Load test split
@@ -925,30 +1002,61 @@ def main():
     num_supervised_concepts = test_dataset.config["num_concepts"]
     num_concepts_total = num_supervised_concepts + latent_concepts
     num_classes = test_dataset.config["num_classes"]
+    if (
+        checkpoint_supervised_concepts is not None
+        and checkpoint_supervised_concepts != num_supervised_concepts
+    ):
+        legacy_note = ""
+        if is_cub_dataset and not concept_metadata:
+            if dataset_config.get("allow_legacy_filtered_concept_config"):
+                legacy_note = (
+                    f" Legacy fallback used {dataset_config['concept_config_path']}, "
+                    "but it still did not match the checkpoint."
+                )
+            else:
+                legacy_note = (
+                    " No matching metadata-free legacy fallback was found for "
+                    "concept_config_filtered.json."
+                )
+        raise RuntimeError(
+            "Checkpoint concept dimension does not match the evaluation dataset: "
+            f"checkpoint expects {checkpoint_supervised_concepts} supervised concepts, "
+            f"but dataset resolved {num_supervised_concepts}.{legacy_note} "
+            "Use a checkpoint that embeds concept_metadata for exact reproduction."
+        )
     
-    # 3. Parse concept groups config for TTI
-    with open(concept_config_path, 'r', encoding='utf-8') as f:
-        concept_json = json.load(f)
-        
     concept_groups = []
-    total_dims = 0
-    for name, info in concept_json.items():
-        ctype = info.get("type", "numerical")
-        if ctype == "categorical":
-            classes = info.get("classes", [])
-            num_feats = len(classes)
-            group = {
-                "name": name,
-                "flat_indices": list(range(total_dims, total_dims + num_feats))
-            }
-            total_dims += num_feats
-        else:
-            group = {
-                "name": name,
-                "flat_indices": [total_dims]
-            }
-            total_dims += 1
-        concept_groups.append(group)
+    if getattr(test_dataset, "concept_features_info", None) is not None:
+        for info in test_dataset.concept_features_info:
+            start = info["start_idx"]
+            num_feats = info["num_feats"]
+            concept_groups.append({
+                "name": info["name"],
+                "flat_indices": list(range(start, start + num_feats))
+            })
+    else:
+        # 3. Parse concept groups config for TTI
+        with open(concept_config_path, 'r', encoding='utf-8') as f:
+            concept_json = json.load(f)
+
+        total_dims = 0
+        for name, info in concept_json.items():
+            ctype = info.get("type", "numerical")
+            if ctype == "categorical":
+                classes = info.get("classes", [])
+                num_feats = len(classes)
+                group = {
+                    "name": name,
+                    "flat_indices": list(range(total_dims, total_dims + num_feats))
+                }
+                total_dims += num_feats
+            else:
+                group = {
+                    "name": name,
+                    "flat_indices": [total_dims]
+                }
+                total_dims += 1
+            concept_groups.append(group)
         
     # Build concept_groups_info representation for the metrics calculation
     concept_groups_info = []

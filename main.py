@@ -31,6 +31,37 @@ RESET = "\033[0m"
 BOLD = "\033[1m"
 
 
+def build_checkpoint_payload(model, args, config_data, resolved_config, source_dataset):
+    checkpoint = {
+        'state_dict': model.state_dict(),
+        'config': copy.deepcopy(config_data),
+        'args': vars(args).copy(),
+        'resolved_dataset_config': copy.deepcopy(resolved_config),
+    }
+    if hasattr(source_dataset, "get_concept_metadata"):
+        concept_metadata = source_dataset.get_concept_metadata()
+        checkpoint['concept_metadata'] = concept_metadata
+        checkpoint['args']['num_concepts'] = concept_metadata.get(
+            "num_concepts",
+            resolved_config.get("num_concepts")
+        )
+    return checkpoint
+
+
+def load_checkpoint_concept_metadata(checkpoint_path):
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        return {}
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    except Exception as exc:
+        tqdm.write(f"  {BOLD}{YELLOW}[Warning]{RESET} Could not inspect checkpoint concept metadata: {exc}")
+        return {}
+    if isinstance(checkpoint, dict):
+        metadata = checkpoint.get("concept_metadata", {}) or {}
+        return metadata if isinstance(metadata, dict) else {}
+    return {}
+
+
 def parse_args():
     # Stage 1: Parse only the --config_path argument
     temp_parser = argparse.ArgumentParser(add_help=False)
@@ -296,6 +327,24 @@ def main():
     dataset_config["use_paper_preprocessing"] = getattr(args, "use_paper_preprocessing", False)
     dataset_config["policy"] = getattr(args, "policy", "u-ones")
     dataset_config["subset_ratio"] = getattr(args, "subset_ratio", None)
+
+    resume_concept_metadata = load_checkpoint_concept_metadata(getattr(args, "resume_checkpoint", None))
+    if resume_concept_metadata.get("dataset") == "cub":
+        dataset_config["concept_metadata"] = resume_concept_metadata
+        dataset_config["filter_rare_concepts"] = resume_concept_metadata.get(
+            "filter_rare_concepts",
+            dataset_config["filter_rare_concepts"]
+        )
+        dataset_config["use_paper_preprocessing"] = resume_concept_metadata.get(
+            "use_paper_preprocessing",
+            dataset_config["use_paper_preprocessing"]
+        )
+        args.filter_rare_concepts = dataset_config["filter_rare_concepts"]
+        args.use_paper_preprocessing = dataset_config["use_paper_preprocessing"]
+        tqdm.write(
+            f"  {BOLD}{BLUE}[Resume]{RESET} "
+            "Using concept metadata from resume checkpoint; concept preprocessing will not be recomputed."
+        )
 
     # Apply CLI overrides if present
     if args.concept_cols:
@@ -724,11 +773,13 @@ def main():
             phase1_save_filename = phase1_save_filename.replace(".pt", "_phase1.pt").replace(".pth", "_phase1.pth")
         phase1_save_path = os.path.join(save_subdir, phase1_save_filename)
 
-        checkpoint_p1 = {
-            'state_dict': model.state_dict(),
-            'config': config_data,
-            'args': vars(args)
-        }
+        checkpoint_p1 = build_checkpoint_payload(
+            model=model,
+            args=args,
+            config_data=config_data,
+            resolved_config=resolved_config,
+            source_dataset=base_train_dataset
+        )
         torch.save(checkpoint_p1, phase1_save_path)
         tqdm.write(f"\n{BOLD}{GREEN}[Safety Backup]{RESET} Phase 1 complete! Saved intermediate checkpoint to: {phase1_save_path}\n")
 
@@ -821,11 +872,13 @@ def main():
     save_path = os.path.join(save_subdir, save_filename)
 
     # Pack model state_dict along with full training configs for absolute reproducibility & lineage tracking
-    checkpoint = {
-        'state_dict': model.state_dict(),
-        'config': config_data,
-        'args': vars(args)
-    }
+    checkpoint = build_checkpoint_payload(
+        model=model,
+        args=args,
+        config_data=config_data,
+        resolved_config=resolved_config,
+        source_dataset=base_train_dataset
+    )
     torch.save(checkpoint, save_path)
 
     tqdm.write(f"\n{BOLD}{GREEN}{'='*60}{RESET}")

@@ -209,10 +209,10 @@ def main():
     filter_rare_concepts = ds_cfg.get("filter_rare_concepts", False)
     use_paper_preprocessing = ds_cfg.get("use_paper_preprocessing", False)
     if (filter_rare_concepts or use_paper_preprocessing) and dataset_name == 'cub':
-        filtered_path = concept_config_path.replace(".json", "_filtered.json")
-        if os.path.exists(filtered_path):
-            concept_config_path = filtered_path
-            tqdm.write(f"     [Config] Redirected concept_config to: {concept_config_path}")
+        tqdm.write(
+            "     [Config] Using unfiltered concept_config; "
+            "CUB2011Dataset will derive the train-only filtered mask."
+        )
             
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
