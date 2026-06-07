@@ -1,6 +1,7 @@
 import os
 import argparse
 import json
+import sys
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -103,23 +104,83 @@ def get_eval_defaults(config_data):
     return defaults
 
 
+def get_provided_cli_options(argv):
+    options = set()
+    for token in argv[1:]:
+        if token.startswith("--"):
+            options.add(token.split("=", 1)[0])
+    return options
+
+
+def get_cli_option_map(parser):
+    option_map = {}
+    for action in parser._actions:
+        if not action.option_strings or action.dest == argparse.SUPPRESS:
+            continue
+        option_map.setdefault(action.dest, []).extend(action.option_strings)
+    return {dest: tuple(options) for dest, options in option_map.items()}
+
+
+def cli_option_was_provided(arg_key, provided_options, option_map):
+    return any(option in provided_options for option in option_map.get(arg_key, ()))
+
+
+def get_checkpoint_eval_config(checkpoint_config, checkpoint_args):
+    checkpoint_config = checkpoint_config if isinstance(checkpoint_config, dict) else {}
+    checkpoint_args = checkpoint_args if isinstance(checkpoint_args, dict) else {}
+
+    saved_config_path = checkpoint_args.get("config_path")
+    if saved_config_path and os.path.exists(saved_config_path):
+        saved_config = load_config_file(saved_config_path)
+        if get_eval_defaults(saved_config):
+            return saved_config, f"checkpoint config_path ({saved_config_path})"
+
+    if get_eval_defaults(checkpoint_config):
+        return checkpoint_config, "checkpoint embedded config"
+
+    return {}, None
+
+
+def apply_eval_defaults(args, config_data, source):
+    defaults = get_eval_defaults(config_data)
+    if not defaults:
+        return {}
+
+    provided_options = getattr(args, "_provided_cli_options", set())
+    option_map = getattr(args, "_cli_option_map", {})
+    for arg_key, value in defaults.items():
+        if not cli_option_was_provided(arg_key, provided_options, option_map):
+            setattr(args, arg_key, value)
+    args.eval_config_source = source
+    return defaults
+
+
 def parse_args():
-    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     config_parser.add_argument('--config_path', type=str, default=None)
     config_args, _ = config_parser.parse_known_args()
     config_data = load_config_file(config_args.config_path)
     config_defaults = get_eval_defaults(config_data)
 
-    parser = argparse.ArgumentParser(description="Concept Bottleneck Model Evaluation & Test-Time Intervention (TTI) Benchmark")
+    parser = argparse.ArgumentParser(
+        description="Concept Bottleneck Model Evaluation & Test-Time Intervention (TTI) Benchmark",
+        allow_abbrev=False,
+    )
     parser.add_argument('--config_path', type=str, default=config_args.config_path, help="Optional training/evaluation config YAML or JSON")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to saved CBM model checkpoint (.pt or .pth)")
     parser.add_argument('--batch_size', type=int, default=config_defaults.get('batch_size', 64), help="Batch size for testing")
     parser.add_argument('--device', type=str, default=config_defaults.get('device', 'cuda'), choices=['cuda', 'cpu'], help="Computation device")
     parser.add_argument('--num_workers', type=int, default=config_defaults.get('num_workers', 8), help="Number of workers for data loader")
-    parser.add_argument('--without-tti', action='store_true', default=config_defaults.get('without_tti', False), help="Skip the TTI benchmark and run only standard CBM evaluation")
+    tti_group = parser.add_mutually_exclusive_group()
+    tti_group.add_argument('--without-tti', action='store_true', default=config_defaults.get('without_tti', False), dest='without_tti', help="Skip the TTI benchmark and run only standard CBM evaluation")
+    tti_group.add_argument('--with-tti', action='store_false', default=argparse.SUPPRESS, dest='without_tti', help="Run the TTI benchmark even when the config disables it")
     parser.add_argument('--ignore-bias', action='store_true', help="Ignore saved concept_bias by zeroing it before evaluation")
-    parser.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', default=config_defaults.get('without_coop_tti', False), dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
-    parser.add_argument('--without-coop-fit', action='store_true', default=config_defaults.get('without_coop_fit', False), help="Skip validation fitting and use manual CooP score parameters directly")
+    coop_tti_group = parser.add_mutually_exclusive_group()
+    coop_tti_group.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', default=config_defaults.get('without_coop_tti', False), dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
+    coop_tti_group.add_argument('--with-coop-tti', action='store_false', default=argparse.SUPPRESS, dest='without_coop_tti', help="Run CooP policy evaluation even when the config disables it")
+    coop_fit_group = parser.add_mutually_exclusive_group()
+    coop_fit_group.add_argument('--without-coop-fit', action='store_true', default=config_defaults.get('without_coop_fit', False), dest='without_coop_fit', help="Skip validation fitting and use manual CooP score parameters directly")
+    coop_fit_group.add_argument('--with-coop-fit', action='store_false', default=argparse.SUPPRESS, dest='without_coop_fit', help="Run validation fitting even when the config disables it")
     parser.add_argument('--coop-alpha', '--coop_alpha', type=float, default=config_defaults.get('coop_alpha', 1.0), dest='coop_alpha', help="Manual CooP weight for concept prediction uncertainty (CPU), used when --without-coop-fit is set")
     parser.add_argument('--coop-beta', '--coop_beta', type=float, default=config_defaults.get('coop_beta', 1.0), dest='coop_beta', help="CooP weight for concept importance score (CIS)")
     parser.add_argument('--coop-gamma', '--coop_gamma', type=float, default=config_defaults.get('coop_gamma', 0.0), dest='coop_gamma', help="Manual CooP weight for acquisition cost, used when --without-coop-fit is set")
@@ -128,7 +189,7 @@ def parse_args():
     parser.add_argument('--coop-gamma-grid', type=str, default=config_defaults.get('coop_gamma_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated gamma values for validation fitting")
     parser.add_argument('--coop-fit-k', type=int, default=config_defaults.get('coop_fit_k', 5), help="Group-level TTI budget K used to select fitted CooP parameters on validation")
     parser.add_argument('--coop-fit-metric', type=str, default=config_defaults.get('coop_fit_metric', 'acc'), choices=['acc', 'macro_f1', 'macro_f2'], help="Validation metric used to select fitted CooP parameters")
-    parser.add_argument('--coop-score-mode', type=str, default=config_defaults.get('coop_score_mode', 'additive'), choices=COOP_SCORE_MODE_CHOICES, help="CooP score variant: additive is alpha*CPU + beta*CIS; product is legacy alpha*CPU*CIS; power is CPU^alpha*CIS^beta; all evaluates every variant")
+    parser.add_argument('--coop-score-mode', type=str, default=config_defaults.get('coop_score_mode', 'all'), choices=COOP_SCORE_MODE_CHOICES, help="CooP score variant: additive is alpha*CPU + beta*CIS; product is legacy alpha*CPU*CIS; power is CPU^alpha*CIS^beta; all evaluates every variant")
     parser.add_argument('--coop-costs', '--coop_costs', type=str, default=config_defaults.get('coop_costs', None), dest='coop_costs', help="Optional comma-separated group costs or JSON file containing a list or group-name mapping")
     parser.add_argument('--coop-candidate-batch-size', '--coop_candidate_batch_size', type=int, default=config_defaults.get('coop_candidate_batch_size', 16384), dest='coop_candidate_batch_size', help="Maximum number of CooP counterfactual candidate rows evaluated per classifier-head call")
     parser.add_argument(
@@ -140,7 +201,15 @@ def parse_args():
         choices=['abs_change', 'confidence_drop', 'paper_delta'],
         help="How CooP converts candidate interventions into CIS. abs_change is the default influence magnitude."
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args._provided_cli_options = get_provided_cli_options(sys.argv)
+    args._cli_option_map = get_cli_option_map(parser)
+    args.eval_config_source = (
+        f"config file ({config_args.config_path})"
+        if config_args.config_path
+        else "built-in defaults"
+    )
+    return args
 
 
 def resolve_backbone_train_mode(checkpoint_args, checkpoint_config, state_dict):
@@ -437,7 +506,13 @@ def format_coop_score_formula(alpha, beta, gamma, score_mode):
     return f"score={alpha:.2f}*CPU + {beta:.2f}*CIS - {gamma:.2f}*cost"
 
 
-def print_tti_metric_summary(group_results, concept_results, uncertainty_results, coop_results=None):
+def print_tti_metric_summary(
+    group_results,
+    concept_results,
+    uncertainty_results,
+    coop_results=None,
+    coop_summary_k=5,
+):
     baseline = group_results[0][1]
     group_k, group_summary = get_tti_metrics_at_k(group_results, target_k=1)
     concept_k, concept_summary = get_tti_metrics_at_k(concept_results, target_k=1)
@@ -471,9 +546,9 @@ def print_tti_metric_summary(group_results, concept_results, uncertainty_results
         )
     print(border)
     if coop_results:
-        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K=5")
+        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K={coop_summary_k} (fit_K)")
         for variant_label, variant_results in coop_results:
-            coop_k, coop_summary = get_tti_metrics_at_k(variant_results, target_k=5)
+            coop_k, coop_summary = get_tti_metrics_at_k(variant_results, target_k=coop_summary_k)
             print(f"  [{variant_label}] K={coop_k}")
             for key, label in TTI_METRICS:
                 standard = baseline[key] * 100
@@ -498,9 +573,13 @@ def run_tti_benchmark(
     without_coop_tti=False,
     coop_fit_result=None,
     coop_configs=None,
+    coop_summary_k=5,
 ):
     """Run all TTI variants and print Top-1 target metric tables."""
     group_budgets = make_tti_budgets(len(concept_groups))
+    coop_summary_k = min(max(1, int(coop_summary_k)), len(concept_groups))
+    coop_requested_k_values = tuple(sorted({*TTI_K_VALUES, coop_summary_k}))
+    coop_budgets = make_tti_budgets(len(concept_groups), coop_requested_k_values)
     concept_budgets = group_budgets
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
@@ -549,7 +628,7 @@ def run_tti_benchmark(
             tqdm.write(f"  {BOLD}{BLUE}[TTI - {variant_label}]{RESET} Top-1 target metrics")
             tqdm.write(
                 f"  {format_coop_score_formula(alpha, beta, gamma, score_mode)} | "
-                f"influence={coop_influence_mode}; K={group_budgets[1:]}"
+                f"influence={coop_influence_mode}; K={coop_budgets[1:]}"
             )
             if fit_result is not None:
                 tqdm.write(
@@ -566,7 +645,7 @@ def run_tti_benchmark(
                 gt_targets,
                 concept_groups,
                 device,
-                group_budgets,
+                coop_budgets,
                 metric_fn=calculate_classifier_metrics,
                 alpha=alpha,
                 beta=beta,
@@ -615,12 +694,17 @@ def run_tti_benchmark(
     )
     print_tti_metric_table("[TTI - Uncertainty Group Level]", uncertainty_tti_results)
 
-    print_tti_metric_summary(group_tti_results, concept_tti_results, uncertainty_tti_results, coop_tti_results)
+    print_tti_metric_summary(
+        group_tti_results,
+        concept_tti_results,
+        uncertainty_tti_results,
+        coop_tti_results,
+        coop_summary_k=coop_summary_k,
+    )
 
 
 def main():
     args = parse_args()
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"Checkpoint not found at: {args.checkpoint}")
@@ -634,6 +718,15 @@ def main():
     checkpoint_args = loaded.get('args', {})
     checkpoint_config = loaded.get('config', {})
     state_dict = loaded.get('state_dict', loaded)
+
+    if args.config_path is None:
+        eval_config, eval_config_source = get_checkpoint_eval_config(checkpoint_config, checkpoint_args)
+        if eval_config_source is not None:
+            apply_eval_defaults(args, eval_config, eval_config_source)
+            if eval_config_source.startswith("checkpoint config_path"):
+                args.auto_eval_config_path = checkpoint_args.get("config_path")
+
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
     # Auto-detect configs with fallbacks to config dictionaries and state_dict keys
     dataset_name = checkpoint_args.get('dataset') or checkpoint_config.get('dataset', {}).get('name') or 'cub'
@@ -733,6 +826,29 @@ def main():
     tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
     tqdm.write(f"     ├─ use_pairwise_nam: {use_pairwise_nam}")
     tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
+    if getattr(args, "auto_eval_config_path", None):
+        tqdm.write(
+            f"  {BOLD}{BLUE}[Config]{RESET} "
+            f"Auto-detected config_path from checkpoint: {args.auto_eval_config_path}"
+        )
+    tqdm.write(f"  {BOLD}{BLUE}[Evaluation Config]{RESET}")
+    tqdm.write(f"     ├─ source: {getattr(args, 'eval_config_source', 'built-in defaults')}")
+    tqdm.write(
+        f"     ├─ runtime: batch_size={args.batch_size}, "
+        f"device={args.device}, num_workers={args.num_workers}"
+    )
+    tqdm.write(
+        f"     ├─ CooP fit: score_mode={args.coop_score_mode}, "
+        f"metric={args.coop_fit_metric}, fit_K={args.coop_fit_k}"
+    )
+    tqdm.write(
+        f"     ├─ CooP grid: alpha=[{args.coop_alpha_grid}], "
+        f"beta=[{args.coop_beta_grid}], gamma=[{args.coop_gamma_grid}]"
+    )
+    tqdm.write(
+        f"     └─ CooP policy: influence={args.coop_influence_mode}, "
+        f"candidate_batch_size={args.coop_candidate_batch_size}"
+    )
     
     # 2. Build Datasets and Loaders dynamically based on discovered configs
     if dataset_name == 'derm7pt':
@@ -1008,6 +1124,7 @@ def main():
             without_coop_tti=args.without_coop_tti,
             coop_fit_result=None,
             coop_configs=coop_configs,
+            coop_summary_k=args.coop_fit_k,
         )
 
     # 6. Export Active Pairwise NAM Interactions
