@@ -32,10 +32,9 @@ dataset:
 # 3. Calibration Setup
 calibration:
   source_split: train          # Split to partition for calibration
-  ratio: 0.10                  # Fraction of source_split reserved for calibration
+  ratio: 0.00 # no cali        # Fraction of source_split reserved for calibration
   seed: 42                     # Deterministic calibration split seed
-  for_what:
-    - learn_concept_bias
+  for_what: []
 
 learn_concept_bias:
   scope: supervised_concepts
@@ -101,9 +100,9 @@ evaluation:
   coop:
     score_mode: "all"          # Evaluate additive, legacy product, and power CooP variants
     objective: "macro_f1"      # Validation objective for CooP hyperparameter fitting
-    fit_k: 5                   # Group-level TTI budget used for fitting
-    alpha_grid: "0,0.25,0.5,1,2,4"
-    beta_grid: "0,0.25,0.5,1,2,4"
+    fit_k: 3                   # Group-level TTI budget used for fitting
+    alpha_grid: "0,0.25,0.5,1,1.5,2"
+    beta_grid: "0,0.25,0.5,1,1.5,2"
     gamma_grid: "0"            # Uniform/default costs normalize to zero for CUB
     candidate_batch_size: 8192
     influence_mode: "abs_change"
