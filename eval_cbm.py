@@ -44,11 +44,11 @@ COOP_SCORE_MODES = ("additive", "product", "power")
 COOP_SCORE_MODE_CHOICES = (*COOP_SCORE_MODES, "all")
 
 
-def load_config_file(config_path):
+def load_config_file(config_path, source_label="Config file"):
     if config_path is None:
         return {}
     if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found at: {config_path}")
+        raise FileNotFoundError(f"{source_label} not found at: {config_path}")
 
     ext = os.path.splitext(config_path)[1].lower()
     with open(config_path, "r", encoding="utf-8") as f:
@@ -127,15 +127,8 @@ def cli_option_was_provided(arg_key, provided_options, option_map):
     return any(option in provided_options for option in option_map.get(arg_key, ()))
 
 
-def get_checkpoint_eval_config(checkpoint_config, checkpoint_args):
+def get_checkpoint_eval_config(checkpoint_config):
     checkpoint_config = checkpoint_config if isinstance(checkpoint_config, dict) else {}
-    checkpoint_args = checkpoint_args if isinstance(checkpoint_args, dict) else {}
-
-    saved_config_path = checkpoint_args.get("config_path")
-    if saved_config_path and os.path.exists(saved_config_path):
-        saved_config = load_config_file(saved_config_path)
-        if get_eval_defaults(saved_config):
-            return saved_config, f"checkpoint config_path ({saved_config_path})"
 
     if get_eval_defaults(checkpoint_config):
         return checkpoint_config, "checkpoint embedded config"
@@ -154,6 +147,7 @@ def apply_eval_defaults(args, config_data, source):
         if not cli_option_was_provided(arg_key, provided_options, option_map):
             setattr(args, arg_key, value)
     args.eval_config_source = source
+    args.using_builtin_eval_defaults = False
     return defaults
 
 
@@ -161,7 +155,10 @@ def parse_args():
     config_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     config_parser.add_argument('--config_path', type=str, default=None)
     config_args, _ = config_parser.parse_known_args()
-    config_data = load_config_file(config_args.config_path)
+    config_data = load_config_file(
+        config_args.config_path,
+        source_label="Explicit config_path file",
+    )
     config_defaults = get_eval_defaults(config_data)
 
     parser = argparse.ArgumentParser(
@@ -206,11 +203,18 @@ def parse_args():
     args = parser.parse_args()
     args._provided_cli_options = get_provided_cli_options(sys.argv)
     args._cli_option_map = get_cli_option_map(parser)
-    args.eval_config_source = (
-        f"config file ({config_args.config_path})"
-        if config_args.config_path
-        else "built-in defaults"
-    )
+    args.using_builtin_eval_defaults = False
+    if config_args.config_path:
+        if config_defaults:
+            args.eval_config_source = f"explicit config_path ({config_args.config_path})"
+        else:
+            args.eval_config_source = (
+                f"explicit config_path ({config_args.config_path}; no evaluation defaults)"
+            )
+            args.using_builtin_eval_defaults = True
+    else:
+        args.eval_config_source = "built-in defaults"
+        args.using_builtin_eval_defaults = True
     return args
 
 
@@ -765,11 +769,13 @@ def main():
     state_dict = loaded.get('state_dict', loaded)
 
     if args.config_path is None:
-        eval_config, eval_config_source = get_checkpoint_eval_config(checkpoint_config, checkpoint_args)
+        eval_config, eval_config_source = get_checkpoint_eval_config(checkpoint_config)
         if eval_config_source is not None:
             apply_eval_defaults(args, eval_config, eval_config_source)
-            if eval_config_source.startswith("checkpoint config_path"):
-                args.auto_eval_config_path = checkpoint_args.get("config_path")
+        else:
+            checkpoint_args = checkpoint_args if isinstance(checkpoint_args, dict) else {}
+            if checkpoint_args.get("config_path"):
+                args.eval_config_path_hint = checkpoint_args["config_path"]
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     
@@ -880,13 +886,15 @@ def main():
     tqdm.write(f"     ├─ use_nam_head: {use_nam_head}")
     tqdm.write(f"     ├─ use_pairwise_nam: {use_pairwise_nam}")
     tqdm.write(f"     └─ nam_hidden_dim: {nam_hidden_dim}")
-    if getattr(args, "auto_eval_config_path", None):
-        tqdm.write(
-            f"  {BOLD}{BLUE}[Config]{RESET} "
-            f"Auto-detected config_path from checkpoint: {args.auto_eval_config_path}"
-        )
     tqdm.write(f"  {BOLD}{BLUE}[Evaluation Config]{RESET}")
     tqdm.write(f"     ├─ source: {getattr(args, 'eval_config_source', 'built-in defaults')}")
+    if getattr(args, "using_builtin_eval_defaults", False):
+        tqdm.write(f"     ├─ warning: using built-in evaluation defaults")
+        if getattr(args, "eval_config_path_hint", None):
+            tqdm.write(
+                f"     ├─ config_path hint: {args.eval_config_path_hint} "
+                f"(not auto-loaded)"
+            )
     tqdm.write(
         f"     ├─ runtime: batch_size={args.batch_size}, "
         f"device={args.device}, num_workers={args.num_workers}"
