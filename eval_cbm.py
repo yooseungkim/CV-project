@@ -157,34 +157,51 @@ def run_evaluation(model, dataloader, concept_groups_info, device, target_class_
     all_gt_concepts = []
     all_gt_targets = []
     all_tabular_features = []
-    
+
+    # Detect whether this dataset yields tabular features (4-tuple) or not (3-tuple)
+    has_tabular = None
+
     pbar = tqdm(dataloader, desc="Evaluating CBM")
-    for images, concepts, targets, tabular_features in pbar:
+    for batch in pbar:
+        # Auto-detect tabular presence on first batch
+        if has_tabular is None:
+            has_tabular = (len(batch) == 4)
+
+        if has_tabular:
+            images, concepts, targets, tabular_features = batch
+        else:
+            images, concepts, targets = batch
+            # Inject a zero-filled dummy tabular tensor so downstream code stays uniform
+            tabular_features = torch.zeros(images.size(0), 0)
+
         images = images.to(device)
         concepts = concepts.to(device)
         targets = targets.to(device)
         tabular_features = tabular_features.to(device)
-        
-        # Forward pass
-        class_logits, concept_logits, _ = model(images, tabular_features=tabular_features)
-        
+
+        # Forward pass — pass tabular only when the model actually uses it
+        if has_tabular and tabular_features.shape[-1] > 0:
+            class_logits, concept_logits, _ = model(images, tabular_features=tabular_features)
+        else:
+            class_logits, concept_logits, _ = model(images)
+
         all_class_logits.append(class_logits.cpu())
         all_concept_logits.append(concept_logits.cpu())
         all_gt_concepts.append(concepts.cpu())
         all_gt_targets.append(targets.cpu())
         all_tabular_features.append(tabular_features.cpu())
-        
+
     # Concatenate all test outputs
     all_class_logits = torch.cat(all_class_logits, dim=0)
     all_concept_logits = torch.cat(all_concept_logits, dim=0)
     all_gt_concepts = torch.cat(all_gt_concepts, dim=0)
     all_gt_targets = torch.cat(all_gt_targets, dim=0)
     all_tabular_features = torch.cat(all_tabular_features, dim=0)
-    
+
     # Calculate concept probabilities through model's registered activation
     all_concept_probs = model.concept_activation(all_concept_logits.to(device)).cpu()
-    
-    # Determine if multi-label (2D targets with same width as outputs)
+
+    # Determine if multi-label (2D targets with same width as outputs, e.g. CheXpert)
     is_multilabel = (
         all_class_logits.dim() > 1
         and all_gt_targets.dim() > 1
@@ -199,17 +216,18 @@ def run_evaluation(model, dataloader, concept_groups_info, device, target_class_
         multilabel_metrics = calculate_multilabel_metrics(
             all_class_logits, all_gt_targets, class_names=target_class_names
         )
-    
+
     # Compute Concept Metrics (Balanced Acc, TPR, TNR) using model's optimized validation thresholds
     concept_metrics = calculate_concept_metrics(
-        all_concept_logits[:, :model.num_supervised_concepts], 
-        all_gt_concepts, 
+        all_concept_logits[:, :model.num_supervised_concepts],
+        all_gt_concepts,
         concept_groups_info=concept_groups_info,
         threshold=model.concept_thresholds.cpu()
     )
-    
+
     # Return all_concept_logits instead of all_concept_probs to enable Inverse Sigmoid Intervention
     return topk_accs, concept_metrics, all_concept_logits, all_gt_concepts, all_gt_targets, all_tabular_features, multilabel_metrics
+
 
 
 
