@@ -54,7 +54,7 @@ training:
   epochs: 30                   # Total number of epochs to train
   phase1_epochs: 30            # Number of epochs for Phase 1 (Concept Learning)
   phase2_epochs: 30            # Number of epochs for Phase 2 (Target Learning)
-  phase3_epochs: 10            # Number of epochs for Phase 3 (Joint Fine-Tuning)
+  phase3_epochs: 0            # Number of epochs for Phase 3 (Joint Fine-Tuning)
   batch_size: 64               # Batch size for training
   lambda_c: 0.1                # Loss balancing weight factor for concepts
   phase2_dropout: 0.5          # Dropout probability in Phase 2
