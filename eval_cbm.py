@@ -17,6 +17,8 @@ from src.tti.common import (
     translate_gt_to_logits,
 )
 from src.tti.coop import (
+    _candidate_weights_from_probs,
+    _normalized_entropy,
     fit_coop_parameters,
     normalize_coop_product_alpha,
     parse_coop_costs,
@@ -181,7 +183,7 @@ def parse_args():
     tti_group.add_argument('--with-tti', action='store_false', default=argparse.SUPPRESS, dest='without_tti', help="Run the TTI benchmark even when the config disables it")
     parser.add_argument('--ignore-bias', action='store_true', help="Ignore saved concept_bias by zeroing it before evaluation")
     coop_tti_group = parser.add_mutually_exclusive_group()
-    coop_tti_group.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', default=config_defaults.get('without_coop_tti', False), dest='without_coop_tti', help="Skip CooP policy evaluation for group-level TTI")
+    coop_tti_group.add_argument('--without-coop-tti', '--skip_coop_tti', action='store_true', default=config_defaults.get('without_coop_tti', False), dest='without_coop_tti', help="Skip CooP policy evaluation for TTI")
     coop_tti_group.add_argument('--with-coop-tti', action='store_false', default=argparse.SUPPRESS, dest='without_coop_tti', help="Run CooP policy evaluation even when the config disables it")
     coop_fit_group = parser.add_mutually_exclusive_group()
     coop_fit_group.add_argument('--without-coop-fit', action='store_true', default=config_defaults.get('without_coop_fit', False), dest='without_coop_fit', help="Skip validation fitting and use manual CooP score parameters directly")
@@ -192,7 +194,7 @@ def parse_args():
     parser.add_argument('--coop-alpha-grid', type=str, default=config_defaults.get('coop_alpha_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated alpha values for validation fitting")
     parser.add_argument('--coop-beta-grid', type=str, default=config_defaults.get('coop_beta_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated beta values for validation fitting in power score mode")
     parser.add_argument('--coop-gamma-grid', type=str, default=config_defaults.get('coop_gamma_grid', '0,0.25,0.5,1,2,4'), help="Comma-separated gamma values for validation fitting")
-    parser.add_argument('--coop-fit-k', type=int, default=config_defaults.get('coop_fit_k', 5), help="Group-level TTI budget K used to select fitted CooP parameters on validation")
+    parser.add_argument('--coop-fit-k', type=int, default=config_defaults.get('coop_fit_k', 5), help="TTI budget K used to select fitted CooP parameters on validation")
     parser.add_argument('--coop-fit-metric', type=str, default=config_defaults.get('coop_fit_metric', 'acc'), choices=['acc', 'macro_f1', 'macro_f2'], help="Validation metric used to select fitted CooP parameters")
     parser.add_argument('--coop-score-mode', type=str, default=config_defaults.get('coop_score_mode', 'all'), choices=COOP_SCORE_MODE_CHOICES, help="CooP score variant: additive is alpha*CPU + beta*CIS; product is legacy alpha*CPU*CIS; power is CPU^alpha*CIS^beta; all evaluates every variant")
     parser.add_argument('--coop-costs', '--coop_costs', type=str, default=config_defaults.get('coop_costs', None), dest='coop_costs', help="Optional comma-separated group costs or JSON file containing a list or group-name mapping")
@@ -363,14 +365,14 @@ def run_evaluation(model, dataloader, concept_groups_info, concept_groups, devic
 
 
 @torch.inference_mode()
-def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
-    """Simulates group-level TTI by correcting attributes group-by-group in logit space."""
+def run_tti_oracle_concept(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
+    """Simulates oracle concept TTI by correcting concept groups with the largest observed prediction error."""
     model.eval()
     concept_logits = concept_logits.to(device, non_blocking=True)
     gt_concepts = gt_concepts.to(device, non_blocking=True)
     gt_targets = gt_targets.to(device, non_blocking=True)
     num_samples = concept_logits.shape[0]
-    group_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
+    oracle_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
     group_index_tensors = [
         torch.tensor(group["flat_indices"], dtype=torch.long, device=device)
         for group in concept_groups
@@ -396,7 +398,7 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
     logits_mutated = concept_logits.clone()
     
     last_k = 0
-    pbar = tqdm(budgets[1:], desc="Simulating Group TTI")
+    pbar = tqdm(budgets[1:], desc="Simulating Oracle Concept TTI")
     for K in pbar:
         # Correct the top K most erroneous groups for each sample in logit space
         groups_to_correct = sample_group_order[:, last_k:K]
@@ -412,51 +414,57 @@ def run_tti_group_level(model, concept_logits, gt_concepts, gt_targets, concept_
         # Predict class targets using the updated concept logits
         updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
             
-        group_tti_metrics.append((K, updated_metrics))
+        oracle_tti_metrics.append((K, updated_metrics))
         pbar.set_postfix(acc=f"{updated_metrics['acc'] * 100:.2f}%")
         last_k = K
         
-    return group_tti_metrics
+    return oracle_tti_metrics
 
 
 @torch.inference_mode()
-def run_tti_concept_level(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
-    """Simulates individual concept-level TTI in logit space by correcting top-K most erroneous concepts."""
+def run_tti_entropy_topk(model, concept_logits, gt_concepts, gt_targets, concept_groups, device, budgets):
+    """Corrects top-K concept groups by predicted concept entropy."""
     model.eval()
     concept_logits = concept_logits.to(device, non_blocking=True)
     gt_concepts = gt_concepts.to(device, non_blocking=True)
     gt_targets = gt_targets.to(device, non_blocking=True)
-    num_samples, num_supervised = gt_concepts.shape
-    concept_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
-    
-    # Compute concept probs for sorting erroneous concepts
-    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
-    
-    # Calculate prediction error for each individual concept per sample
-    concept_errors = torch.abs(concept_probs[:, :num_supervised] - gt_concepts)
-    sample_concept_order = torch.argsort(concept_errors, dim=1, descending=True)
-        
-    # Translate GT concepts to logit space with soft intervention for mutually exclusive groups
+    num_samples = concept_logits.shape[0]
+    group_index_tensors = [
+        torch.tensor(group["flat_indices"], dtype=torch.long, device=device)
+        for group in concept_groups
+    ]
+
     gt_logits = translate_gt_to_logits(gt_concepts, concept_groups, getattr(model, "use_probabilistic_cbm", False))
-    
+    entropy_tti_metrics = [(0, calculate_classifier_metrics(model, concept_logits, gt_targets, device))]
+
+    concept_probs = model.concept_activation(model.apply_concept_bias(concept_logits))
+    entropy_scores = torch.empty(num_samples, len(concept_groups), dtype=concept_probs.dtype, device=device)
+    for g_idx, indices in enumerate(group_index_tensors):
+        group_probs = concept_probs.index_select(1, indices)
+        candidate_weights = _candidate_weights_from_probs(group_probs)
+        entropy_scores[:, g_idx] = _normalized_entropy(candidate_weights)
+    sample_group_order = torch.argsort(entropy_scores, dim=1, descending=True)
+
     logits_mutated = concept_logits.clone()
-    
     last_k = 0
-    pbar = tqdm(budgets[1:], desc="Simulating Concept TTI")
+    pbar = tqdm(budgets[1:], desc="Simulating Entropy TTI")
     for K in pbar:
-        # Intervene on the next slice of top erroneous concepts in logit space
-        indices_to_correct = sample_concept_order[:, last_k:K]
-        if indices_to_correct.numel() > 0:
-            rows = torch.arange(num_samples, device=device).unsqueeze(1).expand_as(indices_to_correct)
-            logits_mutated[rows, indices_to_correct] = gt_logits[rows, indices_to_correct]
-            
+        groups_to_correct = sample_group_order[:, last_k:K]
+        for g_idx, indices in enumerate(group_index_tensors):
+            rows = (groups_to_correct == g_idx).any(dim=1).nonzero(as_tuple=True)[0]
+            if rows.numel() == 0:
+                continue
+            logits_mutated[rows.unsqueeze(1), indices.unsqueeze(0)] = gt_logits[
+                rows.unsqueeze(1),
+                indices.unsqueeze(0),
+            ]
+
         updated_metrics = calculate_classifier_metrics(model, logits_mutated, gt_targets, device)
-            
-        concept_tti_metrics.append((K, updated_metrics))
+        entropy_tti_metrics.append((K, updated_metrics))
         pbar.set_postfix(acc=f"{updated_metrics['acc'] * 100:.2f}%")
         last_k = K
-        
-    return concept_tti_metrics
+
+    return entropy_tti_metrics
 
 
 @torch.inference_mode()
@@ -558,46 +566,47 @@ def format_coop_score_formula(alpha, beta, gamma, score_mode):
 
 
 def print_tti_metric_summary(
-    group_results,
-    concept_results,
+    oracle_results,
     uncertainty_results,
+    entropy_results,
     coop_results=None,
     coop_summary_k=5,
 ):
-    baseline = group_results[0][1]
-    group_k, group_summary = get_tti_metrics_at_k(group_results, target_k=1)
-    concept_k, concept_summary = get_tti_metrics_at_k(concept_results, target_k=1)
+    baseline = oracle_results[0][1]
+    oracle_k, oracle_summary = get_tti_metrics_at_k(oracle_results, target_k=1)
     uncertainty_k, uncertainty_summary = get_tti_metrics_at_k(uncertainty_results, target_k=1)
+    entropy_k, entropy_summary = get_tti_metrics_at_k(entropy_results, target_k=1)
 
-    border = "+----------+--------------+--------------+--------------+----------------+--------------+--------------+--------------+"
+    border = "+----------+--------------+--------------+--------------+----------------+--------------+---------------+--------------+"
     print(f"\n{BOLD}{GREEN}============================================================{RESET}")
     print(f"  {BOLD}{GREEN}[Success] TTI Benchmark Evaluation Complete!{RESET}")
     print(f"{BOLD}{GREEN}============================================================{RESET}")
     print(border)
     print(
-        f"| Metric   | Standard K=0 | Group K={group_k:<4} | "
-        f"Concept K={concept_k:<2} | Uncertainty K={uncertainty_k:<2} | "
-        "Group Delta | Concept Delta | Uncert Delta |"
+        f"| Metric   | Standard K=0 | Oracle K={oracle_k:<3} | "
+        f"Uncertainty K={uncertainty_k:<2} | "
+        f"Entropy K={entropy_k:<2} | "
+        "Oracle Delta | Uncert Delta | Entropy Delta |"
     )
     print(border)
     for key, label in TTI_METRICS:
         standard = baseline[key] * 100
-        group_value = group_summary[key] * 100
-        concept_value = concept_summary[key] * 100
+        oracle_value = oracle_summary[key] * 100
         uncertainty_value = uncertainty_summary[key] * 100
+        entropy_value = entropy_summary[key] * 100
         print(
             f"| {label:<8} | "
             f"{standard:>11.2f}% | "
-            f"{group_value:>11.2f}% | "
-            f"{concept_value:>11.2f}% | "
+            f"{oracle_value:>11.2f}% | "
             f"{uncertainty_value:>13.2f}% | "
-            f"{group_value - standard:>11.2f}% | "
-            f"{concept_value - standard:>12.2f}% | "
-            f"{uncertainty_value - standard:>11.2f}% |"
+            f"{entropy_value:>11.2f}% | "
+            f"{oracle_value - standard:>12.2f}% | "
+            f"{uncertainty_value - standard:>11.2f}% | "
+            f"{entropy_value - standard:>13.2f}% |"
         )
     print(border)
     if coop_results:
-        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Group policy at K={coop_summary_k} (fit_K)")
+        print(f"\n{BOLD}{GREEN}[CooP Summary]{RESET} Query policy at K={coop_summary_k} (fit_K)")
         for variant_label, variant_results in coop_results:
             coop_k, coop_summary = get_tti_metrics_at_k(variant_results, target_k=coop_summary_k)
             print(f"  [{variant_label}] K={coop_k}")
@@ -627,29 +636,28 @@ def run_tti_benchmark(
     coop_summary_k=5,
 ):
     """Run all TTI variants and print Top-1 target metric tables."""
-    group_budgets = make_tti_budgets(len(concept_groups))
+    oracle_budgets = make_tti_budgets(len(concept_groups))
     coop_summary_k = min(max(1, int(coop_summary_k)), len(concept_groups))
     coop_requested_k_values = tuple(sorted({*TTI_K_VALUES, coop_summary_k}))
     coop_budgets = make_tti_budgets(len(concept_groups), coop_requested_k_values)
-    concept_budgets = group_budgets
     concept_logits_tti = concept_logits.to(device, non_blocking=True)
     gt_concepts_tti = gt_concepts.to(device, non_blocking=True)
     gt_targets_tti = gt_targets.to(device, non_blocking=True)
 
     tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
-    tqdm.write(f"  {BOLD}{BLUE}[TTI - Group Level]{RESET} Top-1 target metrics")
-    tqdm.write(f"  Correcting groups by concept prediction error; K={group_budgets[1:]}")
+    tqdm.write(f"  {BOLD}{BLUE}[Oracle Concept TTI]{RESET} Top-1 target metrics")
+    tqdm.write(f"  Correcting groups by oracle concept prediction error; K={oracle_budgets[1:]}")
     tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
-    group_tti_results = run_tti_group_level(
+    oracle_tti_results = run_tti_oracle_concept(
         model,
         concept_logits_tti,
         gt_concepts_tti,
         gt_targets_tti,
         concept_groups,
         device,
-        group_budgets
+        oracle_budgets
     )
-    print_tti_metric_table("[TTI - Group Level]", group_tti_results)
+    print_tti_metric_table("[Oracle Concept TTI]", oracle_tti_results)
 
     coop_tti_results = []
     if not without_coop_tti:
@@ -718,24 +726,9 @@ def run_tti_benchmark(
             for count, group_idx in zip(top_first.values.tolist(), top_first.indices.tolist()):
                 print(f"     - {concept_groups[group_idx]['name']}: {count} / {len(gt_targets_tti)} samples")
 
-    tqdm.write(f"\n{BOLD}{BLUE}============================================================{RESET}")
-    tqdm.write(f"  {BOLD}{BLUE}[TTI - Concept Level]{RESET} Top-1 target metrics")
-    tqdm.write(f"  Correcting individual concepts by prediction error; K={concept_budgets[1:]}")
-    tqdm.write(f"{BOLD}{BLUE}============================================================{RESET}")
-    concept_tti_results = run_tti_concept_level(
-        model,
-        concept_logits_tti,
-        gt_concepts_tti,
-        gt_targets_tti,
-        concept_groups,
-        device,
-        concept_budgets
-    )
-    print_tti_metric_table("[TTI - Concept Level]", concept_tti_results)
-
     print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
     print(f"  {BOLD}{YELLOW}[Uncertainty Top-K TTI]{RESET} Top-1 target metrics")
-    print(f"  Correcting groups by uncertainty = 1 - max(p_group); K={group_budgets[1:]}")
+    print(f"  Correcting groups by uncertainty = 1 - max(p_group); K={oracle_budgets[1:]}")
     print(f"{BOLD}{YELLOW}============================================================{RESET}")
     uncertainty_tti_results = run_tti_uncertainty_topk(
         model,
@@ -744,14 +737,29 @@ def run_tti_benchmark(
         gt_targets_tti,
         concept_groups,
         device,
-        group_budgets
+        oracle_budgets
     )
-    print_tti_metric_table("[TTI - Uncertainty Group Level]", uncertainty_tti_results)
+    print_tti_metric_table("[Uncertainty Top-K TTI]", uncertainty_tti_results)
+
+    print(f"\n{BOLD}{YELLOW}============================================================{RESET}")
+    print(f"  {BOLD}{YELLOW}[Entropy TTI]{RESET} Top-1 target metrics")
+    print(f"  Correcting groups by predicted concept entropy; K={oracle_budgets[1:]}")
+    print(f"{BOLD}{YELLOW}============================================================{RESET}")
+    entropy_tti_results = run_tti_entropy_topk(
+        model,
+        concept_logits_tti,
+        gt_concepts_tti,
+        gt_targets_tti,
+        concept_groups,
+        device,
+        oracle_budgets
+    )
+    print_tti_metric_table("[Entropy TTI]", entropy_tti_results)
 
     print_tti_metric_summary(
-        group_tti_results,
-        concept_tti_results,
+        oracle_tti_results,
         uncertainty_tti_results,
+        entropy_tti_results,
         coop_tti_results,
         coop_summary_k=coop_summary_k,
     )
