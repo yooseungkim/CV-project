@@ -1,10 +1,56 @@
 import os
 import copy
 import argparse
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Subset
 from tqdm import tqdm
+
+DEFAULT_SEED = 42
+
+
+def set_global_seed(seed: int = DEFAULT_SEED) -> int:
+    """Seed Python, NumPy, PyTorch, and CUDA RNGs for reproducible runs."""
+    seed = int(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+    if hasattr(torch, "use_deterministic_algorithms"):
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except TypeError:
+            pass
+        except Exception:
+            pass
+
+    return seed
+
+
+def build_seeded_generator(seed: int = DEFAULT_SEED) -> torch.Generator:
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
+def seed_dataloader_worker(worker_id: int):
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
 
 def str2bool(v):
     if isinstance(v, bool):

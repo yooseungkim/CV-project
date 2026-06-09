@@ -16,7 +16,18 @@ from src.models.cbm_factory import UniversalFlexibleCBM
 from src.utils.visualization import generate_concept_heatmaps
 
 # Modularized utility, loss, and training loop imports
-from src.utils.helpers import str2bool, str_or_float, str_or_bool, calculate_pos_weights, get_dataset_choices, unwrap_subset
+from src.utils.helpers import (
+    DEFAULT_SEED,
+    build_seeded_generator,
+    calculate_pos_weights,
+    get_dataset_choices,
+    seed_dataloader_worker,
+    set_global_seed,
+    str2bool,
+    str_or_bool,
+    str_or_float,
+    unwrap_subset,
+)
 from src.utils.losses import SigmoidFocalLoss, AsymmetricLossWithWeight, GroupCrossEntropyLoss
 from src.utils.train_loops import PHASE_MONITORS, train_phase1, train_phase2, train_phase3, validate_monitor_name
 from src.utils.concept_bias import split_for_calibration, learn_concept_bias
@@ -295,6 +306,7 @@ def parse_args():
 
 def main():
     args, config_data = parse_args()
+    args.seed = set_global_seed(DEFAULT_SEED)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -303,6 +315,7 @@ def main():
     tqdm.write(f"\n{BOLD}{CYAN}{'='*60}{RESET}")
     tqdm.write(f"  {BOLD}{CYAN}[Training Run]{RESET} {run_name}")
     tqdm.write(f"  {BOLD}{CYAN}[Device]{RESET} {device}")
+    tqdm.write(f"  {BOLD}{CYAN}[Seed]{RESET} {args.seed}")
     tqdm.write(f"{BOLD}{CYAN}{'='*60}{RESET}")
 
     # 1. Dataset & DataLoader Factory Setup
@@ -431,7 +444,9 @@ def main():
         shuffle=True,
         num_workers=num_workers,
         pin_memory=args.pin_memory,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0),
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
     )
     val_loader = DataLoader(
         val_dataset,
@@ -439,7 +454,9 @@ def main():
         shuffle=False,
         num_workers=num_workers,
         pin_memory=args.pin_memory,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0),
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
     )
     calibration_loader = None
     if calibration_dataset is not None:
@@ -449,7 +466,9 @@ def main():
             shuffle=False,
             num_workers=num_workers,
             pin_memory=args.pin_memory,
-            persistent_workers=(num_workers > 0)
+            persistent_workers=(num_workers > 0),
+            worker_init_fn=seed_dataloader_worker,
+            generator=build_seeded_generator(args.seed)
         )
 
     # 1c. Extract Concept Grouping metadata for Mutually Exclusive Softmax

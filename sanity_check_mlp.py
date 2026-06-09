@@ -5,6 +5,12 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+from src.utils.helpers import (
+    DEFAULT_SEED,
+    build_seeded_generator,
+    seed_dataloader_worker,
+    set_global_seed,
+)
 
 class ConceptMLP(nn.Module):
     def __init__(self, input_dim=312, hidden_dim=256, num_classes=200, dropout=0.3):
@@ -28,8 +34,10 @@ class ConceptMLP(nn.Module):
         return self.mlp(x)
 
 def run_oracle_sanity_check():
+    seed = set_global_seed(DEFAULT_SEED)
     print("=" * 70)
     print("🧪 Starting CUB Concept Oracle Upper Bound (Sanity Check) MLP Experiment")
+    print(f"Seed: {seed}")
     print("=" * 70)
     
     # 1. Resolve paths
@@ -89,9 +97,27 @@ def run_oracle_sanity_check():
     
     # 4. DataLoaders
     batch_size = 128
-    train_loader = DataLoader(TensorDataset(X_train, y_train), batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(TensorDataset(X_val, y_val), batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(TensorDataset(X_test, y_test), batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(
+        TensorDataset(X_train, y_train),
+        batch_size=batch_size,
+        shuffle=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(seed)
+    )
+    val_loader = DataLoader(
+        TensorDataset(X_val, y_val),
+        batch_size=batch_size,
+        shuffle=False,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(seed)
+    )
+    test_loader = DataLoader(
+        TensorDataset(X_test, y_test),
+        batch_size=batch_size,
+        shuffle=False,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(seed)
+    )
     
     # 5. Initialize Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

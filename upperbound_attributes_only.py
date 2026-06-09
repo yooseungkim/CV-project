@@ -11,6 +11,12 @@ from tqdm import tqdm
 
 from src.data.cub import CUB2011Dataset
 from src.data.derm7pt import Derm7PtDataset
+from src.utils.helpers import (
+    DEFAULT_SEED,
+    build_seeded_generator,
+    seed_dataloader_worker,
+    set_global_seed,
+)
 
 # Early stopping class
 class EarlyStopping:
@@ -148,6 +154,7 @@ def validate(model, dataloader, criterion, device):
 
 def main():
     args = parse_args()
+    args.seed = set_global_seed(DEFAULT_SEED)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.save_dir, exist_ok=True)
     
@@ -172,16 +179,23 @@ def main():
     tqdm.write(f"\n============================================================")
     tqdm.write(f"  🚀 Upper Bound Attributes-Only Classification ({dataset_name.upper()})")
     tqdm.write(f"  📂 Concept-to-Class MLP Head | Hidden Dim: {args.hidden_dim}")
+    tqdm.write(f"  Seed: {args.seed}")
     tqdm.write(f"============================================================")
     
     # 2. Build Datasets
     filter_rare_concepts = ds_cfg.get("filter_rare_concepts", False)
     use_paper_preprocessing = ds_cfg.get("use_paper_preprocessing", False)
     if (filter_rare_concepts or use_paper_preprocessing) and dataset_name == 'cub':
-        tqdm.write(
-            "     [Config] Using unfiltered concept_config; "
-            "CUB2011Dataset will derive the train-only filtered mask."
-        )
+        if use_paper_preprocessing:
+            tqdm.write(
+                "     [Config] Using unfiltered concept_config; "
+                "CUB2011Dataset will apply the canonical 112 paper concept mask."
+            )
+        else:
+            tqdm.write(
+                "     [Config] Using unfiltered concept_config; "
+                "CUB2011Dataset will derive the train-only filtered mask."
+            )
             
     dataset_config = dataset_class.get_default_config()
     dataset_config["concept_config_path"] = concept_config_path
@@ -210,8 +224,24 @@ def main():
         tqdm.write("  ⚡ In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
         num_workers = 0
         
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
+    )
     
     num_classes = train_dataset.config["num_classes"]
     num_concepts = train_dataset.config["num_concepts"]

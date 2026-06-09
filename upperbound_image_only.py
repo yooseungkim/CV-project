@@ -13,6 +13,12 @@ import timm
 from src.data.cub import CUB2011Dataset
 from src.data.derm7pt import Derm7PtDataset
 from src.models.cbm_factory import inject_lora_to_vit
+from src.utils.helpers import (
+    DEFAULT_SEED,
+    build_seeded_generator,
+    seed_dataloader_worker,
+    set_global_seed,
+)
 
 # Early stopping class identical to main.py
 class EarlyStopping:
@@ -137,6 +143,7 @@ def validate(model, dataloader, criterion, device):
 
 def main():
     args = parse_args()
+    args.seed = set_global_seed(DEFAULT_SEED)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     os.makedirs(args.save_dir, exist_ok=True)
     
@@ -161,6 +168,7 @@ def main():
     tqdm.write(f"\n============================================================")
     tqdm.write(f"  🚀 Upper Bound Image-Only Classification ({dataset_name.upper()})")
     tqdm.write(f"  📦 Backbone: timm/{args.backbone_name} | LoRA: {args.use_lora}")
+    tqdm.write(f"  Seed: {args.seed}")
     tqdm.write(f"============================================================")
     
     # 2. Build Datasets
@@ -189,8 +197,24 @@ def main():
         tqdm.write("  ⚡ In-memory caching enabled: Setting num_workers = 0 to eliminate multiprocessing IPC copy overhead.")
         num_workers = 0
         
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
+    )
     
     num_classes = train_dataset.config["num_classes"]
     

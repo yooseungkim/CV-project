@@ -24,6 +24,12 @@ from src.tti.coop import (
     product_alpha_is_fixed,
     run_tti_coop_group_level,
 )
+from src.utils.helpers import (
+    DEFAULT_SEED,
+    build_seeded_generator,
+    seed_dataloader_worker,
+    set_global_seed,
+)
 from src.utils.metrics import calculate_concept_metrics
 
 # ANSI terminal colors for highlighting
@@ -753,6 +759,7 @@ def run_tti_benchmark(
 
 def main():
     args = parse_args()
+    args.seed = set_global_seed(DEFAULT_SEED)
     
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"Checkpoint not found at: {args.checkpoint}")
@@ -897,7 +904,7 @@ def main():
             )
     tqdm.write(
         f"     ├─ runtime: batch_size={args.batch_size}, "
-        f"device={args.device}, num_workers={args.num_workers}"
+        f"device={args.device}, num_workers={args.num_workers}, seed={args.seed}"
     )
     tqdm.write(
         f"     ├─ CooP fit: score_mode={args.coop_score_mode}, "
@@ -968,10 +975,16 @@ def main():
                 )
 
             if not allow_legacy_filtered_concept_config and (filter_rare_concepts or use_paper_preprocessing):
-                tqdm.write(
-                    "     [Config] Using unfiltered concept_config; "
-                    "CUB2011Dataset will derive the train-only filtered mask."
-                )
+                if use_paper_preprocessing:
+                    tqdm.write(
+                        "     [Config] Using unfiltered concept_config; "
+                        "CUB2011Dataset will apply the canonical 112 paper concept mask."
+                    )
+                else:
+                    tqdm.write(
+                        "     [Config] Using unfiltered concept_config; "
+                        "CUB2011Dataset will derive the train-only filtered mask."
+                    )
     is_cub_dataset = dataset_class is CUB2011Dataset
     if not is_cub_dataset:
         allow_legacy_filtered_concept_config = False
@@ -994,7 +1007,15 @@ def main():
         config=dataset_config,
         cache_in_memory=True
     )
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        worker_init_fn=seed_dataloader_worker,
+        generator=build_seeded_generator(args.seed)
+    )
     val_loader = None
     if should_fit_coop:
         val_dataset = dataset_class(
@@ -1004,7 +1025,15 @@ def main():
             config=dataset_config,
             cache_in_memory=True
         )
-        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            worker_init_fn=seed_dataloader_worker,
+            generator=build_seeded_generator(args.seed)
+        )
     
     # Resolve exact dimensions
     num_supervised_concepts = test_dataset.config["num_concepts"]

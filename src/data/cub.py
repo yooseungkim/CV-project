@@ -7,6 +7,21 @@ from PIL import Image
 from src.data.base_dataset import BaseDataset
 
 class CUB2011Dataset(BaseDataset):
+    # Canonical CUB attribute indices used by the original Concept Bottleneck
+    # paper/codebase after class-level denoising and the >=10-class filter.
+    # These are zero-based indices from CUB attributes.txt.
+    PAPER_ATTRIBUTE_INDICES = [
+        1, 4, 6, 7, 10, 14, 15, 20, 21, 23, 25, 29, 30, 35, 36, 38,
+        40, 44, 45, 50, 51, 53, 54, 56, 57, 59, 63, 64, 69, 70, 72,
+        75, 80, 84, 90, 91, 93, 99, 101, 106, 110, 111, 116, 117,
+        119, 125, 126, 131, 132, 134, 145, 149, 151, 152, 153, 157,
+        158, 163, 164, 168, 172, 178, 179, 181, 183, 187, 188, 193,
+        194, 196, 198, 202, 203, 208, 209, 211, 212, 213, 218, 220,
+        221, 225, 235, 236, 238, 239, 240, 242, 243, 244, 249, 253,
+        254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294,
+        298, 299, 304, 305, 308, 309, 310, 311
+    ]
+
     @classmethod
     def get_default_config(cls) -> dict:
         return {
@@ -85,7 +100,7 @@ class CUB2011Dataset(BaseDataset):
         self._legacy_filtered_concept_config = filtered_config
         return np.asarray([index_by_key[key] for key in filtered_flat], dtype=int)
 
-    def _fit_class_level_concepts(self, concept_preprocessing_df, labels_df):
+    def _fit_class_level_concepts(self, concept_preprocessing_df, labels_df, certainty_matrix=None):
         import numpy as np
 
         train_image_indices = concept_preprocessing_df['image_id'].to_numpy(dtype=int) - 1
@@ -93,22 +108,51 @@ class CUB2011Dataset(BaseDataset):
         all_class_ids = labels_df.sort_values('image_id')['class_id'].to_numpy(dtype=int) - 1
         self.concept_preprocessing_train_image_ids = concept_preprocessing_df['image_id'].astype(int).tolist()
 
-        class_concepts = np.zeros((200, 312))
-        missing_train_classes = []
-        for class_id in range(200):
-            class_image_indices = train_image_indices[train_class_ids == class_id]
-            if class_image_indices.size > 0:
-                class_concepts[class_id] = (
-                    self.concept_matrix[class_image_indices].mean(axis=0) >= 0.5
-                ).astype(float)
-            else:
-                missing_train_classes.append(class_id + 1)
+        if certainty_matrix is not None:
+            class_attr_count = np.zeros((200, 312, 2), dtype=int)
+            seen_class_ids = set()
+            for image_idx, class_id in zip(train_image_indices, train_class_ids):
+                seen_class_ids.add(int(class_id))
+                certainties = certainty_matrix[image_idx]
+                for attr_idx, attr_label in enumerate(self.concept_matrix[image_idx]):
+                    attr_label = int(attr_label)
+                    if attr_label == 0 and int(certainties[attr_idx]) == 1:
+                        continue
+                    class_attr_count[class_id, attr_idx, attr_label] += 1
 
-        if missing_train_classes:
-            print(
-                "Warning: No training samples found for CUB classes "
-                f"{missing_train_classes}. Their class-level concepts remain all-zero."
-            )
+            class_attr_min_label = np.argmin(class_attr_count, axis=2)
+            class_concepts = np.argmax(class_attr_count, axis=2)
+            equal_count = np.where(class_attr_min_label == class_concepts)
+            class_concepts[equal_count] = 1
+
+            missing_train_classes = [
+                class_id + 1
+                for class_id in range(200)
+                if class_id not in seen_class_ids
+            ]
+            if missing_train_classes:
+                print(
+                    "Warning: No training samples found for CUB classes "
+                    f"{missing_train_classes}. Their class-level concepts remain all-zero."
+                )
+                class_concepts[np.asarray(missing_train_classes, dtype=int) - 1] = 0
+        else:
+            class_concepts = np.zeros((200, 312))
+            missing_train_classes = []
+            for class_id in range(200):
+                class_image_indices = train_image_indices[train_class_ids == class_id]
+                if class_image_indices.size > 0:
+                    class_concepts[class_id] = (
+                        self.concept_matrix[class_image_indices].mean(axis=0) >= 0.5
+                    ).astype(float)
+                else:
+                    missing_train_classes.append(class_id + 1)
+
+            if missing_train_classes:
+                print(
+                    "Warning: No training samples found for CUB classes "
+                    f"{missing_train_classes}. Their class-level concepts remain all-zero."
+                )
 
         for class_id in range(200):
             class_mask = (all_class_ids == class_id)
@@ -163,6 +207,7 @@ class CUB2011Dataset(BaseDataset):
             print(f"Warning: metadata not found at {resolved_csv}. Running in dummy mode ({self.split} split).")
             self.df = pd.DataFrame()
             self.concept_matrix = None
+            self.concept_certainty_matrix = None
             self.bbox_df = None
         else:
             # 1. Load CUB-200-2011 base mapping files
@@ -230,15 +275,17 @@ class CUB2011Dataset(BaseDataset):
             if os.path.exists(attr_file):
                 print(f"Loading image-level attribute annotations from: {attr_file}")
                 attr_df = pd.read_csv(
-                    attr_file, sep=r'\s+', header=None, usecols=[0, 1, 2],
-                    names=['image_id', 'attribute_id', 'is_present']
+                    attr_file, sep=r'\s+', header=None, usecols=[0, 1, 2, 3],
+                    names=['image_id', 'attribute_id', 'is_present', 'certainty']
                 )
                 # Reshape attributes perfectly into concept presence matrix
                 self.concept_matrix = attr_df['is_present'].values.reshape(11788, 312).copy()
+                self.concept_certainty_matrix = attr_df['certainty'].values.reshape(11788, 312).copy()
             else:
                 print(f"Warning: attributes file not found at {attr_file}. Using dummy concepts.")
                 import numpy as np
                 self.concept_matrix = np.zeros((11788, 312))
+                self.concept_certainty_matrix = np.zeros((11788, 312))
 
             # Filter rare concepts (< 1% global frequency) or run CBM Paper Preprocessing
             precomputed_valid_indices = self.concept_metadata.get("valid_indices")
@@ -295,15 +342,20 @@ class CUB2011Dataset(BaseDataset):
                 self.concept_matrix = self.concept_matrix[:, self.valid_indices]
             elif self.use_paper_preprocessing:
                 import numpy as np
-                class_concepts = self._fit_class_level_concepts(concept_preprocessing_df, labels_df)
+                self._fit_class_level_concepts(
+                    concept_preprocessing_df,
+                    labels_df,
+                    certainty_matrix=self.concept_certainty_matrix
+                )
                 
-                # Step 3: Keep concepts present in at least 10 classes after majority voting
-                valid_concepts_mask = (class_concepts.sum(axis=0) >= 10)
-                self.valid_indices = np.where(valid_concepts_mask)[0]
+                # Match the original ConceptBottleneck CUB pipeline exactly:
+                # use the canonical 112 paper attributes after class-level
+                # denoising, rather than recomputing a split-dependent mask.
+                self.valid_indices = np.asarray(self.PAPER_ATTRIBUTE_INDICES, dtype=int)
                 print(
                     "CBM Paper Preprocessing: fitted on "
                     f"{len(concept_preprocessing_df)} train images; keeping {len(self.valid_indices)} "
-                    "out of 312 concepts (present in >= 10 training classes after majority voting)."
+                    "canonical paper concepts out of 312."
                 )
                 self.concept_matrix = self.concept_matrix[:, self.valid_indices]
             elif self.filter_rare_concepts:
