@@ -1,182 +1,135 @@
 # Attention-Based Modular Concept Bottleneck Model (Attention-CBM) Pipeline
 
-This project provides a modular, dataset-agnostic Attention-Based Concept Bottleneck Model (Attention-CBM) pipeline for medical and fine-grained visual categorization.
+This project classifies birds with a Concept Bottleneck Model to build an interpretable classification model.
 
----
+Instead of predicting labels directly from images with a black-box model, a CBM inserts a concept bottleneck in the middle of the pipeline. The model first predicts human-recognizable attributes, then uses those attributes to predict the final label.
 
-## Key Features
-
-- **Attention-Based Concept Prediction:** CNN backbones keep spatial feature maps (`global_pool=''`), while ViT/DINOv2/ConvNeXt backbones keep patch or token features. Concept heads compute logits and attention maps from those features instead of using a GAP-pooled image vector for concept prediction.
-- **Config-Driven Datasets and Concepts:** YAML files and `concept_config.json` define datasets, target classes, categorical concept groups, numeric concept ranges, and training defaults. The project includes configs for MILK10K, CUB-200-2011, Derm7pt, and CheXpert.
-- **Backbone Training Modes:** `--backbone_train_mode {frozen,lora,full}` controls whether the backbone is frozen, adapted with LoRA, or fully fine-tuned. LoRA is supported for ViT/DINOv2-style backbones, and checkpoints are loaded with compatible mode detection.
-- **Training Workflow Support:** Multi-stage training uses `--resume_checkpoint` and `--save_filename`, phase-specific early stopping, inverse-frequency class weights for imbalanced targets, optional dropout on bottleneck activations, and optional post-hoc concept bias calibration.
-- **Evaluation and TTI:** `eval_cbm.py` reports concept, target, and **Classification (GT Concept)** metrics with Accuracy, Macro-F1, and Macro-F2. Categorical concept groups are evaluated with argmax one-hot predictions, singleton concepts use `logit > 0`, and TTI benchmarks include group-level, concept-level, uncertainty-based, and CooP policies.
-- **Interactive Gradio Explorer:** The app loads checkpoints, shows grouped per-concept attention maps, provides dropdowns for categorical interventions and physical-scale sliders for numeric concepts, and can open uncertain categorical controls based on the top-1/top-2 probability margin.
+This project uses the CUB-200-2011 dataset. The dataset contains 11,788 images representing 200 bird species. Each image includes not only a species label but also 312 attributes. In this project, 112 of those 312 attributes are filtered and used as concepts.
 
 ---
 
 ## Directory Structure
 ```
 project_root/
-├── checkpoints/            # Saved weights organized by backbone model name
+├── checkpoints/            # Storage for trained model weights
 ├── configs/
-│   ├── train_config.yaml   # Model, optimizer, scheduler, and early-stop settings
+│   ├── train_config.yaml   # YAML settings for model, optimizer, scheduler, and early stopping
 │   ├── cub_train_config.yaml # CUB LoRA, calibration, and CooP evaluation settings
-│   └── ...                 # Dataset-specific configs for MILK10K, Derm7pt, and CheXpert
-├── data/                   # (Ignored in git) Store MILK10K, CUB, and other raw data here
+│   └── ...
+├── data/                   # (Excluded from git) Storage for raw CUB data
 ├── src/
 │   ├── data/
 │   │   ├── __init__.py
-│   │   ├── base_dataset.py # Abstract base class for datasets
-│   │   └── milk10k.py      # MILK10K multi-class dataset implementation
+│   │   └── base_dataset.py # Abstract base dataset class
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── cbm_factory.py  # UniversalFlexibleCBM implementation
+│   │   └── cbm_factory.py  # UniversalFlexibleCBM layout builder
 │   ├── tti/
-│   │   ├── common.py       # Shared TTI metrics/logit helpers
+│   │   ├── common.py       # Shared TTI metric/logit helpers
 │   │   └── coop.py         # CooP scoring and validation fitting
 │   └── utils/
 │       ├── __init__.py
-│       ├── concept_bias.py # Calibration split and concept-bias learning
-│       └── metrics.py      # Utilities for evaluating concept and target accuracy
+│       ├── concept_bias.py # Calibration split and concept-bias training
+│       └── metrics.py      # Utilities for computing accuracy and evaluation metrics
 ├── app.py                  # Gradio checkpoint explorer web application
 ├── download_CUB-200-2011.py # CUB download, verification, and extraction script
 ├── eval_cbm.py             # Evaluation and TTI benchmark entry point
-├── generate_concept_config.py # Utility script to auto-generate CBM concept configs
-├── main.py                 # Entry point for training and evaluation
-├── requirements.txt        # Dependencies exported from uv
-└── README.md
+├── generate_concept_config.py # Metadata-based concept setting extractor
+├── main.py                 # Integrated training and evaluation entry point script
+├── requirements.txt        # Dependency file
+└── README_KR.md
 ```
 
 ---
 
-## Setup Environment
+## Environment Setup
 
-This project utilizes `uv` for fast dependency management.
+This project uses `uv` for dependency management and builds.
 
 ```bash
-# Initialize uv if not already done
-uv init --python 3.12
-
-# Install dependencies and sync the lockfile
+# Synchronize dependency packages and install the virtual environment
 uv sync
 ```
 
-*(Alternatively, use `pip install -r requirements.txt` if not using `uv`)*
+*(If you are not using `uv`, run `pip install -r requirements.txt` instead.)*
+
+The Python version and major library versions are included in [pyproject.toml](pyproject.toml).
+
+```text
+requires-python = ">=3.12"
+dependencies = [
+    "gradio>=6.15.2",
+    "huggingface-hub>=1.17.0",
+    "matplotlib>=3.10.9",
+    "numpy>=2.4.6",
+    "open-clip-torch>=3.3.0",
+    "pandas>=3.0.3",
+    "pyyaml>=6.0.3",
+    "timm>=1.0.27",
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
+    "tqdm>=4.67.3",
+    "transformers>=5.9.0",
+    "wandb>=0.27.0",
+]
+```
 
 ---
 
-## Usage Examples
+## Training and Evaluation
 
-Run the training pipeline with the `main.py` entry point. The model, dataset, concept, and training settings are read from the YAML file passed through `--config_path`.
+Run the training pipeline through the `main.py` entry point. Model, dataset, concept, and training settings are read from the YAML file passed through `--config_path`.
 
-### 1. Basic CBM Training (Using Config Defaults)
-Train a CBM with the defaults in `configs/train_config.yaml`:
-```bash
-uv run python main.py --config_path configs/train_config.yaml
-```
+### 1) Download CUB-200-2011 and Prepare Training
 
-### 2. Basic CBM Training with Parameter Overrides
-Override selected training parameters from the command line:
-```bash
-uv run python main.py \
-    --config_path configs/train_config.yaml \
-    --epochs 15 \
-    --batch_size 32 \
-    --lambda_c 3.0 \
-    --lr 0.0005
-```
-
-### 3. Backbone Training Modes
-Control backbone trainability with `--backbone_train_mode`. Use `frozen` to preserve pre-trained features, `lora` for parameter-efficient ViT/DINOv2 adaptation, or `full` for full backbone fine-tuning:
-```bash
-uv run python main.py --config_path configs/train_config.yaml --backbone_train_mode frozen
-uv run python main.py --config_path configs/cub_train_config.yaml --backbone_train_mode lora
-uv run python main.py --config_path configs/train_config.yaml --backbone_train_mode full
-```
-
-### 4. Freezing the Classifier Head
-Freeze the classification head while updating the backbone and concept projection layers:
-```bash
-uv run python main.py --config_path configs/train_config.yaml --freeze_head
-```
-
-### 5. Multi-Stage Training
-Chain multiple training stages together in sequence using `--save_filename` and `--resume_checkpoint`:
-- **Stage 1:** Train for 10 epochs with a higher concept penalty (`lambda_c = 5.0`) and save the result as `phase1_cbm.pth`.
-- **Stage 2:** Load Phase 1 weights, reduce the concept penalty (`lambda_c = 0.5`), and train for another 10 epochs before saving `phase2_cbm.pth`.
-
-```bash
-uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 5.0 --save_filename phase1_cbm.pth && \
-uv run python main.py --config_path configs/train_config.yaml --epochs 10 --lambda_c 0.5 --resume_checkpoint checkpoints/resnet50/phase1_cbm.pth --save_filename phase2_cbm.pth
-```
-
-### 6. CUB-200-2011 Download and Training
 Download and verify the CUB archive, then generate the project concept config:
+
 ```bash
+# Download from Kaggle; manual extraction is required
+curl -L -o data/cub2002011.zip \
+  https://www.kaggle.com/api/v1/datasets/download/wenewone/cub2002011
+
+# Or use the script (Caltech server)
 uv run python download_CUB-200-2011.py --data-dir data
+
+# Generate concept indices
 uv run python scratch/convert_cub_attributes.py
 ```
 
-Train with the CUB configuration, which enables LoRA backbone training, concept bias calibration, and evaluation defaults:
+### 2) Basic CBM Training (Using Config Defaults)
+
+Train the CBM with the default settings in `configs/cub_train_config.yaml`.
+The following command saves outputs under `checkpoints/` and, by default, also runs evaluation.
+
 ```bash
-uv run python main.py --config_path configs/cub_train_config.yaml
+uv run python main.py --config_path configs/cub_train_config.yaml --use_wandb false
 ```
 
-### 7. Concept Bias Calibration
-Enable calibration from YAML by adding `learn_concept_bias` to `calibration.for_what`. Learned concept-bias buffers are saved in the checkpoint:
-```yaml
-calibration:
-  source_split: train
-  ratio: 0.10
-  seed: 42
-  for_what:
-    - learn_concept_bias
+The evaluation results (logs) should look similar to [eval_example.txt](eval_example.txt).
 
-learn_concept_bias:
-  objective:
-    metric: target_nll
-  parameterization: singleton_only
-  temperature: 1.1
-  l2_lambda: 0.003
-```
+### 3) Evaluation and TTI Benchmark
 
-### 8. Evaluation and TTI Benchmark
-Run standard CBM evaluation plus TTI benchmarks using `eval_cbm.py`:
+You can manually run standard CBM evaluation and TTI benchmarks with `eval_cbm.py`.
+
 ```bash
 uv run python eval_cbm.py \
-    --checkpoint PATH_TO_CHECKPOINT \
-    --config_path configs/cub_train_config.yaml
+    --checkpoint PATH_TO_CHECKPOINT
+
+# Save evaluation results to a separate file
+TQDM_DISABLE=1 uv run bash -c "python eval_cbm.py --checkpoint PATH_TO_CHECKPOINT 2>&1 | tee eval.txt"
 ```
 
-Common evaluation switches:
-```bash
-uv run python eval_cbm.py --checkpoint PATH_TO_CHECKPOINT --without-tti
-uv run python eval_cbm.py --checkpoint PATH_TO_CHECKPOINT --without-coop-fit --coop-score-mode all
-uv run python eval_cbm.py --checkpoint PATH_TO_CHECKPOINT --without-coop-tti
-uv run python eval_cbm.py --checkpoint PATH_TO_CHECKPOINT --ignore-bias
-```
+## Reproducibility
 
-### 9. Gradio Web Application (Interactive Explorer & Intervention)
-Once the model is trained, launch the Gradio explorer using your checkpoint:
-```bash
-uv run python app.py --checkpoint checkpoints/resnet50/phase2_cbm.pth --num_classes 11 --port 7860
-```
+After downloading the training dataset, you can reproduce the results by running training and evaluation.
+On an RTX 4090 environment, training took about 30 minutes and evaluation took about 1 minute.
 
-Open [http://127.0.0.1:7860](http://127.0.0.1:7860) in your web browser to:
-1. Drag and drop dermoscopy images to predict the **Top-3 highest-probability classes**.
-2. View **filtered attention maps** showing only the selected category for categorical attributes.
-3. Manually edit clinical parameters using **compact dropdowns** (e.g. sex, site) and **physical sliders** (e.g. age) to inspect how interventions change predictions.
+## AI Usage
 
----
+The CODEX coding agent was used to write training and evaluation code, create the dataset download script, and translate documentation.
 
-## Auto-Generating Concept Configuration Files
+# References
 
-If working with custom datasets, use the `generate_concept_config.py` script to inspect your metadata and generate CBM-ready configuration files:
-
-```bash
-uv run python generate_concept_config.py \
-    --csv_path data/MILK10K/MILK10k_Test_Metadata.csv \
-    --ignore_cols lesion_id,image_type,isic_id,attribution,copyright_license,image_manipulation \
-    --output_path concept_config.json
-```
+- Pang Wei Koh, Thao Nguyen, Yew Siang Tang, Stephen Mussmann, Emma Pierson, Been Kim, and Percy Liang. **Concept Bottleneck Models**. *Proceedings of the 37th International Conference on Machine Learning (ICML)*, PMLR 119:5338-5348, 2020. [Link](https://proceedings.mlr.press/v119/koh20a.html)
+- Kushal Chauhan, Rishabh Tiwari, Jan Freyberg, Pradeep Shenoy, and Krishnamurthy Dvijotham. **Interactive Concept Bottleneck Models**. *Proceedings of the AAAI Conference on Artificial Intelligence*, 37(5):5948-5955, 2023. DOI: [10.1609/aaai.v37i5.25736](https://doi.org/10.1609/aaai.v37i5.25736). [Link](https://ojs.aaai.org/index.php/AAAI/article/view/25736)
+- Catherine Wah, Steve Branson, Peter Welinder, Pietro Perona, and Serge Belongie. **The Caltech-UCSD Birds-200-2011 Dataset**. Technical Report CNS-TR-2011-001, California Institute of Technology, 2011. [Link](https://authors.library.caltech.edu/records/cvm3y-5hh21)

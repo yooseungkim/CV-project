@@ -1,0 +1,237 @@
+
+[1m[96m============================================================[0m
+  [1m[96m[Checkpoint][0m Loading CBM Checkpoint: checkpoints/vit_base_patch14_dinov2/cub_vit_base_patch14_dinov2_latent20_20260609_1113.pt
+[1m[96m============================================================[0m
+  [1m[94m[Config][0m Auto-detected config:
+     ├─ Dataset: CUB
+     ├─ Backbone: vit_base_patch14_dinov2 (timm)
+     ├─ backbone_train_mode: lora
+     ├─ use_lora: True (r=16, alpha=16.0)
+     ├─ latent_concepts: 20
+     ├─ use_group_broadcasting: False
+     ├─ use_cosine_attention: False
+     ├─ use_concept_attention: True
+     ├─ use_probabilistic_cbm: True
+     ├─ filter_rare_concepts: False
+     ├─ use_paper_preprocessing: True
+     ├─ use_nam_head: True
+     ├─ use_pairwise_nam: False
+     └─ nam_hidden_dim: 8
+  [1m[94m[Evaluation Config][0m
+     ├─ source: checkpoint embedded config
+     ├─ runtime: batch_size=64, device=cuda, num_workers=0, seed=42
+     ├─ CooP fit: score_mode=all, metric=macro_f1, fit_K=3
+     ├─ CooP grid: alpha=[0,0.25,0.5,1,1.5,2], beta=[0,0.25,0.5,1,1.5,2], gamma=[0]
+     └─ CooP policy: influence=abs_change, candidate_batch_size=8192
+     [Config] Using checkpoint concept metadata; CUB2011Dataset will not recompute the filtered concept mask.
+Loading bounding boxes from: data/CUB_200_2011/bounding_boxes.txt
+Successfully loaded CUB split [test] (size: 5794)
+Loading image-level attribute annotations from: data/CUB_200_2011/attributes/image_attribute_labels.txt
+CUB Concept Metadata: using checkpoint-selected 112 concepts; skipping concept filter recomputation.
+Loaded structured concept configuration from checkpoint metadata
+  [Cache] Caching 5794 samples into memory (estimated disk size: 1.07 GB)...
+  [Cache] Cache ready for [test] split (5794 samples)
+Loading bounding boxes from: data/CUB_200_2011/bounding_boxes.txt
+Successfully loaded CUB split [val] (size: 1198)
+Loading image-level attribute annotations from: data/CUB_200_2011/attributes/image_attribute_labels.txt
+CUB Concept Metadata: using checkpoint-selected 112 concepts; skipping concept filter recomputation.
+Loaded structured concept configuration from checkpoint metadata
+  [Cache] Caching 1198 samples into memory (estimated disk size: 1.07 GB)...
+  [Cache] Cache ready for [val] split (1198 samples)
+[1m[92m[LoRA Injector][0m Successfully injected LoRA (r=16, alpha=16.0) into 12 ViT attention blocks.
+[1m[94m[Backbone Factory][0m Configured Cross-Attention CBM for vit_base_patch14_dinov2 (embed_dim: 768, use_lora: True)
+[1m[94m[Concept Head][0m ViTCrossAttentionLayer (768 -> 112) | Mode: Probabilistic (VAE-style)
+[1m[94m[Latent Concept Head][0m PatchWiseMLPConceptHead (768 -> 384 -> 20) | Mode: Probabilistic (VAE-style)
+[1m[94m[Backbone Factory][0m Activated Mutual Exclusive Group Softmax over 28 groups.
+[1m[94m[Classifier Head][0m GatedSparseNAMHead (concepts=112 -> hidden=8 -> classes=200, use_pairwise_nam=False)
+[Gated NAM Pruning] Pruned gates with absolute value <= 0.05
+  Original active gates (>0.0): 104 / 112
+  Final remaining gates (>0.05): 104 / 112
+[Gated NAM Latent Pruning] Pruned latent gates with absolute value <= 0.05
+  Original active latent gates (>0.0): 9 / 20
+  Final remaining latent gates (>0.05): 9 / 20
+
+[1m[95m============================================================[0m
+  [1m[95m[Evaluation][0m Running Test Set Evaluation...
+[1m[95m============================================================[0m
+
+[1m[92m[Performance] Standard CBM Test Performance:[0m
+   +------------------------------+-----------+-----------+-----------+
+   | Task                         | Acc       | Macro-F1  | Macro-F2  |
+   +------------------------------+-----------+-----------+-----------+
+   | Concept                      |    90.29% |    72.76% |    76.94% |
+   | Classification (GT Concept)  |    99.02% |    98.67% |    98.84% |
+   | Target                       |    87.14% |    87.24% |    87.11% |
+   +------------------------------+-----------+-----------+-----------+
+
+[1m[92m[Concept Diagnostics][0m
+   Concept Mean True Positive Rate: 81.57%
+   Concept Mean True Negative Rate: 90.08%
+   Concept Mean Balanced Accuracy : 85.82%
+
+[1m[95m============================================================[0m
+  [1m[95m[CooP Fit][0m Running Validation Set Evaluation...
+[1m[95m============================================================[0m
+  [1m[94m[CooP Fit - additive][0m Grid search alpha=[0.0, 0.25, 0.5, 1.0, 1.5, 2.0], beta=[1.0], gamma=[0.0], K=3, metric=macro_f1
+  [1m[92m[CooP Fit - additive][0m Selected alpha=2, beta=1, gamma=0 with val macro_f1=93.66%
+  [1m[94m[CooP Fit - product][0m Grid search alpha=[1.0], beta=[1.0], gamma=[0.0], K=3, metric=macro_f1
+  [1m[92m[CooP Fit - product][0m Selected alpha=1, beta=1, gamma=0 with val macro_f1=93.52%
+  [1m[94m[CooP Fit - power][0m Grid search alpha=[0.0, 0.25, 0.5, 1.0, 1.5, 2.0], beta=[0.0, 0.25, 0.5, 1.0, 1.5, 2.0], gamma=[0.0], K=3, metric=macro_f1
+  [1m[92m[CooP Fit - power][0m Selected alpha=1.5, beta=1, gamma=0 with val macro_f1=94.09%
+
+[1m[94m============================================================[0m
+  [1m[94m[Oracle Concept TTI][0m Top-1 target metrics
+  Correcting groups by oracle concept prediction error; K=[1, 2, 3, 5, 10, 28]
+[1m[94m============================================================[0m
+
+[Oracle Concept TTI]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    91.75% |    91.78% |    91.77% |
+| 2    |    92.73% |    92.66% |    92.68% |
+| 3    |    93.60% |    93.47% |    93.51% |
+| 5    |    94.49% |    94.21% |    94.30% |
+| 10   |    95.43% |    95.19% |    95.23% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+[1m[94m============================================================[0m
+  [1m[94m[TTI - CooP Additive (alpha*CPU + beta*CIS)][0m Top-1 target metrics
+  score=2.00*CPU + 1.00*CIS - 0.00*cost | influence=abs_change; K=[1, 2, 3, 5, 10, 28]
+  fitted on validation K=3: alpha=2, beta=1, gamma=0, macro_f1=93.66%
+[1m[94m============================================================[0m
+
+[TTI - CooP Additive (alpha*CPU + beta*CIS)]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    90.92% |    90.80% |    90.78% |
+| 2    |    92.92% |    92.86% |    92.80% |
+| 3    |    94.22% |    94.12% |    94.09% |
+| 5    |    96.01% |    95.90% |    95.91% |
+| 10   |    98.07% |    98.02% |    98.03% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+  [CooP Additive (alpha*CPU + beta*CIS)] Most frequently selected first-query groups:
+     - has_wing_shape: 949 / 5794 samples
+     - has_leg_color: 644 / 5794 samples
+     - has_bill_color: 585 / 5794 samples
+     - has_tail_pattern: 421 / 5794 samples
+     - has_wing_color: 384 / 5794 samples
+
+[1m[94m============================================================[0m
+  [1m[94m[TTI - CooP Product (alpha*CPU*CIS)][0m Top-1 target metrics
+  score=1.00*CPU*CIS - 0.00*cost | influence=abs_change; K=[1, 2, 3, 5, 10, 28]
+  fitted on validation K=3: alpha=1, beta=1, gamma=0, macro_f1=93.52%
+[1m[94m============================================================[0m
+
+[TTI - CooP Product (alpha*CPU*CIS)]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    90.30% |    89.98% |    90.02% |
+| 2    |    92.70% |    92.54% |    92.51% |
+| 3    |    94.29% |    94.04% |    94.12% |
+| 5    |    96.38% |    96.23% |    96.26% |
+| 10   |    98.88% |    98.84% |    98.86% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+  [CooP Product (alpha*CPU*CIS)] Most frequently selected first-query groups:
+     - has_wing_shape: 880 / 5794 samples
+     - has_leg_color: 681 / 5794 samples
+     - has_bill_color: 515 / 5794 samples
+     - has_wing_color: 476 / 5794 samples
+     - has_back_pattern: 443 / 5794 samples
+
+[1m[94m============================================================[0m
+  [1m[94m[TTI - CooP Power (CPU^alpha*CIS^beta)][0m Top-1 target metrics
+  score=CPU^1.50*CIS^1.00 - 0.00*cost | influence=abs_change; K=[1, 2, 3, 5, 10, 28]
+  fitted on validation K=3: alpha=1.5, beta=1, gamma=0, macro_f1=94.09%
+[1m[94m============================================================[0m
+
+[TTI - CooP Power (CPU^alpha*CIS^beta)]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    90.61% |    90.39% |    90.40% |
+| 2    |    92.96% |    92.88% |    92.82% |
+| 3    |    94.22% |    94.04% |    94.06% |
+| 5    |    96.24% |    96.10% |    96.16% |
+| 10   |    98.50% |    98.43% |    98.45% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+  [CooP Power (CPU^alpha*CIS^beta)] Most frequently selected first-query groups:
+     - has_wing_shape: 895 / 5794 samples
+     - has_leg_color: 658 / 5794 samples
+     - has_bill_color: 560 / 5794 samples
+     - has_wing_color: 438 / 5794 samples
+     - has_back_pattern: 432 / 5794 samples
+
+[1m[93m============================================================[0m
+  [1m[93m[Uncertainty Top-K TTI][0m Top-1 target metrics
+  Correcting groups by uncertainty = 1 - max(p_group); K=[1, 2, 3, 5, 10, 28]
+[1m[93m============================================================[0m
+
+[Uncertainty Top-K TTI]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    89.26% |    89.26% |    89.18% |
+| 2    |    90.47% |    90.43% |    90.34% |
+| 3    |    90.78% |    90.85% |    90.65% |
+| 5    |    91.15% |    91.04% |    90.92% |
+| 10   |    92.23% |    91.87% |    91.86% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+[1m[93m============================================================[0m
+  [1m[93m[Entropy TTI][0m Top-1 target metrics
+  Correcting groups by predicted concept entropy; K=[1, 2, 3, 5, 10, 28]
+[1m[93m============================================================[0m
+
+[Entropy TTI]
++------+-----------+-----------+-----------+
+| K    | Accuracy  | Macro-F1  | Macro-F2  |
++------+-----------+-----------+-----------+
+| 0    |    87.14% |    87.24% |    87.11% |
+| 1    |    88.23% |    88.33% |    88.22% |
+| 2    |    90.30% |    90.36% |    90.28% |
+| 3    |    92.01% |    92.04% |    91.96% |
+| 5    |    94.77% |    94.72% |    94.68% |
+| 10   |    97.17% |    97.11% |    97.11% |
+| 28   |    99.26% |    99.07% |    99.15% |
++------+-----------+-----------+-----------+
+
+[1m[92m============================================================[0m
+  [1m[92m[Success] TTI Benchmark Evaluation Complete![0m
+[1m[92m============================================================[0m
++----------+--------------+--------------+--------------+----------------+--------------+---------------+--------------+
+| Metric   | Standard K=0 | Oracle K=1   | Uncertainty K=1  | Entropy K=1  | Oracle Delta | Uncert Delta | Entropy Delta |
++----------+--------------+--------------+--------------+----------------+--------------+---------------+--------------+
+| Accuracy |       87.14% |       91.75% |         89.26% |       88.23% |         4.61% |        2.12% |          1.09% |
+| Macro-F1 |       87.24% |       91.78% |         89.26% |       88.33% |         4.55% |        2.02% |          1.10% |
+| Macro-F2 |       87.11% |       91.77% |         89.18% |       88.22% |         4.66% |        2.07% |          1.10% |
++----------+--------------+--------------+--------------+----------------+--------------+---------------+--------------+
+
+[1m[92m[CooP Summary][0m Query policy at K=3 (fit_K)
+  [CooP Additive (alpha*CPU + beta*CIS)] K=3
+    - Accuracy: 94.22% (+7.08%p)
+    - Macro-F1: 94.12% (+6.89%p)
+    - Macro-F2: 94.09% (+6.97%p)
+  [CooP Product (alpha*CPU*CIS)] K=3
+    - Accuracy: 94.29% (+7.15%p)
+    - Macro-F1: 94.04% (+6.80%p)
+    - Macro-F2: 94.12% (+7.00%p)
+  [CooP Power (CPU^alpha*CIS^beta)] K=3
+    - Accuracy: 94.22% (+7.08%p)
+    - Macro-F1: 94.04% (+6.80%p)
+    - Macro-F2: 94.06% (+6.95%p)
